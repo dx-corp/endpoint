@@ -16,23 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Test projection state gate
+        run: bash .github/scripts/inspect-projection-state.test.sh
       - name: Inspect projection state
         id: projection
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f .repository-projection.json ]]; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo 'present=false' >> "$GITHUB_OUTPUT"
-          unexpected="$(find . -mindepth 1 \( -path './.git' -o -path './.github' \) -prune -o \( -path './README.md' -o -path './SECURITY.md' -o -path './CONTRIBUTING.md' -o -path './CODEOWNERS' \) -prune -o -print)"
-          if [[ -n "$unexpected" ]]; then
-            printf 'Projection payload exists without provenance:\n%s\n' "$unexpected" >&2
-            exit 1
-          fi
-          echo 'Projection payload has not landed; validated the destination-owned bootstrap tree.'
+        env:
+          PROJECTION_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash .github/scripts/inspect-projection-state.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.projection.outputs.present == 'true'
         with:
