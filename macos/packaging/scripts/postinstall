@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+BASE_DIR=/Library/Application Support/Merlin
+CONFIG_PATH=$BASE_DIR/config.plist
+LABEL=com.evalops.merlin
+
+/usr/sbin/chown -R root:wheel "$BASE_DIR/bin" "$BASE_DIR/rules"
+/bin/chmod 755 "$BASE_DIR" "$BASE_DIR/bin" "$BASE_DIR/rules"
+/bin/chmod 755 "$BASE_DIR/bin/merlin-macos" "$BASE_DIR/bin/merlin-launcher"
+/bin/chmod 644 "$BASE_DIR/rules/rules.yaml"
+/usr/sbin/chown root:wheel /Library/LaunchDaemons/com.evalops.merlin.plist /usr/local/sbin/merlin-configure
+/bin/chmod 644 /Library/LaunchDaemons/com.evalops.merlin.plist
+/bin/chmod 755 /usr/local/sbin/merlin-configure
+
+/bin/mkdir -p "$BASE_DIR/spool" /Library/Logs/Merlin
+/usr/sbin/chown root:wheel "$BASE_DIR/spool" /Library/Logs/Merlin
+/bin/chmod 700 "$BASE_DIR/spool" /Library/Logs/Merlin
+/usr/bin/touch /Library/Logs/Merlin/merlin.log
+/usr/sbin/chown root:wheel /Library/Logs/Merlin/merlin.log
+/bin/chmod 600 /Library/Logs/Merlin/merlin.log
+
+# The generic package intentionally carries no credentials. MDM may install a
+# device-specific config before or after the package; start only when one is
+# already present and valid.
+if [ -f "$CONFIG_PATH" ]; then
+  /bin/chmod 600 "$CONFIG_PATH"
+  if "$BASE_DIR/bin/merlin-launcher" --validate-config >/dev/null 2>&1; then
+    /bin/launchctl bootstrap system /Library/LaunchDaemons/com.evalops.merlin.plist
+    /bin/launchctl kickstart -k "system/$LABEL"
+  else
+    printf '%s\n' 'Deixic Endpoint package installed, but the existing configuration is invalid; service was not started.' >&2
+  fi
+fi
+
+exit 0

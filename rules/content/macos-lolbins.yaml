@@ -1,0 +1,103 @@
+# macOS LOLBin / shell-downloader content pack (idea survey #3, macOS half).
+#
+# All rules are `action: log` — detection content, not prevention. Promote a
+# rule to kill only after watching its noise level in the spool (and mind
+# the Santa precedence: a sha256/cdhash rule outranks these tier-0 rules).
+#
+# Matching semantics recap (see macos/README.md): `uid` is an AND
+# constraint; everything else is an OR selector. Pipeline patterns ("| sh")
+# only appear in an exec event when a shell carries the whole pipeline as
+# its own cmdline (sh -c 'curl … | sh'). Note that kqueue enrichment reads
+# argv via KERN_PROCARGS2, so these patterns match the shell's argv.
+rules:
+  - name: lolbin-download-pipe-sh
+    match:
+      cmdline_regex: "curl\\s[^|]*\\|\\s*(ba|z)?sh\\b"
+    action: log
+    note: "curl piped to a shell — download-and-execute (shell -c form)"
+
+  - name: lolbin-wget-pipe-sh
+    match:
+      cmdline_regex: "wget\\s[^|]*\\|\\s*(ba|z)?sh\\b"
+    action: log
+    note: "wget piped to a shell — same pattern with wget"
+
+  - name: lolbin-base64-decode-pipe
+    match:
+      cmdline_regex: "base64\\s+(-d|-D|--decode)[^|]*\\|\\s*(ba|z)?sh\\b"
+    action: log
+    note: "base64 decode stage of an encoded-payload loader piped to a shell"
+
+  - name: lolbin-python-one-liner
+    match:
+      cmdline_regex: "\\bpython3?\\s+-c\\s"
+    action: log
+    note: "python/python3 -c one-liner; loaders and reverse shells, also legit tooling — watch noise"
+
+  - name: lolbin-osascript-eval
+    match:
+      cmdline_regex: "\\bosascript\\s+(-e\\s+.+)+"
+    action: log
+    note: "osascript -e inline AppleScript — common for prompt-phishing and UI automation by malware"
+
+  - name: lolbin-nc-listener
+    match:
+      cmdline_regex: "\\bnc(at)?\\s+[^|]*-l"
+    action: log
+    note: "netcat/ncat listener (-l anywhere in argv) — bind-shell indicator; regex because '-l' alone is too broad"
+
+  - name: lolbin-exec-tmp
+    match:
+      path_prefix: /private/tmp/
+    action: log
+    note: "execution from /tmp — classic dropper location (proc_pidpath resolves /tmp to /private/tmp)"
+
+  - name: lolbin-exec-var-tmp
+    match:
+      path_prefix: /private/var/tmp/
+    action: log
+    note: "execution from /var/tmp — dropper location that survives reboots (same /private resolution)"
+
+  - name: lolbin-sh-spawned-by-curl
+    match_all:
+      path_basename: sh
+      ancestor_comm_contains: curl
+    action: log
+    note: >
+      lineage variant of the pipe rule: a shell whose ancestor chain
+      contains curl. Catches 'curl … | sh' even when the pipeline argv
+      never reaches the shell's cmdline (interactive pipelines), where
+      lolbin-download-pipe-sh's cmdline_regex sees nothing.
+
+  - name: lolbin-crontab-edit
+    match_all:
+      path_basename: crontab
+      cmdline_contains: "-e"
+    not:
+      cmdline_contains: "--help"
+    action: log
+    note: "crontab -e persistence edit; the not: keeps help/usage invocations quiet (demo of not: veto)"
+
+  - name: susp-inspect-tmp-exec
+    match:
+      path_prefix: /private/tmp/
+    action: suspend
+    note: >
+      FIRST STAGE of the suspend demo: SIGSTOP any exec from /tmp at
+      notification time — the process freezes (ps shows state T) while
+      the engine does a second, fully-enriched evaluation. Quasi-
+      blocking, not prevention: kqueue latency and the posix_spawn race
+      still apply, but the process gets ~zero useful runtime.
+
+  - name: kill-unsigned-tmp-exec
+    match_all:
+      path_prefix: /private/tmp/
+      unsigned: true
+      is_platform_binary: false
+    action: kill
+    note: >
+      SECOND STAGE: on the frozen process, unsigned/adhoc AND
+      non-platform → SIGKILL (kill event with via_suspend: true).
+      Signed non-Apple tools and Apple binaries are resumed
+      (suspend_released on the exec event). Pair with
+      susp-inspect-tmp-exec; alone it is a plain reactive kill.

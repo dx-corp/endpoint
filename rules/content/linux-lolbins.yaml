@@ -1,0 +1,131 @@
+# Linux LOLBin / shell-downloader content pack (idea survey #3).
+#
+# All rules are `action: log` — detection content, not prevention. Promote a
+# rule to kill/block only after watching its noise level in the spool.
+#
+# Matching semantics recap (see README): `uid` is an AND-constraint;
+# `match:` lists OR selectors (`sha256`, `path_basename`, `path_prefix`,
+# `cmdline_contains`) and `match_all:` lists AND selectors (every one must
+# hit). Pipeline patterns ("| bash") only appear in an exec event when
+# a shell carries the whole pipeline as its own cmdline (sh -c 'curl … |
+# bash'); in an interactive pipeline each process gets its own argv and the
+# pipe character never reaches a cmdline. Patterns are chosen accordingly.
+rules:
+  - name: lolbin-download-pipe-bash
+    match:
+      cmdline_contains: "| bash"
+    action: log
+    note: "curl|bash / wget|bash download-and-execute (shell -c form)"
+
+  - name: lolbin-download-pipe-sh
+    match:
+      cmdline_contains: "| sh"
+    action: log
+    note: "downloader piped to sh (shell -c form); does not also cover '| bash' — no substring relation"
+
+  - name: lolbin-download-pipe-compact
+    match:
+      cmdline_contains: "|sh"
+    action: log
+    note: "compact pipe form 'curl …|sh' with no spaces around the pipe"
+
+  - name: lolbin-curl-silent
+    match:
+      cmdline_contains: "curl -s"
+    action: log
+    note: "silent-mode curl, the usual first half of a download pipe; noisy by design, tune or disable per host"
+
+  - name: lolbin-base64-decode
+    match:
+      cmdline_contains: "base64 -d"
+    action: log
+    note: "base64 -d decode stage of an encoded-payload loader (often 'base64 -d | sh')"
+
+  - name: lolbin-base64-decode-cap
+    match:
+      cmdline_contains: "base64 -D"
+    action: log
+    note: "BSD-style -D decode flag, same pattern as base64 -d"
+
+  - name: lolbin-python-one-liner
+    match:
+      cmdline_contains: "python3 -c"
+    action: log
+    note: "python3 -c one-liner; common in loaders and reverse shells, also common in legit tooling — watch noise"
+
+  - name: lolbin-python2-one-liner
+    match:
+      cmdline_contains: "python -c"
+    action: log
+    note: "python -c one-liner (also matches python3 -c cmdlines that carry the word 'python -c'; kept separate for clarity)"
+
+  - name: lolbin-perl-one-liner
+    match:
+      cmdline_contains: "perl -e"
+    action: log
+    note: "perl -e one-liner execution"
+
+  - name: lolbin-nc-listener
+    match:
+      cmdline_contains: "nc -l"
+    action: log
+    note: "netcat listener (nc -l / -lvnp …); bind-shell indicator"
+
+  - name: lolbin-ncat-listener
+    match:
+      cmdline_contains: "ncat -l"
+    action: log
+    note: "nmap-ncat listener; 'nc -l' does not substring-match 'ncat -l' so it gets its own rule"
+
+  - name: lolbin-crontab-edit
+    match_all:
+      path_basename: crontab
+      cmdline_contains: "-e"
+    action: log
+    note: "crontab -e edits the user's crontab — persistence via cron entries. Read-only forms (-l) don't fire. Secondary to the file-state rules in linux-persistence.yaml, which catch crontab edits by ANY tool, not just crontab(1)."
+
+  - name: lolbin-crontab-remove
+    match_all:
+      path_basename: crontab
+      cmdline_contains: " -r"
+    action: log
+    note: "crontab -r deletes the user's crontab — anti-forensics / wiper indicator. Install-from-file forms (crontab <file>, crontab -) need regex to tell apart from reads; no regex selector exists yet. Secondary to linux-persistence.yaml file-state rules."
+
+  - name: lolbin-shell-spawned-by-curl
+    match_all:
+      comm: sh
+      ancestor_comm_contains: curl
+    action: log
+    note: "shell with curl in its ancestry — the dropper pattern (downloader spawns a shell). Lineage is kernel-side comm, so it survives cmdline obfuscation ('$(echo Y3VybA==|base64 -d)' style) that defeats the string rules above. comm (not path_basename) because /bin/sh execs report comm 'sh' while the exe is dash. NOTE: 'curl … | sh' in a pipeline does NOT fire this — pipe elements are siblings, not parent/child; the cmdline-string rules cover that form."
+
+  - name: lolbin-shell-spawned-by-curl-bash
+    match_all:
+      comm: bash
+      ancestor_comm_contains: curl
+    action: log
+    note: "bash variant of lolbin-shell-spawned-by-curl (same note applies)."
+
+  - name: lolbin-shell-spawned-by-wget
+    match_all:
+      comm: sh
+      ancestor_comm_contains: wget
+    action: log
+    note: "wget variant of the downloader-spawns-shell lineage rule."
+
+  - name: lolbin-exec-tmp
+    match:
+      path_prefix: /tmp/
+    action: log
+    note: "execution from /tmp — classic dropper location"
+
+  - name: lolbin-exec-var-tmp
+    match:
+      path_prefix: /var/tmp/
+    action: log
+    note: "execution from /var/tmp — dropper location that survives reboots"
+
+  - name: lolbin-exec-dev-shm
+    match:
+      path_prefix: /dev/shm/
+    action: log
+    note: "execution from /dev/shm — in-memory tmpfs, favored by fileless-ish loaders"

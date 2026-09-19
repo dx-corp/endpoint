@@ -1,0 +1,31 @@
+# Demo rules for Deixic Endpoint.
+#
+# Setup:
+#   cp /bin/id /tmp/merlin-evil
+#   ./target/release/merlin gen-hash /tmp/merlin-evil
+#   # paste the printed hash below, then:
+#   sudo ./target/release/merlin run --rules rules/block-demo.yaml
+#
+# The hash below is for /bin/id as shipped on the build box. sha256 blocking
+# is content-based: it blocks /tmp/merlin-evil AND /bin/id itself (same
+# bytes). Regenerate the hash on your machine before use.
+rules:
+  - name: block-merlin-evil
+    match:
+      sha256: "9f2e8d80e1c357b889e1b827566e882411ddc6ff45a70196e808f00e62a6c7c5"
+      # Fallback selector: fires even if hashing fails (e.g. unreadable exe).
+      path_basename: merlin-evil
+    action: block
+
+  # Example kill rule (commented out): SIGKILL any exec of nc.
+  # - name: kill-netcat
+  #   match:
+  #     path_basename: nc
+  #   action: kill
+
+  # Example log rule (commented out): annotate root shells in the spool.
+  # - name: watch-root-sh
+  #   match:
+  #     path_basename: sh
+  #     uid: 0
+  #   action: log

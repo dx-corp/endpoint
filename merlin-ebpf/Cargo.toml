@@ -1,0 +1,34 @@
+[package]
+name = "merlin-ebpf"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+# Detached from the parent workspace: this crate builds for
+# bpfel-unknown-none with the nightly toolchain, not for the host.
+[workspace]
+
+# Kernel programs have no Rust test/benchmark harness on bpfel-unknown-none.
+[[bin]]
+name = "merlin-ebpf"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+aya-ebpf = "0.1"
+merlin-common = { path = "../merlin-common" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = "abort"
+incremental = false
+codegen-units = 1

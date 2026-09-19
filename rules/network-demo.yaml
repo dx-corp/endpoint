@@ -1,0 +1,18 @@
+# Demo rules for the macOS port's network telemetry (--network bpf).
+# The daddr/dport/dns_contains selectors are macOS-only for now — the
+# Linux rules parser does not know them yet (roadmap).
+rules:
+  # Teaching demo for DGA/exfil detection: any DNS query or response
+  # whose qname contains "exfil" is logged (responses carry rcode, so
+  # NXDOMAIN answers show up too).
+  - name: alert-dns-exfil-suspect
+    match:
+      dns_contains: exfil
+    action: log
+  # Demo: log every new flow to Google's public resolver. (Selectors are
+  # OR'd with each other; uid constrains them.)
+  - name: watch-google-dns
+    match:
+      daddr: 8.8.8.8
+      dport: 53
+    action: log

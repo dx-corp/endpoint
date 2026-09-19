@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>SyncURL</key>
+  <string>https://merlin-sync.dx-corp.net</string>
+  <key>DeviceID</key>
+  <string>dev_0123456789abcdef01234567</string>
+  <key>DeviceToken</key>
+  <string>replace-with-64-hex-character-device-token</string>
+  <key>PolicyPublicKeys</key>
+  <string>replace-with-64-hex-character-ed25519-public-key</string>
+</dict>
+</plist>

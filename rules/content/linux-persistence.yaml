@@ -1,0 +1,75 @@
+# Linux persistence content pack — file-state (fanotify) detection.
+#
+# These rules match `file` events (kind=file: path/op/pid/comm), which the
+# daemon emits for writes, creations, deletions and renames under the
+# watched persistence locations (see the "File-state telemetry" section of
+# docs/linux-sensor.md). This is tool-agnostic: editing a crontab with vi,
+# sed, echo >>, or a dropped binary all produce the same file event.
+# Compare with the cmdline-based rules in linux-lolbins.yaml, which only
+# see the specific tools they pattern-match.
+#
+# All rules are `action: log`. Only log rules apply to file events;
+# kill/block are exec-context actions and never fire here.
+rules:
+  - name: persist-cron-spool-write
+    match:
+      path_prefix: /var/spool/cron/
+    action: log
+    note: "user crontab spool changed by anything — catches crontab(1), but also direct writes that bypass it"
+
+  - name: persist-cron-etc-write
+    match:
+      path_prefix: /etc/cron
+    action: log
+    note: "covers /etc/cron.d, /etc/cron.{daily,hourly,weekly,monthly} and /etc/crontab"
+
+  - name: persist-systemd-unit-write
+    match:
+      path_prefix: /etc/systemd/system/
+    action: log
+    note: "system service unit created/modified/deleted — the classic Linux service persistence"
+
+  - name: persist-systemd-user-unit-write
+    match:
+      path_prefix: /etc/systemd/user/
+    action: log
+    note: "system-wide user-unit write; per-user units under ~/.config/systemd/user are watched too but matched by the shell-rc rule shapes below — add a path_prefix rule per user if needed"
+
+  - name: persist-ldso-preload
+    match:
+      path_basename: ld.so.preload
+    action: log
+    note: "ld.so.preload creation/modify = dynamic-linker hijack, code injection into every dynamically linked process. Almost never legitimate."
+
+  - name: persist-authorized-keys
+    match:
+      path_basename: authorized_keys
+    action: log
+    note: "SSH key added/changed/removed for some user — account-level persistence"
+
+  - name: persist-profile-etc
+    match:
+      path_prefix: /etc/profile
+    action: log
+    note: "system-wide shell init changed (/etc/profile, /etc/profile.d/*) — code runs at every login shell"
+
+  - name: persist-shell-rc-bash
+    match_all:
+      path_prefix: /home/
+      path_basename: .bashrc
+    action: log
+    note: "user bashrc changed — login persistence; expected noise during dotfile management"
+
+  - name: persist-shell-rc-zsh
+    match_all:
+      path_prefix: /home/
+      path_basename: .zshrc
+    action: log
+    note: "user zshrc changed — login persistence; expected noise during dotfile management"
+
+  - name: persist-shell-rc-profile
+    match_all:
+      path_prefix: /home/
+      path_basename: .profile
+    action: log
+    note: "user .profile changed — login persistence for sh-style shells"

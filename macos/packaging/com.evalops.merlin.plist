@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.evalops.merlin</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/Merlin/bin/merlin-launcher</string>
+  </array>
+  <key>MachServices</key>
+  <dict>
+    <key>com.evalops.merlin.status</key>
+    <true/>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>EnableTransactions</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/Merlin/merlin.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/Merlin/merlin.log</string>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+</dict>
+</plist>
