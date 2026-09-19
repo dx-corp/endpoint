@@ -1,0 +1,16 @@
+[Unit]
+Description=Deixic Endpoint sensor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/merlin/merlin.env
+ExecStart=/usr/local/libexec/merlin/merlin-launcher
+Restart=on-failure
+RestartSec=10
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

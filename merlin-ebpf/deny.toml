@@ -1,0 +1,29 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+]
+private = { ignore = true }
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+  { name = "native-tls", reason = "TLS must use rustls so builds do not depend on host OpenSSL" },
+  { name = "openssl", reason = "TLS must use rustls so builds do not depend on host OpenSSL" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
