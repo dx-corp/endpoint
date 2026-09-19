@@ -50,5 +50,5 @@ jobs:
           mkdir -p "$tree"
           git archive --format=tar HEAD | tar -xf - -C "$tree"
           test -f "$tree/LICENSE"
-          test -f "$tree/scripts/projections/distribution-validation.mjs"
-          node "$tree/scripts/projections/distribution-validation.mjs" --name endpoint --target "$tree"
+          test -f "$tree/scripts/distribution-validation.mjs"
+          node "$tree/scripts/distribution-validation.mjs" --name endpoint --target "$tree"
