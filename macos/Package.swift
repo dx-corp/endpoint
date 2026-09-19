@@ -9,6 +9,10 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.9.6"),
         .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        // 6.x releases contain unsafe flags and SwiftPM rejects them when the
+        // package is consumed as a dependency. 0.99.0 is the final compatible
+        // source release for Swift 6 toolchains that omit the Testing module.
+        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "0.99.0"),
     ],
     targets: [
         .target(name: "MerlinClientCore"),
@@ -28,8 +32,21 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
-        .testTarget(name: "MerlinClientCoreTests", dependencies: ["MerlinClientCore"]),
-        .testTarget(name: "MerlinEndpointAppTests", dependencies: ["MerlinEndpointApp", "MerlinClientCore"]),
+        .testTarget(
+            name: "MerlinClientCoreTests",
+            dependencies: [
+                "MerlinClientCore",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
+        ),
+        .testTarget(
+            name: "MerlinEndpointAppTests",
+            dependencies: [
+                "MerlinEndpointApp",
+                "MerlinClientCore",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
+        ),
         .target(
             name: "MerlinEndpointSecurityCompat",
             path: "Sources/MerlinEndpointSecurityCompat",
@@ -53,7 +70,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MerlinMacOSTests",
-            dependencies: ["MerlinMacOS"]
+            dependencies: [
+                "MerlinMacOS",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
         ),
     ]
 )

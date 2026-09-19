@@ -17,7 +17,7 @@ test = false
 bench = false
 
 [dependencies]
-aya-ebpf = "0.1"
+aya-ebpf = "0.2"
 merlin-common = { path = "../merlin-common" }
 
 [profile.dev]
