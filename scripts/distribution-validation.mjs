@@ -6,9 +6,20 @@ import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins"]);
+const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara"]);
 const SHA = /^[0-9a-f]{40}$/;
 const HEX = /^[0-9a-f]{64}$/;
+// `toolDigest` is the one provenance field with two legitimate shapes. Node
+// hashes the contents of its own TOOL_INPUTS script list, giving a 64-hex
+// SHA-256; Capobara embeds the git tree id of `rust/tools/capobara`, giving a
+// 40-hex object name. Both are valid "the tool that ran this matches the tool
+// committed at this revision" proofs, and the Rust side's
+// `git::is_tree_id_or_digest` accepts both widths for exactly this reason --
+// this predicate is its twin and must stay in step with it. A receipt written
+// by either implementation has to validate here, or a clone of
+// `dx-corp/capobara` fails `invalid provenance toolDigest` against a
+// perfectly correct tree.
+const TOOL_DIGEST = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PROTO = [
   "common/v1/analytics.proto", "common/v1/authz.proto", "common/v1/classification.proto",
   "common/v1/delivery.proto", "common/v1/entity.proto", "common/v1/risk.proto", "common/v1/surface.proto",
@@ -82,7 +93,8 @@ export async function validateProvenance(name, root) {
   requireValue(provenance.projection === name && provenance.sourceRepository === "dx-corp/mono"
     && provenance.destinationRepository === `dx-corp/${name}`, "projection provenance identity mismatch");
   requireValue(SHA.test(provenance.sourceSha) && SHA.test(provenance.priorProjectedBase), "projection SHAs are invalid");
-  for (const key of ["definitionDigest", "toolDigest", "contentDigest"]) requireValue(HEX.test(provenance[key]), `invalid provenance ${key}`);
+  for (const key of ["definitionDigest", "contentDigest"]) requireValue(HEX.test(provenance[key]), `invalid provenance ${key}`);
+  requireValue(TOOL_DIGEST.test(provenance.toolDigest), "invalid provenance toolDigest");
   requireValue(typeof provenance.publicationEligible === "boolean", "invalid publication eligibility");
   return provenance;
 }
@@ -244,6 +256,49 @@ async function validatePlugins(root, files) {
   for (const path of files) requireValue(!/(?:prompt-audit|session-history|product-kit)/i.test(path), `private plugin surface: ${path}`);
 }
 
+// `capobara` is admitted here rather than routed around this validation by
+// the workflow's `matrix.name == 'capobara'` condition. That condition only
+// governs the `sync` job; `node scripts/projections/verify-catalog.mjs
+// --validate` -- the `repository-projections` component's own CI gate --
+// builds and validates *every* catalog entry, and `validate.mjs` admits any
+// name the catalog holds, so a catalog entry with no validator here fails
+// that gate on `unsupported distribution: capobara`.
+//
+// The compile proof for the projected crate lives in the crate's own
+// `tests/standalone_build.rs`, which copies it out of the workspace and runs
+// `cargo build --locked`. Repeating that here would add a full dependency
+// build to every catalog verification, so this checks the standalone
+// closure without compiling: the manifest, the crate-root lockfile and the
+// single-package workspace that the projection has to produce, plus the
+// internal surfaces it must not carry.
+async function validateCapobara(root, files) {
+  for (const required of ["Cargo.toml", "Cargo.lock", "README.md", "build.rs", "src/main.rs", "src/lib.rs"]) {
+    requireValue(files.includes(required), `capobara is missing ${required}`);
+  }
+  for (const path of files) {
+    requireValue(!/^scripts\//.test(path), `capobara contains an internal surface: ${path}`);
+    requireValue(!/^tests\/fixtures\/definitions\//.test(path), `capobara contains an excluded fixture: ${path}`);
+  }
+  const manifest = await readFile(join(root, "Cargo.toml"), "utf8");
+  requireValue(!/\bworkspace\s*=\s*true/.test(manifest), "capobara Cargo.toml still inherits from the Mono workspace");
+  // Resolution must include dependencies here: with `--no-deps` nothing is
+  // resolved, so `--locked` has nothing to compare and a stale lockfile
+  // passes. With the full graph, `--locked` fails when the projected
+  // crate-root lockfile does not match the projected manifest, which is the
+  // failure this projection is most exposed to -- the standalone lockfile is
+  // generated separately from the workspace one and can go stale without any
+  // Mono build noticing.
+  //
+  // This resolves all 178 locked packages, so on a cold runner it fetches the
+  // crates.io index and downloads every `.crate`. That is a network-dependent
+  // step in the component's CI gate; the component already declares `rust` in
+  // `ci.test.tools`, and nothing cheaper discriminates (see above).
+  const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"], root));
+  requireValue(metadata.workspace_members.length === 1, "capobara standalone workspace gained a member");
+  const member = metadata.packages.find(pkg => pkg.id === metadata.workspace_members[0]);
+  requireValue(member?.name === "capobara", "capobara standalone workspace member is not the crate");
+}
+
 export async function validateDistribution({ name, target }) {
   requireValue(NAMES.has(name), `unsupported distribution: ${name}`);
   const root = resolve(target);
@@ -252,7 +307,7 @@ export async function validateDistribution({ name, target }) {
   await validateProvenance(name, root);
   const validators = {
     endpoint: validateEndpoint, "private-runner": validateRunner, "private-deployment": validateDeployment,
-    api: validateApi, examples: validateExamples, plugins: validatePlugins,
+    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara,
   };
   await validators[name](root, files);
   return { name, target: root, files: files.length, valid: true };
