@@ -21,10 +21,12 @@ const HEX = /^[0-9a-f]{64}$/;
 // perfectly correct tree.
 const TOOL_DIGEST = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PROTO = [
+  "agentruntime/v1/runtime.proto", "agents/v1/agents.proto", "codex/v1/codex.proto",
   "common/v1/analytics.proto", "common/v1/authz.proto", "common/v1/classification.proto",
-  "common/v1/delivery.proto", "common/v1/entity.proto", "common/v1/risk.proto", "common/v1/surface.proto",
-  "connectors/v1/connectors.proto", "console/v1/console.proto", "deixic/v1/deixic.proto",
-  "memory/v1/memory.proto", "meter/v1/meter.proto", "orbcontrol/v1/orb_control.proto",
+  "common/v1/delivery.proto", "common/v1/entity.proto", "common/v1/risk.proto",
+  "common/v1/surface.proto", "connectors/v1/connectors.proto", "console/v1/console.proto",
+  "deixic/v1/deixic.proto", "memory/v1/memory.proto", "meter/v1/meter.proto",
+  "objectives/v1/objectives.proto", "orbcontrol/v1/orb_control.proto",
   "platform/v1/platform.proto", "remoterunner/v1/remoterunner.proto",
   "toolexecution/v1/toolexecution.proto", "traces/v1/traces.proto", "vfs/v1/filesystem.proto",
 ].sort();
@@ -256,13 +258,11 @@ async function validatePlugins(root, files) {
   for (const path of files) requireValue(!/(?:prompt-audit|session-history|product-kit)/i.test(path), `private plugin surface: ${path}`);
 }
 
-// `capobara` is admitted here rather than routed around this validation by
-// the workflow's `matrix.name == 'capobara'` condition. That condition only
-// governs the `sync` job; `node scripts/projections/verify-catalog.mjs
-// --validate` -- the `repository-projections` component's own CI gate --
-// builds and validates *every* catalog entry, and `validate.mjs` admits any
-// name the catalog holds, so a catalog entry with no validator here fails
-// that gate on `unsupported distribution: capobara`.
+// `capobara` is admitted here like every other catalog entry: `validate.mjs`
+// admits any name the catalog holds, and the `sync` job validates every
+// prepared projection between Capobara's dry run and its real run, so a
+// catalog entry with no validator here fails its publication on
+// `unsupported distribution: capobara`.
 //
 // The compile proof for the projected crate lives in the crate's own
 // `tests/standalone_build.rs`, which copies it out of the workspace and runs
