@@ -54,7 +54,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 fn submit(event: &Event) {
     // Dropped events (full ring) are acceptable for a teaching sensor; the
     // alternative is blocking the kernel path, which is not.
-    if EVENTS.output(event, 0).is_err() {
+    if EVENTS.output::<Event>(event, 0).is_err() {
         if let Some(ptr) = EVENT_STATS.get_ptr_mut(0) {
             unsafe { *ptr = (*ptr).wrapping_add(1) };
         }
