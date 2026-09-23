@@ -135,6 +135,50 @@ private func makeClient(spoolPath: String, rulesPath: String, rulesBox: RulesBox
 
 @Suite("sync", .serialized)
 struct SyncTests {
+    @Test("agent discovery reports identifiers without configuration values")
+    func agentDiscovery() throws {
+        let home = NSTemporaryDirectory() + "merlin-discovery-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home + "/.codex", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.cursor", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.local/bin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.agents/skills/review", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.gemini/extensions/workspace", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.gemini/extensions/not-extension", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.claude/agents", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.config/amp", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.config/opencode/plugins", withIntermediateDirectories: true)
+        try "[mcp_servers.github]\nurl = 'https://secret.example'\n".write(toFile: home + "/.codex/config.toml", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"docs":{"command":"secret"}}}"#.write(toFile: home + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try "secret instructions".write(toFile: home + "/.agents/skills/review/SKILL.md", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"search":{"env":{"TOKEN":"secret"}}}}"#.write(toFile: home + "/.gemini/extensions/workspace/gemini-extension.json", atomically: true, encoding: .utf8)
+        try "ignored".write(toFile: home + "/.gemini/extensions/not-extension/SKILL.md", atomically: true, encoding: .utf8)
+        try "secret prompt".write(toFile: home + "/.claude/agents/reviewer.md", atomically: true, encoding: .utf8)
+        try #"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false}}"#.write(toFile: home + "/.claude/settings.json", atomically: true, encoding: .utf8)
+        try #"{"amp.mcpServers":{"db":{"command":"secret"}}}"#.write(toFile: home + "/.config/amp/settings.json", atomically: true, encoding: .utf8)
+        try "secret plugin".write(toFile: home + "/.config/opencode/plugins/trace.ts", atomically: true, encoding: .utf8)
+        let cli = home + "/.local/bin/codex"
+        try "#!/bin/sh\n".write(toFile: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli)
+
+        let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(discovered.clis.map(\.name) == ["codex"])
+        #expect(discovered.servers.map { "\($0.client):\($0.name)" } == ["amp:db", "codex:github", "cursor:docs", "gemini:search"])
+        #expect(discovered.assets.contains { $0.client == "agents" && $0.kind == "skill" && $0.name == "review" })
+        #expect(discovered.assets.contains { $0.client == "claude" && $0.kind == "agent" && $0.name == "reviewer" })
+        #expect(discovered.assets.contains { $0.client == "claude" && $0.kind == "plugin" && $0.name == "audit@marketplace" })
+        #expect(discovered.assets.contains { $0.client == "opencode" && $0.kind == "plugin" && $0.name == "trace" })
+        #expect(!discovered.assets.contains { $0.name == "off@marketplace" })
+        #expect(!discovered.assets.contains { $0.name == "not-extension" })
+        let encoded = try JSONEncoder().encode(discovered.servers)
+        #expect(!String(decoding: encoded, as: UTF8.self).contains("secret"))
+        #expect(!String(decoding: try JSONEncoder().encode(discovered.assets), as: UTF8.self).contains("secret"))
+
+        try FileManager.default.removeItem(atPath: home + "/.cursor/mcp.json")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.cursor/mcp.json", withDestinationPath: home + "/.codex/config.toml")
+        #expect(collectMacAgentDiscovery(homes: [home], systemBins: []).servers.count == 3)
+    }
+
     @Test("host id is a 16-char hash, not the raw UUID")
     func hostId() {
         let id = syncHostId()

@@ -388,8 +388,32 @@ struct DeviceInventory {
     sca: Vec<DeviceSCAResult>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     vulnerabilities: Vec<DeviceVulnerability>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_clis: Vec<DeviceAgentCLI>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mcp_servers: Vec<DeviceMCPServer>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_assets: Vec<DeviceAgentAsset>,
     #[serde(skip_serializing_if = "String::is_empty")]
     collection_source: String,
+}
+
+#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+struct DeviceAgentCLI {
+    name: String,
+}
+
+#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+struct DeviceMCPServer {
+    client: String,
+    name: String,
+}
+
+#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+struct DeviceAgentAsset {
+    client: String,
+    kind: String,
+    name: String,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -1803,6 +1827,7 @@ fn collect_inventory() -> DeviceInventory {
     let (package_manager, packages) = collect_packages();
     let (users, groups) = collect_users_groups();
     let (cloud_provider, cloud_instance_id, cloud_region) = cloud_metadata();
+    let (agent_clis, mcp_servers, agent_assets) = collect_agent_discovery();
     DeviceInventory {
         collected_at: format!("{:.3}", spool::now_ts()),
         package_manager,
@@ -1819,8 +1844,316 @@ fn collect_inventory() -> DeviceInventory {
         fim: collect_fim(),
         sca: collect_sca(),
         vulnerabilities: Vec::new(),
+        agent_clis,
+        mcp_servers,
+        agent_assets,
         collection_source: "linux-agent".into(),
     }
+}
+
+// Probe only fixed executable names and fixed configuration locations. Never
+// execute a CLI or include configuration values in a managed heartbeat.
+fn collect_agent_discovery() -> (
+    Vec<DeviceAgentCLI>,
+    Vec<DeviceMCPServer>,
+    Vec<DeviceAgentAsset>,
+) {
+    let mut homes = vec![PathBuf::from("/root")];
+    if let Ok(entries) = fs::read_dir("/home") {
+        let mut candidates: Vec<_> = entries
+            .take(256)
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.path())
+            .collect();
+        candidates.sort();
+        homes.extend(candidates.into_iter().take(64));
+    }
+    collect_agent_discovery_from(
+        &homes,
+        &[
+            "/usr/local/bin",
+            "/usr/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+        ],
+    )
+}
+
+fn collect_agent_discovery_from(
+    homes: &[PathBuf],
+    system_bins: &[&str],
+) -> (
+    Vec<DeviceAgentCLI>,
+    Vec<DeviceMCPServer>,
+    Vec<DeviceAgentAsset>,
+) {
+    const CLIS: &[&str] = &[
+        "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi",
+    ];
+    const CONFIGS: &[(&str, &str, bool)] = &[
+        ("claude", ".config/Claude/claude_desktop_config.json", false),
+        ("claude", ".claude.json", false),
+        ("cursor", ".cursor/mcp.json", false),
+        ("gemini", ".gemini/settings.json", false),
+        ("vscode", ".config/Code/User/mcp.json", false),
+        ("codex", ".codex/config.toml", true),
+        ("opencode", ".config/opencode/opencode.json", false),
+        ("claude", ".claude/settings.json", false),
+        ("amp", ".config/amp/settings.json", false),
+        ("qwen", ".qwen/settings.json", false),
+        ("pi", ".pi/agent/settings.json", false),
+    ];
+    let mut clis = BTreeSet::new();
+    let mut servers = BTreeSet::new();
+    let mut assets = BTreeSet::new();
+    for name in CLIS {
+        let found = system_bins
+            .iter()
+            .map(PathBuf::from)
+            .chain(homes.iter().flat_map(|home| {
+                [
+                    home.join(".local/bin"),
+                    home.join(".npm-global/bin"),
+                    home.join(".bun/bin"),
+                    home.join(".cargo/bin"),
+                    home.join(".codex/bin"),
+                ]
+            }))
+            .any(|dir| {
+                fs::metadata(dir.join(name))
+                    .is_ok_and(|meta| meta.is_file() && meta.mode() & 0o111 != 0)
+            });
+        if found {
+            clis.insert(DeviceAgentCLI {
+                name: (*name).into(),
+            });
+        }
+    }
+    for home in homes.iter().take(65) {
+        for (client, kind, relative, extension) in [
+            ("agents", "skill", ".agents/skills", ""),
+            ("codex", "skill", ".codex/skills", ""),
+            ("claude", "skill", ".claude/skills", ""),
+            ("claude", "agent", ".claude/agents", "md"),
+            ("gemini", "skill", ".gemini/skills", ""),
+            ("gemini", "extension", ".gemini/extensions", ""),
+            ("opencode", "skill", ".config/opencode/skills", ""),
+            ("opencode", "plugin", ".config/opencode/plugins", "js-ts"),
+            ("opencode", "agent", ".config/opencode/agents", "md"),
+            ("amp", "skill", ".config/amp/skills", ""),
+            ("qwen", "skill", ".qwen/skills", ""),
+            ("pi", "skill", ".pi/agent/skills", ""),
+            ("pi", "extension", ".pi/agent/extensions", "js-ts"),
+        ] {
+            let directory = home.join(relative);
+            if !directory
+                .symlink_metadata()
+                .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+            {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.take(256).flatten() {
+                let Ok(kind_on_disk) = entry.file_type() else {
+                    continue;
+                };
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                let name = if extension == "md" && kind_on_disk.is_file() {
+                    file_name.strip_suffix(".md")
+                } else if extension == "js-ts" && kind_on_disk.is_file() {
+                    file_name
+                        .strip_suffix(".js")
+                        .or_else(|| file_name.strip_suffix(".ts"))
+                } else if extension.is_empty()
+                    && kind == "skill"
+                    && kind_on_disk.is_dir()
+                    && directory
+                        .join(&file_name)
+                        .join("SKILL.md")
+                        .symlink_metadata()
+                        .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+                {
+                    Some(file_name.as_str())
+                } else if extension.is_empty()
+                    && kind == "extension"
+                    && kind_on_disk.is_dir()
+                    && directory
+                        .join(&file_name)
+                        .join("gemini-extension.json")
+                        .symlink_metadata()
+                        .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+                {
+                    Some(file_name.as_str())
+                } else {
+                    None
+                };
+                if let Some(name) = name.filter(|name| safe_agent_asset_name(name)) {
+                    assets.insert(DeviceAgentAsset {
+                        client: client.into(),
+                        kind: kind.into(),
+                        name: name.into(),
+                    });
+                    if client == "gemini" && kind == "extension" {
+                        if let Some(body) = read_agent_config(
+                            &directory.join(&file_name).join("gemini-extension.json"),
+                        ) {
+                            for server in json_mcp_names(&body) {
+                                if safe_agent_asset_name(&server) {
+                                    servers.insert(DeviceMCPServer {
+                                        client: "gemini".into(),
+                                        name: server,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    if assets.len() >= 128 {
+                        break;
+                    }
+                }
+            }
+            if assets.len() >= 128 {
+                break;
+            }
+        }
+        for (client, relative, is_toml) in CONFIGS {
+            let Some(body) = read_agent_config(&home.join(relative)) else {
+                continue;
+            };
+            assets.insert(DeviceAgentAsset {
+                client: (*client).into(),
+                kind: "config".into(),
+                name: "user".into(),
+            });
+            if *client == "claude" && *relative == ".claude/settings.json" {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(plugins) = value
+                        .get("enabledPlugins")
+                        .and_then(|value| value.as_object())
+                    {
+                        for (name, enabled) in plugins {
+                            if enabled.as_bool() == Some(true) && safe_agent_asset_name(name) {
+                                assets.insert(DeviceAgentAsset {
+                                    client: "claude".into(),
+                                    kind: "plugin".into(),
+                                    name: name.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            let names: Vec<String> = if *client == "amp" {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("amp.mcpServers")?
+                            .as_object()
+                            .map(|object| object.keys().cloned().collect())
+                    })
+                    .unwrap_or_default()
+            } else if *client == "opencode" {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("mcp")?
+                            .as_object()
+                            .map(|object| object.keys().cloned().collect())
+                    })
+                    .unwrap_or_default()
+            } else if *is_toml {
+                codex_mcp_names(&body)
+            } else {
+                json_mcp_names(&body)
+            };
+            for name in names {
+                if name.len() <= 128 && !name.chars().any(char::is_control) {
+                    servers.insert(DeviceMCPServer {
+                        client: (*client).into(),
+                        name,
+                    });
+                    if servers.len() >= 128 {
+                        break;
+                    }
+                }
+            }
+            if servers.len() >= 128 {
+                break;
+            }
+        }
+        if servers.len() >= 128 {
+            break;
+        }
+    }
+    (
+        clis.into_iter().collect(),
+        servers.into_iter().take(128).collect(),
+        assets.into_iter().take(128).collect(),
+    )
+}
+
+fn read_agent_config(path: &std::path::Path) -> Option<String> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !file
+        .metadata()
+        .ok()
+        .is_some_and(|meta| meta.is_file() && meta.len() <= 64 << 10)
+    {
+        return None;
+    }
+    let mut body = String::new();
+    file.take((64 << 10) + 1).read_to_string(&mut body).ok()?;
+    (body.len() <= 64 << 10).then_some(body)
+}
+
+fn safe_agent_asset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && !name.chars().any(char::is_control)
+        && !name.contains('/')
+        && !name.contains('\\')
+}
+
+fn json_mcp_names(body: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    ["mcpServers", "servers"]
+        .iter()
+        .filter_map(|key| value.get(key)?.as_object())
+        .flat_map(|object| object.keys().cloned())
+        .collect()
+}
+
+fn codex_mcp_names(body: &str) -> Vec<String> {
+    body.lines()
+        .filter_map(|line| {
+            let section = line
+                .trim()
+                .strip_prefix("[mcp_servers.")?
+                .strip_suffix(']')?;
+            let quoted = section.starts_with('"') && section.ends_with('"') && section.len() >= 2;
+            let name = if quoted {
+                &section[1..section.len() - 1]
+            } else {
+                section
+            };
+            (!name.is_empty()
+                && !name.chars().any(|ch| "[]".contains(ch))
+                && (quoted || !name.contains('.')))
+            .then(|| name.to_string())
+        })
+        .collect()
 }
 
 fn collect_os_info() -> DeviceOSInfo {
@@ -1922,6 +2255,126 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn agent_discovery_reports_names_without_config_values_or_symlinks() {
+        let root = tmpdir("agent-discovery");
+        let home = root.join("home");
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("codex");
+        fs::write(&executable, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.github]\nurl = 'https://secret.example'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".cursor")).unwrap();
+        fs::write(
+            home.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"secret"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".agents/skills/review")).unwrap();
+        fs::write(
+            home.join(".agents/skills/review/SKILL.md"),
+            "secret instructions",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".gemini/extensions/workspace")).unwrap();
+        fs::write(
+            home.join(".gemini/extensions/workspace/gemini-extension.json"),
+            r#"{"mcpServers":{"search":{"env":{"TOKEN":"secret"}}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".gemini/extensions/not-extension")).unwrap();
+        fs::write(
+            home.join(".gemini/extensions/not-extension/SKILL.md"),
+            "ignored",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".claude/agents")).unwrap();
+        fs::write(home.join(".claude/agents/reviewer.md"), "secret prompt").unwrap();
+        fs::write(
+            home.join(".claude/settings.json"),
+            r#"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".config/amp")).unwrap();
+        fs::write(
+            home.join(".config/amp/settings.json"),
+            r#"{"amp.mcpServers":{"db":{"command":"secret"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".config/opencode/plugins")).unwrap();
+        fs::write(
+            home.join(".config/opencode/plugins/trace.ts"),
+            "secret plugin",
+        )
+        .unwrap();
+        let (clis, servers, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
+        assert_eq!(
+            clis,
+            vec![DeviceAgentCLI {
+                name: "codex".into()
+            }]
+        );
+        assert_eq!(
+            servers,
+            vec![
+                DeviceMCPServer {
+                    client: "amp".into(),
+                    name: "db".into()
+                },
+                DeviceMCPServer {
+                    client: "codex".into(),
+                    name: "github".into()
+                },
+                DeviceMCPServer {
+                    client: "cursor".into(),
+                    name: "docs".into()
+                },
+                DeviceMCPServer {
+                    client: "gemini".into(),
+                    name: "search".into()
+                },
+            ]
+        );
+        let serialized = serde_json::to_string(&servers).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(
+            assets
+                .iter()
+                .any(|item| item.client == "codex" && item.kind == "config")
+        );
+        assert!(
+            assets.iter().any(|item| item.client == "agents"
+                && item.kind == "skill"
+                && item.name == "review")
+        );
+        assert!(assets.iter().any(|item| item.client == "claude"
+            && item.kind == "agent"
+            && item.name == "reviewer"));
+        assert!(assets.iter().any(|item| item.client == "claude"
+            && item.kind == "plugin"
+            && item.name == "audit@marketplace"));
+        assert!(assets.iter().any(|item| item.client == "opencode"
+            && item.kind == "plugin"
+            && item.name == "trace"));
+        assert!(!assets.iter().any(|item| item.name == "off@marketplace"));
+        assert!(!assets.iter().any(|item| item.name == "not-extension"));
+        assert!(!serde_json::to_string(&assets).unwrap().contains("secret"));
+        fs::remove_file(home.join(".cursor/mcp.json")).unwrap();
+        std::os::unix::fs::symlink(
+            home.join(".codex/config.toml"),
+            home.join(".cursor/mcp.json"),
+        )
+        .unwrap();
+        assert_eq!(collect_agent_discovery_from(&[home], &[]).1.len(), 3);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     /// Minimal one-shot HTTP responder: reads one request (headers +
     /// content-length body), calls `respond` with (headers, body), writes

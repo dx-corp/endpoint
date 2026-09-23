@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Darwin
 
 /// Bounded endpoint hygiene inventory for managed macOS devices. Collection is
 /// read-only and intentionally avoids file contents, usernames, addresses, or
@@ -17,6 +18,9 @@ struct DeviceInventory: Encodable, Sendable {
     let fim: [DeviceFIMEntry]
     let sca: [DeviceSCAResult]
     let vulnerabilities: [DeviceVulnerability]
+    let agentCLIs: [DeviceAgentCLI]
+    let mcpServers: [DeviceMCPServer]
+    let agentAssets: [DeviceAgentAsset]
     let cloudProvider: String
     let cloudInstanceID: String
     let cloudRegion: String
@@ -28,12 +32,19 @@ struct DeviceInventory: Encodable, Sendable {
         case packages, services, users, groups
         case listeningPorts = "listening_ports"
         case containers, processes, fim, sca, vulnerabilities
+        case agentCLIs = "agent_clis"
+        case mcpServers = "mcp_servers"
+        case agentAssets = "agent_assets"
         case cloudProvider = "cloud_provider"
         case cloudInstanceID = "cloud_instance_id"
         case cloudRegion = "cloud_region"
         case collectionSource = "collection_source"
     }
 }
+
+struct DeviceAgentCLI: Encodable, Sendable { let name: String }
+struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String }
+struct DeviceAgentAsset: Encodable, Sendable { let client: String; let kind: String; let name: String }
 
 struct DevicePackage: Encodable, Sendable {
     let name: String
@@ -131,6 +142,7 @@ private let inventoryReadLimit = 2 << 20
 
 func collectDeviceInventory() -> DeviceInventory {
     let packages = collectMacPackages()
+    let discovery = collectMacAgentDiscovery()
     return DeviceInventory(
         collectedAt: String(format: "%.3f", Date().timeIntervalSince1970),
         packageManager: packages.manager,
@@ -144,11 +156,175 @@ func collectDeviceInventory() -> DeviceInventory {
         fim: collectMacFIM(),
         sca: collectMacSCA(),
         vulnerabilities: [],
+        agentCLIs: discovery.clis,
+        mcpServers: discovery.servers,
+        agentAssets: discovery.assets,
         cloudProvider: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_PROVIDER"], 128),
         cloudInstanceID: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_INSTANCE_ID"], 128),
         cloudRegion: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_REGION"], 128),
         collectionSource: "macos-agent"
     )
+}
+
+private func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    let root = "/Users"
+    let users = ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).sorted().prefix(64)
+    let homes = ["/var/root"] + users.map { "\(root)/\($0)" }.filter { path in
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+    return collectMacAgentDiscovery(homes: homes, systemBins: ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"])
+}
+
+// Fixed probes only: no CLI execution and no configuration values are emitted.
+func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [DeviceAgentCLI], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    let names = ["codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
+    let bins = systemBins + homes.flatMap { ["\($0)/.local/bin", "\($0)/.npm-global/bin", "\($0)/.bun/bin", "\($0)/.cargo/bin", "\($0)/.codex/bin"] }
+    let clis = names.filter { name in
+        bins.contains { bin in
+            let path = "\(bin)/\(name)"
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            return FileManager.default.isExecutableFile(atPath: path) && attributes?[.type] as? FileAttributeType == .typeRegular
+        }
+    }.map { DeviceAgentCLI(name: $0) }
+
+    let configs: [(String, String, Bool)] = [
+        ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
+        ("claude", ".claude.json", false),
+        ("cursor", ".cursor/mcp.json", false),
+        ("gemini", ".gemini/settings.json", false),
+        ("vscode", "Library/Application Support/Code/User/mcp.json", false),
+        ("codex", ".codex/config.toml", true),
+        ("opencode", ".config/opencode/opencode.json", false),
+        ("claude", ".claude/settings.json", false),
+        ("amp", ".config/amp/settings.json", false),
+        ("qwen", ".qwen/settings.json", false),
+        ("pi", ".pi/agent/settings.json", false),
+    ]
+    var found = Set<String>()
+    var assetNames = Set<String>()
+    for home in homes.prefix(65) {
+        let assetDirs: [(String, String, String, String)] = [
+            ("agents", "skill", ".agents/skills", "skill"),
+            ("codex", "skill", ".codex/skills", "skill"),
+            ("claude", "skill", ".claude/skills", "skill"),
+            ("claude", "agent", ".claude/agents", "md"),
+            ("gemini", "skill", ".gemini/skills", "skill"),
+            ("gemini", "extension", ".gemini/extensions", "directory"),
+            ("opencode", "skill", ".config/opencode/skills", "skill"),
+            ("opencode", "plugin", ".config/opencode/plugins", "js-ts"),
+            ("opencode", "agent", ".config/opencode/agents", "md"),
+            ("amp", "skill", ".config/amp/skills", "skill"),
+            ("qwen", "skill", ".qwen/skills", "skill"),
+            ("pi", "skill", ".pi/agent/skills", "skill"),
+            ("pi", "extension", ".pi/agent/extensions", "js-ts"),
+        ]
+        for (client, kind, relative, format) in assetDirs {
+            let directory = "\(home)/\(relative)"
+            var directoryInfo = stat()
+            guard lstat(directory, &directoryInfo) == 0, (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else { continue }
+            for entry in ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []).sorted().prefix(256) {
+                let path = "\(directory)/\(entry)"
+                var info = stat()
+                guard lstat(path, &info) == 0 else { continue }
+                let type = info.st_mode & mode_t(S_IFMT)
+                let name: String?
+                if format == "skill" && type == mode_t(S_IFDIR) {
+                    var manifest = stat()
+                    let manifestPath = "\(path)/SKILL.md"
+                    name = lstat(manifestPath, &manifest) == 0 && (manifest.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) ? entry : nil
+                } else if format == "directory" && type == mode_t(S_IFDIR) {
+                    var manifest = stat()
+                    name = lstat("\(path)/gemini-extension.json", &manifest) == 0 && (manifest.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) ? entry : nil
+                } else if type == mode_t(S_IFREG) && format == "md" && entry.hasSuffix(".md") {
+                    name = String(entry.dropLast(3))
+                } else if type == mode_t(S_IFREG) && format == "js-ts" && (entry.hasSuffix(".js") || entry.hasSuffix(".ts")) {
+                    name = String(entry.dropLast(3))
+                } else { name = nil }
+                if let name, safeAgentAssetName(name) {
+                    assetNames.insert("\(client)\u{0}\(kind)\u{0}\(name)")
+                    if client == "gemini" && kind == "extension", let data = readAgentConfigNoFollow("\(path)/gemini-extension.json") {
+                        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                        for server in ((object?["mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []) where safeAgentAssetName(server) {
+                            found.insert("gemini\u{0}\(server)")
+                        }
+                    }
+                    if assetNames.count >= 128 { break }
+                }
+            }
+            if assetNames.count >= 128 { break }
+        }
+        for (client, relative, isTOML) in configs {
+            guard let data = readAgentConfigNoFollow("\(home)/\(relative)") else { continue }
+            assetNames.insert("\(client)\u{0}config\u{0}user")
+            if client == "claude" && relative == ".claude/settings.json" {
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let plugins = object?["enabledPlugins"] as? [String: Bool] ?? [:]
+                for (name, enabled) in plugins where enabled && safeAgentAssetName(name) {
+                    assetNames.insert("claude\u{0}plugin\u{0}\(name)")
+                }
+                continue
+            }
+            let names: [String]
+            if client == "amp" {
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                names = (object?["amp.mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []
+            } else if client == "opencode" {
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                names = (object?["mcp"] as? [String: Any]).map { Array($0.keys) } ?? []
+            } else if isTOML {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                names = body.split(separator: "\n").compactMap { line in
+                    let section = line.trimmingCharacters(in: .whitespaces)
+                    guard section.hasPrefix("[mcp_servers."), section.hasSuffix("]") else { return nil }
+                    let raw = String(section.dropFirst("[mcp_servers.".count).dropLast())
+                    let quoted = raw.hasPrefix("\"") && raw.hasSuffix("\"") && raw.count >= 2
+                    let name = quoted ? String(raw.dropFirst().dropLast()) : raw
+                    return name.isEmpty || name.contains(where: { "[]".contains($0) }) || (!quoted && name.contains(".")) ? nil : name
+                }
+            } else {
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let entries = (object?["mcpServers"] ?? object?["servers"]) as? [String: Any]
+                names = entries.map { Array($0.keys) } ?? []
+            }
+            for name in names where name.utf8.count <= 128 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+                found.insert("\(client)\u{0}\(name)")
+                if found.count >= 128 { break }
+            }
+            if found.count >= 128 { break }
+        }
+        if found.count >= 128 { break }
+    }
+    let servers = found.sorted().prefix(128).compactMap { entry -> DeviceMCPServer? in
+        let parts = entry.split(separator: "\u{0}", maxSplits: 1)
+        guard parts.count == 2 else { return nil }
+        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]))
+    }
+    let assets = assetNames.sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
+        let parts = entry.split(separator: "\u{0}")
+        guard parts.count == 3 else { return nil }
+        return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]))
+    }
+    return (clis, servers, assets)
+}
+
+private func safeAgentAssetName(_ name: String) -> Bool {
+    !name.isEmpty && name.utf8.count <= 128 && !name.hasPrefix(".") &&
+        !name.contains("/") && !name.contains("\\") &&
+        !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+}
+
+private func readAgentConfigNoFollow(_ path: String) -> Data? {
+    let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+    guard fd >= 0 else { return nil }
+    defer { close(fd) }
+    var info = stat()
+    guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_size >= 0, info.st_size <= 64 << 10 else { return nil }
+    var bytes = [UInt8](repeating: 0, count: Int(info.st_size) + 1)
+    let capacity = bytes.count
+    let count = read(fd, &bytes, capacity)
+    guard count >= 0, count <= 64 << 10 else { return nil }
+    return Data(bytes.prefix(count))
 }
 
 private func inventoryText(_ value: String?, _ limit: Int) -> String {
