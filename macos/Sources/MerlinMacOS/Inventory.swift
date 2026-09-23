@@ -19,6 +19,7 @@ struct DeviceInventory: Encodable, Sendable {
     let sca: [DeviceSCAResult]
     let vulnerabilities: [DeviceVulnerability]
     let agentCLIs: [DeviceAgentCLI]
+    let agentApps: [DeviceAgentApp]
     let mcpServers: [DeviceMCPServer]
     let agentAssets: [DeviceAgentAsset]
     let cloudProvider: String
@@ -33,6 +34,7 @@ struct DeviceInventory: Encodable, Sendable {
         case listeningPorts = "listening_ports"
         case containers, processes, fim, sca, vulnerabilities
         case agentCLIs = "agent_clis"
+        case agentApps = "agent_apps"
         case mcpServers = "mcp_servers"
         case agentAssets = "agent_assets"
         case cloudProvider = "cloud_provider"
@@ -43,6 +45,7 @@ struct DeviceInventory: Encodable, Sendable {
 }
 
 struct DeviceAgentCLI: Encodable, Sendable { let name: String }
+struct DeviceAgentApp: Encodable, Sendable { let name: String }
 struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String }
 struct DeviceAgentAsset: Encodable, Sendable { let client: String; let kind: String; let name: String }
 
@@ -157,6 +160,7 @@ func collectDeviceInventory() -> DeviceInventory {
         sca: collectMacSCA(),
         vulnerabilities: [],
         agentCLIs: discovery.clis,
+        agentApps: discovery.apps,
         mcpServers: discovery.servers,
         agentAssets: discovery.assets,
         cloudProvider: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_PROVIDER"], 128),
@@ -166,7 +170,7 @@ func collectDeviceInventory() -> DeviceInventory {
     )
 }
 
-private func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+private func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], apps: [DeviceAgentApp], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
     let root = "/Users"
     let users = ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).sorted().prefix(64)
     let homes = ["/var/root"] + users.map { "\(root)/\($0)" }.filter { path in
@@ -177,8 +181,8 @@ private func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], servers: [De
 }
 
 // Fixed probes only: no CLI execution and no configuration values are emitted.
-func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [DeviceAgentCLI], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
-    let names = ["codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
+func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [String]? = nil) -> (clis: [DeviceAgentCLI], apps: [DeviceAgentApp], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    let names = ["cursor", "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
     let bins = systemBins + homes.flatMap { ["\($0)/.local/bin", "\($0)/.npm-global/bin", "\($0)/.bun/bin", "\($0)/.cargo/bin", "\($0)/.codex/bin"] }
     let clis = names.filter { name in
         bins.contains { bin in
@@ -187,6 +191,16 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [
             return FileManager.default.isExecutableFile(atPath: path) && attributes?[.type] as? FileAttributeType == .typeRegular
         }
     }.map { DeviceAgentCLI(name: $0) }
+    let appRoots = appRoots ?? (["/Applications", "/System/Applications"] + homes.prefix(65).map { "\($0)/Applications" })
+    let apps = [("cursor", "Cursor.app"), ("codex", "Codex.app")].compactMap { name, bundle -> DeviceAgentApp? in
+        for root in appRoots {
+            var info = stat()
+            if lstat("\(root)/\(bundle)", &info) == 0 && (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) {
+                return DeviceAgentApp(name: name)
+            }
+        }
+        return nil
+    }
 
     let configs: [(String, String, Bool)] = [
         ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
@@ -303,7 +317,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [
         guard parts.count == 3 else { return nil }
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]))
     }
-    return (clis, servers, assets)
+    return (clis, apps, servers, assets)
 }
 
 private func boundedAgentDirectoryEntries(_ path: String) -> [String] {

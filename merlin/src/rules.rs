@@ -68,6 +68,15 @@ pub struct Rule {
     /// Free-form documentation for the pack author; not used by the engine.
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default)]
+    pub approved_alternative: Option<ApprovedAlternative>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedAlternative {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -297,6 +306,27 @@ impl Rules {
             rules.schema_version
         );
         for rule in &rules.rules {
+            if let Some(alternative) = &rule.approved_alternative {
+                let authority = alternative
+                    .url
+                    .strip_prefix("https://")
+                    .and_then(|rest| rest.split('/').next());
+                anyhow::ensure!(
+                    rule.action != Action::Log
+                        && !alternative.name.is_empty()
+                        && alternative.name.trim() == alternative.name
+                        && alternative.name.len() <= 80
+                        && !alternative.name.chars().any(char::is_control)
+                        && alternative.url.len() <= 2048
+                        && !alternative.url.contains('?')
+                        && !alternative.url.contains('#')
+                        && !alternative.url.contains('\\')
+                        && !alternative.url.chars().any(char::is_control)
+                        && authority.is_some_and(|host| !host.is_empty() && !host.contains('@')),
+                    "rule '{}': invalid approved_alternative",
+                    rule.name
+                );
+            }
             for (key, block) in [("match_all", &rule.match_all), ("not", &rule.not)] {
                 if let Some(m) = block {
                     if !m.has_selectors() && m.uid.is_none() {
@@ -358,6 +388,24 @@ impl Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_alternative_is_bounded_and_requires_enforcement() {
+        let base = "rules:\n  - name: block-cursor\n    match:\n      path_basename: Cursor\n    action: block\n    approved_alternative:\n      name: Approved editor\n      url: https://tools.example.com/editor\n";
+        let parsed = Rules::parse(base).unwrap();
+        assert_eq!(
+            parsed.rules[0].approved_alternative.as_ref().unwrap().name,
+            "Approved editor"
+        );
+        assert!(Rules::parse(&base.replace("action: block", "action: log")).is_err());
+        assert!(
+            Rules::parse(&base.replace(
+                "https://tools.example.com/editor",
+                "http://tools.example.com/editor"
+            ))
+            .is_err()
+        );
+    }
 
     fn rule(yaml: &str) -> Rule {
         serde_yaml::from_str(yaml).unwrap()

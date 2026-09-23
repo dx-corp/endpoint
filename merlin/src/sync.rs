@@ -1888,7 +1888,8 @@ fn collect_agent_discovery_from(
     Vec<DeviceAgentAsset>,
 ) {
     const CLIS: &[&str] = &[
-        "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi",
+        "codex", "claude", "cursor", "gemini", "opencode", "aider", "maestro", "amp", "goose",
+        "qwen", "pi",
     ];
     const CONFIGS: &[(&str, &str, bool)] = &[
         ("claude", ".config/Claude/claude_desktop_config.json", false),
@@ -2265,6 +2266,9 @@ mod tests {
         let executable = bin.join("codex");
         fs::write(&executable, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let cursor = bin.join("cursor");
+        fs::write(&cursor, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&cursor, fs::Permissions::from_mode(0o755)).unwrap();
         fs::create_dir_all(home.join(".codex")).unwrap();
         fs::write(
             home.join(".codex/config.toml"),
@@ -2320,9 +2324,14 @@ mod tests {
         let (clis, servers, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
         assert_eq!(
             clis,
-            vec![DeviceAgentCLI {
-                name: "codex".into()
-            }]
+            vec![
+                DeviceAgentCLI {
+                    name: "codex".into()
+                },
+                DeviceAgentCLI {
+                    name: "cursor".into()
+                },
+            ]
         );
         assert_eq!(
             servers,

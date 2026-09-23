@@ -13,7 +13,7 @@ LABEL=com.evalops.merlin
 LAUNCHER=$BASE_DIR/bin/merlin-launcher
 
 usage() {
-  printf '%s\n' "usage: $0 install <source.plist> | status | start | stop" >&2
+  printf '%s\n' "usage: $0 install <source.plist> | status | verify | start | stop" >&2
   exit 64
 }
 
@@ -55,6 +55,28 @@ case "$command" in
       printf '%s\n' 'Deixic Endpoint configuration is not installed.'
     fi
     launchctl print "system/$LABEL" 2>/dev/null | sed -n '1,30p' || true
+    ;;
+  verify)
+    [ "$#" -eq 1 ] || usage
+    pkgutil --pkg-info com.evalops.merlin.sensor >/dev/null 2>&1 || {
+      printf '%s\n' 'Deixic Endpoint package receipt is missing.' >&2; exit 1;
+    }
+    [ -f "$CONFIG_PATH" ] && [ ! -L "$CONFIG_PATH" ] || {
+      printf '%s\n' 'Deixic Endpoint configuration is missing or linked.' >&2; exit 1;
+    }
+    [ "$(stat -f '%Su:%Sg:%Lp' "$CONFIG_PATH")" = 'root:wheel:600' ] || {
+      printf '%s\n' 'Deixic Endpoint configuration ownership or mode is invalid.' >&2; exit 1;
+    }
+    "$LAUNCHER" --validate-config >/dev/null || {
+      printf '%s\n' 'Deixic Endpoint configuration is invalid.' >&2; exit 1;
+    }
+    service_state=$(launchctl print "system/$LABEL" 2>/dev/null) || {
+      printf '%s\n' 'Deixic Endpoint launch daemon is not loaded.' >&2; exit 1;
+    }
+    printf '%s\n' "$service_state" | grep -Eq '^[[:space:]]*state = running$' || {
+      printf '%s\n' 'Deixic Endpoint launch daemon is not running.' >&2; exit 1;
+    }
+    printf '%s\n' 'Deixic Endpoint package, configuration, and launch daemon verified.'
     ;;
   start)
     [ "$#" -eq 1 ] || usage
