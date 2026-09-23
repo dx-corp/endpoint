@@ -221,9 +221,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [
         ]
         for (client, kind, relative, format) in assetDirs {
             let directory = "\(home)/\(relative)"
-            var directoryInfo = stat()
-            guard lstat(directory, &directoryInfo) == 0, (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else { continue }
-            for entry in ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []).sorted().prefix(256) {
+            for entry in boundedAgentDirectoryEntries(directory) {
                 let path = "\(directory)/\(entry)"
                 var info = stat()
                 guard lstat(path, &info) == 0 else { continue }
@@ -306,6 +304,21 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String]) -> (clis: [
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]))
     }
     return (clis, servers, assets)
+}
+
+private func boundedAgentDirectoryEntries(_ path: String) -> [String] {
+    let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+    guard fd >= 0 else { return [] }
+    guard let directory = fdopendir(fd) else { close(fd); return [] }
+    defer { closedir(directory) }
+    var names = [String]()
+    while names.count < 256, let entry = readdir(directory) {
+        let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+        if name != "." && name != ".." { names.append(name) }
+    }
+    return names.sorted()
 }
 
 private func safeAgentAssetName(_ name: String) -> Bool {

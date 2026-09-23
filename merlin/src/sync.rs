@@ -2283,6 +2283,9 @@ mod tests {
             "secret instructions",
         )
         .unwrap();
+        fs::create_dir_all(home.join(".pi/agent")).unwrap();
+        std::os::unix::fs::symlink(home.join(".agents/skills"), home.join(".pi/agent/skills"))
+            .unwrap();
         fs::create_dir_all(home.join(".gemini/extensions/workspace")).unwrap();
         fs::write(
             home.join(".gemini/extensions/workspace/gemini-extension.json"),
@@ -2365,6 +2368,11 @@ mod tests {
             && item.name == "trace"));
         assert!(!assets.iter().any(|item| item.name == "off@marketplace"));
         assert!(!assets.iter().any(|item| item.name == "not-extension"));
+        assert!(
+            !assets
+                .iter()
+                .any(|item| item.client == "pi" && item.name == "review")
+        );
         assert!(!serde_json::to_string(&assets).unwrap().contains("secret"));
         fs::remove_file(home.join(".cursor/mcp.json")).unwrap();
         std::os::unix::fs::symlink(
