@@ -18,6 +18,15 @@ struct RulesTests {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
+    @Test("approved alternative is decoded only for enforcement")
+    func approvedAlternative() throws {
+        let base = "name: block-cursor\nmatch:\n  path_basename: Cursor\naction: block\napproved_alternative:\n  name: Approved editor\n  url: https://tools.example.com/editor\n"
+        let parsed = try rule(base)
+        #expect(parsed.approvedAlternative?.name == "Approved editor")
+        #expect(parsed.approvedAlternative?.url.absoluteString == "https://tools.example.com/editor")
+        #expect(throws: Error.self) { try rule(base.replacingOccurrences(of: "action: block", with: "action: log")) }
+        #expect(throws: Error.self) { try rule(base.replacingOccurrences(of: "https://tools.example.com/editor", with: "http://tools.example.com/editor")) }
+    }
     @Test("cross-loads the Linux repo's rules/block-demo.yaml")
     func blockDemoYaml() throws {
         let path = Self.repoRoot.appendingPathComponent("rules/block-demo.yaml").path

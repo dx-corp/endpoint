@@ -141,9 +141,10 @@ struct Rule: Decodable, Sendable {
     let action: Action
     /// Free-text detection rationale (content packs); ignored by matching.
     let note: String?
+    let approvedAlternative: ApprovedAlternative?
 
     init(from decoder: Decoder) throws {
-        try rejectUnknownKeys(decoder, allowed: ["name", "match", "match_all", "not", "action", "note"], type: "rule")
+        try rejectUnknownKeys(decoder, allowed: ["name", "match", "match_all", "not", "action", "note", "approved_alternative"], type: "rule")
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
         match = try c.decodeIfPresent(Match.self, forKey: .match) ?? Match()
@@ -151,10 +152,15 @@ struct Rule: Decodable, Sendable {
         not = try c.decodeIfPresent(Match.self, forKey: .not)
         action = try c.decode(Action.self, forKey: .action)
         note = try c.decodeIfPresent(String.self, forKey: .note)
+        approvedAlternative = try c.decodeIfPresent(ApprovedAlternative.self, forKey: .approvedAlternative)
+        if approvedAlternative != nil && action == .log {
+            throw DecodingError.dataCorruptedError(forKey: .approvedAlternative, in: c, debugDescription: "approved_alternative requires an enforcement action")
+        }
     }
     private enum CodingKeys: String, CodingKey {
         case name, match, action, note, not
         case matchAll = "match_all"
+        case approvedAlternative = "approved_alternative"
     }
 
     /// Both blocks count: a hash under `match_all` needs the executable
@@ -178,7 +184,30 @@ struct Rule: Decodable, Sendable {
         not = nil
         self.action = action
         note = nil
+        approvedAlternative = nil
     }
+}
+
+struct ApprovedAlternative: Decodable, Sendable {
+    let name: String
+    let url: URL
+
+    init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: ["name", "url"], type: "approved_alternative")
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try c.decode(String.self, forKey: .name)
+        let rawURL = try c.decode(String.self, forKey: .url)
+        guard !name.isEmpty, name == name.trimmingCharacters(in: .whitespacesAndNewlines), name.utf8.count <= 80,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              rawURL.utf8.count <= 2048, let url = URL(string: rawURL), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw DecodingError.dataCorruptedError(forKey: .url, in: c, debugDescription: "approved_alternative requires a name and credential-free HTTPS URL")
+        }
+        self.name = name
+        self.url = url
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, url }
 }
 
 struct Match: Decodable, Sendable {
