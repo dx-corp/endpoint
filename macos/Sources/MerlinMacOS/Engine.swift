@@ -115,6 +115,23 @@ struct Engine: Sendable {
         action == .block && !canBlock ? .kill : action
     }
 
+    /// A tied enforcing rule with no guidance must not hide another rule's
+    /// configured alternative. Resolve conflicting guidance independently of
+    /// policy file order, without changing which rules enforce or get logged.
+    private func approvedAlternative(from enforcedRules: [Rule]) -> ApprovedAlternative? {
+        let candidates = enforcedRules.compactMap { rule -> (name: String, alternative: ApprovedAlternative)? in
+            guard let alternative = rule.approvedAlternative else { return nil }
+            return (rule.name, alternative)
+        }
+        return candidates.min { lhs, rhs in
+            if lhs.name != rhs.name { return lhs.name < rhs.name }
+            if lhs.alternative.name != rhs.alternative.name {
+                return lhs.alternative.name < rhs.alternative.name
+            }
+            return lhs.alternative.url.absoluteString < rhs.alternative.url.absoluteString
+        }?.alternative
+    }
+
     /// Only hash at the AUTH point when some block rule selects on sha256 —
     /// hashing every executed binary system-wide would be wasted work
     /// otherwise (same policy as the Linux fanotify monitor).
@@ -163,9 +180,7 @@ struct Engine: Sendable {
             sha256: sha256, cdhash: cdhash, matchedRules: matched,
             pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec
         ))
-        if let rule = matchedRules.first {
-            onEnforcement(.blocked, rule.approvedAlternative)
-        }
+        onEnforcement(.blocked, approvedAlternative(from: matchedRules))
         return Verdict(allow: false, matched: matched)
     }
 
@@ -278,8 +293,9 @@ struct Engine: Sendable {
                 pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec,
                 viaSuspend: killedViaSuspend ? true : nil
             ))
-            if let rule = matched.first(where: { killed.contains($0.name) }) {
-                onEnforcement(.stopped, rule.approvedAlternative)
+            let enforcingRules = matched.filter { effective($0.action) == .kill && killed.contains($0.name) }
+            if !enforcingRules.isEmpty {
+                onEnforcement(.stopped, approvedAlternative(from: enforcingRules))
             }
         }
     }

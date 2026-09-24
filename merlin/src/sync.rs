@@ -1932,6 +1932,8 @@ fn collect_project_agent_discovery(
         ("claude", ".claude/settings.json", false),
         ("cursor", ".cursor/mcp.json", false),
         ("codex", ".codex/config.toml", true),
+        ("opencode", ".opencode/opencode.json", false),
+        ("agents", ".agents/mcp.json", false),
     ];
     const ASSETS: &[(&str, &str, &str, &str)] = &[
         ("agents", "skill", ".agents/skills", "skill"),
@@ -1999,6 +2001,8 @@ fn collect_project_agent_discovery(
                 }
                 let entries = if *is_toml {
                     codex_mcp_entries(&body)
+                } else if *client == "opencode" {
+                    json_mcp_entries(&body, &["mcp"])
                 } else {
                     json_mcp_entries(&body, &["mcpServers", "servers"])
                 };
@@ -2302,7 +2306,7 @@ fn collect_agent_discovery_from(
                 json_mcp_entries(&body, &["mcpServers", "servers"])
             };
             for (name, transport) in entries {
-                if name.len() <= 128 && !name.chars().any(char::is_control) {
+                if safe_agent_asset_name(&name) {
                     servers.insert(DeviceMCPServer {
                         client: (*client).into(),
                         name,
@@ -2551,13 +2555,13 @@ mod tests {
         fs::create_dir_all(home.join(".codex")).unwrap();
         fs::write(
             home.join(".codex/config.toml"),
-            "[mcp_servers.github]\nurl = 'https://secret.example'\n",
+            "[mcp_servers.github]\nurl = 'https://secret.example'\n[mcp_servers.\"/Users/private/work\"]\ncommand = 'secret'\n",
         )
         .unwrap();
         fs::create_dir_all(home.join(".cursor")).unwrap();
         fs::write(
             home.join(".cursor/mcp.json"),
-            r#"{"mcpServers":{"docs":{"command":"secret"}}}"#,
+            r#"{"mcpServers":{"docs":{"command":"secret"},"https://private.example/mcp":{"url":"secret"},"C:\\Users\\private":{"command":"secret"}}}"#,
         )
         .unwrap();
         fs::create_dir_all(home.join(".agents/skills/review")).unwrap();
@@ -2678,6 +2682,9 @@ mod tests {
         );
         let serialized = serde_json::to_string(&servers).unwrap();
         assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("/Users/private/work"));
+        assert!(!serialized.contains("https://private.example/mcp"));
+        assert!(!serialized.contains("C:\\\\Users"));
         assert!(
             assets
                 .iter()
@@ -2734,6 +2741,8 @@ mod tests {
             std::env::temp_dir().join(format!("merlin-project-discovery-{}", std::process::id()));
         let project = root.join("customer-private");
         fs::create_dir_all(project.join(".cursor")).unwrap();
+        fs::create_dir_all(project.join(".opencode")).unwrap();
+        fs::create_dir_all(project.join(".agents")).unwrap();
         fs::create_dir_all(project.join(".claude/skills/review")).unwrap();
         fs::create_dir_all(project.join(".maestro/plugins/audit")).unwrap();
         fs::write(
@@ -2748,6 +2757,16 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            project.join(".opencode/opencode.json"),
+            r#"{"mcp":{"code-search":{"url":"https://private.example/mcp"}},"secret":"private-secret"}"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join(".agents/mcp.json"),
+            r#"{"mcpServers":{"agent-search":{"command":"private-secret"}}}"#,
+        )
+        .unwrap();
+        fs::write(
             project.join(".claude/skills/review/SKILL.md"),
             "private-secret",
         )
@@ -2759,6 +2778,17 @@ mod tests {
         assert!(servers.iter().any(|item| item.name == "pluginsearch"
             && item.source == "project/.maestro/plugins/*/mcp.json"
             && item.transport == "remote"));
+        assert!(servers.iter().any(|item| item.client == "opencode"
+            && item.name == "code-search"
+            && item.source == "project/.opencode/opencode.json"
+            && item.transport == "remote"));
+        assert!(servers.iter().any(|item| item.client == "agents"
+            && item.name == "agent-search"
+            && item.source == "project/.agents/mcp.json"
+            && item.transport == "stdio"));
+        assert!(assets.iter().any(|item| item.client == "opencode"
+            && item.kind == "config"
+            && item.source == "project/.opencode/opencode.json"));
         assert!(
             assets
                 .iter()

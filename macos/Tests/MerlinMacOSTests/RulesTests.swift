@@ -66,6 +66,76 @@ struct RulesTests {
         #expect(store.snapshot().enforcement?.action == .stopped)
         #expect(store.snapshot().enforcement?.approvedName == "Approved agent")
     }
+
+    @Test("tied block rules select configured guidance regardless of policy order")
+    func tiedBlockGuidance() throws {
+        let plain = try rule("name: first\nmatch:\n  path_basename: Cursor\naction: block\n")
+        let guided = try rule("name: second\nmatch:\n  path_basename: Cursor\naction: block\napproved_alternative:\n  name: Approved editor\n  url: https://tools.example.com/editor\n")
+        let conflicting = try rule("name: third\nmatch:\n  path_basename: Cursor\naction: block\napproved_alternative:\n  name: Other editor\n  url: https://tools.example.com/other\n")
+        for ordered in [[plain, conflicting, guided], [guided, plain, conflicting], [conflicting, guided, plain]] {
+            let store = LocalStatusStore()
+            var engine = Engine(rules: Rules(rules: ordered),
+                                spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                                canBlock: true, selfPID: 42_425, ownTeamId: nil)
+            engine.onEnforcement = { action, alternative in
+                store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+            }
+            let verdict = engine.authVerdict(pid: 42_424, uid: 501, path: "/tmp/Cursor", sha256: nil, cdhash: nil)
+            #expect(!verdict.allow)
+            #expect(verdict.matched == ordered.map(\.name))
+            #expect(store.snapshot().enforcement?.approvedName == "Approved editor")
+            #expect(store.snapshot().enforcement?.approvedURL?.absoluteString == "https://tools.example.com/editor")
+        }
+
+        // A lower-specificity alternative cannot override the enforcing rule.
+        let higher = try rule("name: hash-only\nmatch:\n  sha256: abc\naction: block\n")
+        let store = LocalStatusStore()
+        var engine = Engine(rules: Rules(rules: [guided, higher]),
+                            spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                            canBlock: true, selfPID: 42_425, ownTeamId: nil)
+        engine.onEnforcement = { action, alternative in
+            store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
+        let verdict = engine.authVerdict(pid: 42_424, uid: 501, path: "/tmp/Cursor", sha256: "abc", cdhash: nil)
+        #expect(verdict.matched == ["hash-only"])
+        #expect(store.snapshot().enforcement?.action == .blocked)
+        #expect(store.snapshot().enforcement?.approvedName == nil)
+    }
+
+    @Test("tied kill rules select guidance only after successful enforcement")
+    func tiedKillGuidance() throws {
+        let plain = try rule("name: first\nmatch:\n  path_basename: claude\naction: kill\n")
+        let guided = try rule("name: second\nmatch:\n  path_basename: claude\naction: kill\napproved_alternative:\n  name: Approved agent\n  url: https://tools.example.com/agent\n")
+        let conflicting = try rule("name: third\nmatch:\n  path_basename: claude\naction: kill\napproved_alternative:\n  name: Other agent\n  url: https://tools.example.com/other\n")
+        let identity = ProcessIdentity(startSec: 1, startUsec: 1)
+        for ordered in [[plain, conflicting, guided], [guided, plain, conflicting], [conflicting, guided, plain]] {
+            let store = LocalStatusStore()
+            var engine = Engine(rules: Rules(rules: ordered),
+                                spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                                canBlock: false, killImpl: { _ in 0 }, selfPID: 42_425,
+                                ownTeamId: nil, processIdentity: { _ in identity })
+            engine.onEnforcement = { action, alternative in
+                store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+            }
+            engine.handleExec(pid: 42_424, ppid: nil, uid: 501, comm: "claude", exe: "/tmp/claude",
+                              cmdline: nil, sha256: nil, cdhash: nil, identity: identity)
+            #expect(store.snapshot().enforcement?.action == .stopped)
+            #expect(store.snapshot().enforcement?.approvedName == "Approved agent")
+        }
+
+        let store = LocalStatusStore()
+        var engine = Engine(rules: Rules(rules: [plain, guided]),
+                            spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                            canBlock: false, killImpl: { _ in -1 }, selfPID: 42_425,
+                            ownTeamId: nil, processIdentity: { _ in identity })
+        engine.onEnforcement = { action, alternative in
+            store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
+        engine.handleExec(pid: 42_424, ppid: nil, uid: 501, comm: "claude", exe: "/tmp/claude",
+                          cmdline: nil, sha256: nil, cdhash: nil, identity: identity)
+        #expect(store.snapshot().enforcement == nil)
+    }
+
     @Test("cross-loads the Linux repo's rules/block-demo.yaml")
     func blockDemoYaml() throws {
         let path = Self.repoRoot.appendingPathComponent("rules/block-demo.yaml").path

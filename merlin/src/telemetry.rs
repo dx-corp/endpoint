@@ -362,6 +362,7 @@ fn handle_exec(
     };
     let mut logged = Vec::new();
     let mut killed = Vec::new();
+    let mut killed_rules = Vec::new();
     for rule in &rules.rules {
         if !rule.matches(&ctx) {
             continue;
@@ -387,7 +388,10 @@ fn handle_exec(
                     continue;
                 };
                 match kill_pid_if_same(pid, start_time) {
-                    Ok(()) => killed.push(rule.name.clone()),
+                    Ok(()) => {
+                        killed.push(rule.name.clone());
+                        killed_rules.push(rule);
+                    }
                     Err(e) => log::warn!("kill({pid}) failed: {e}"),
                 }
             }
@@ -449,11 +453,13 @@ fn handle_exec(
     if !killed.is_empty() {
         log::info!("SIGKILL pid={pid:?} comm={comm} rules={killed:?}");
         if let Some(hook) = alert {
-            hook.fire(crate::alert::AlertHook::alert(
+            hook.fire(crate::alert::AlertHook::enforcement_alert(
                 "kill",
                 &killed,
                 &comm,
                 exe.as_deref(),
+                &killed_rules,
+                Action::Kill,
             ));
         }
         spool::try_send(

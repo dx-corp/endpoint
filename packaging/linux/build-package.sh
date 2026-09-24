@@ -40,6 +40,7 @@ install -m 644 "$SCRIPT_DIR/merlin.service" "$ROOT/payload/usr/lib/systemd/syste
 install -m 600 "$SCRIPT_DIR/merlin.env.example" "$ROOT/payload/etc/merlin/merlin.env.example"
 install -m 600 "$REPO_DIR/rules/content/linux-lolbins.yaml" "$ROOT/payload/etc/merlin/rules.yaml"
 install -m 755 "$SCRIPT_DIR/install.sh" "$ROOT/install.sh"
+install -m 755 "$SCRIPT_DIR/verify-install.sh" "$ROOT/verify-install.sh"
 install -m 755 "$SCRIPT_DIR/uninstall.sh" "$ROOT/uninstall.sh"
 
 ARCHIVE=$OUTPUT_DIR/$NAME.tar.gz
