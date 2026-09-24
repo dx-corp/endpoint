@@ -10,5 +10,8 @@
   <string>replace-with-64-hex-character-device-token</string>
   <key>PolicyPublicKeys</key>
   <string>replace-with-64-hex-character-ed25519-public-key</string>
+  <!-- Optional: JSON string of admin-approved roots; no automatic home scans. -->
+  <key>AgentWorkspaceRootsJSON</key>
+  <string>["/Users/Shared/Projects"]</string>
 </dict>
 </plist>

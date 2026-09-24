@@ -177,6 +177,9 @@ struct SyncTests {
         #expect(discovered.apps.map(\.name) == ["cursor"])
         #expect(discovered.servers.map { "\($0.client):\($0.name)" } == ["amp:db", "codex:github", "cursor:docs", "gemini:search", "maestro:managed", "maestro:pluginsearch"])
         #expect(discovered.servers.contains { $0.client == "codex" && $0.source == ".codex/config.toml" })
+        #expect(discovered.servers.contains { $0.client == "codex" && $0.transport == "remote" })
+        #expect(discovered.servers.contains { $0.client == "cursor" && $0.transport == "stdio" })
+        #expect(discovered.servers.contains { $0.client == "gemini" && $0.transport == "unknown" })
         #expect(discovered.servers.contains { $0.client == "gemini" && $0.source == ".gemini/extensions/*/gemini-extension.json" })
         #expect(discovered.servers.contains { $0.client == "maestro" && $0.name == "managed" && $0.source == ".maestro/config.toml" })
         #expect(discovered.servers.contains { $0.client == "maestro" && $0.name == "pluginsearch" && $0.source == ".maestro/plugins/*/mcp.json" })
@@ -197,6 +200,32 @@ struct SyncTests {
         try FileManager.default.removeItem(atPath: home + "/.cursor/mcp.json")
         try FileManager.default.createSymbolicLink(atPath: home + "/.cursor/mcp.json", withDestinationPath: home + "/.codex/config.toml")
         #expect(collectMacAgentDiscovery(homes: [home], systemBins: []).servers.count == 5)
+    }
+
+    @Test("project discovery reports fixed labels and ignores linked configs")
+    func projectAgentDiscovery() throws {
+        let root = NSTemporaryDirectory() + "merlin-project-discovery-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let project = root + "/customer-private"
+        try FileManager.default.createDirectory(atPath: project + "/.cursor", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: project + "/.claude/skills/review", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: project + "/.maestro/plugins/audit", withIntermediateDirectories: true)
+        try #"{"mcpServers":{"pluginsearch":{"url":"https://private.example/mcp"}}}"#.write(toFile: project + "/.maestro/plugins/audit/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false},"secret":"private-secret"}"#.write(toFile: project + "/.claude/settings.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"docs":{"command":"private-secret"}}}"#.write(toFile: project + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try "private-secret".write(toFile: project + "/.claude/skills/review/SKILL.md", atomically: true, encoding: .utf8)
+        let discovered = collectMacProjectAgentDiscovery(roots: [root])
+        #expect(discovered.servers.contains { $0.name == "docs" && $0.source == "project/.cursor/mcp.json" && $0.transport == "stdio" })
+        #expect(discovered.servers.contains { $0.name == "pluginsearch" && $0.source == "project/.maestro/plugins/*/mcp.json" && $0.transport == "remote" })
+        #expect(discovered.assets.contains { $0.name == "review" && $0.source == "project/.claude/skills" })
+        #expect(discovered.assets.contains { $0.name == "audit@marketplace" && $0.kind == "plugin" && $0.source == "project/.claude/settings.json" })
+        #expect(discovered.assets.contains { $0.name == "audit" && $0.kind == "plugin" && $0.source == "project/.maestro/plugins" })
+        #expect(!discovered.assets.contains { $0.name == "off@marketplace" })
+        let payload = String(decoding: try JSONEncoder().encode(discovered.servers), as: UTF8.self)
+        #expect(!payload.contains("customer-private") && !payload.contains("private-secret"))
+        try FileManager.default.removeItem(atPath: project + "/.cursor/mcp.json")
+        try FileManager.default.createSymbolicLink(atPath: project + "/.cursor/mcp.json", withDestinationPath: project + "/.claude/skills/review/SKILL.md")
+        #expect(!collectMacProjectAgentDiscovery(roots: [root]).servers.contains { $0.name == "docs" })
     }
 
     @Test("host id is a 16-char hash, not the raw UUID")

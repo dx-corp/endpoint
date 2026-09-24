@@ -4,6 +4,7 @@
 //   handleExec   ≈ telemetry handle_exec (log/kill rules + spool)
 
 import Foundation
+import MerlinClientCore
 
 /// Hot-swappable rules container: the sync client replaces the ruleset
 /// atomically; readers see a consistent snapshot (AGENTS.md — a half-
@@ -56,6 +57,7 @@ struct Engine: Sendable {
     /// enrichment point (bounded work per event).
     var suspendHashMaxBytes: Int64 = 64 << 20
     let signingCache = SigningInfoCache()
+    var onEnforcement: @Sendable (LocalEnforcementAction, ApprovedAlternative?) -> Void = { _, _ in }
 
     /// Convenience for existing call sites/tests: wraps a static ruleset
     /// (no hot-reload needed).
@@ -148,8 +150,8 @@ struct Engine: Sendable {
             cdhash: cdhash,
             teamId: teamId
         )
-        let matched = mostSpecific(rules.rules.filter { $0.action == .block && $0.matches(ctx) })
-            .map(\.name)
+        let matchedRules = mostSpecific(rules.rules.filter { $0.action == .block && $0.matches(ctx) })
+        let matched = matchedRules.map(\.name)
         if matched.isEmpty { return Verdict(allow: true, matched: []) }
         if isFailsafe(pid: pid, teamId: teamId) {
             merlinLog("warn", "failsafe: block rules \(matched) matched pid \(pid) (\(path)) but it is protected (launchd/self/own team)")
@@ -161,6 +163,9 @@ struct Engine: Sendable {
             sha256: sha256, cdhash: cdhash, matchedRules: matched,
             pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec
         ))
+        if let rule = matchedRules.first {
+            onEnforcement(.blocked, rule.approvedAlternative)
+        }
         return Verdict(allow: false, matched: matched)
     }
 
@@ -273,6 +278,9 @@ struct Engine: Sendable {
                 pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec,
                 viaSuspend: killedViaSuspend ? true : nil
             ))
+            if let rule = matched.first(where: { killed.contains($0.name) }) {
+                onEnforcement(.stopped, rule.approvedAlternative)
+            }
         }
     }
 

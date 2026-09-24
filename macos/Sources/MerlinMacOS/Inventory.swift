@@ -46,7 +46,7 @@ struct DeviceInventory: Encodable, Sendable {
 
 struct DeviceAgentCLI: Encodable, Sendable { let name: String }
 struct DeviceAgentApp: Encodable, Sendable { let name: String }
-struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String; let source: String }
+struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String; let source: String; let transport: String }
 struct DeviceAgentAsset: Encodable, Sendable { let client: String; let kind: String; let name: String; let source: String }
 
 struct DevicePackage: Encodable, Sendable {
@@ -177,7 +177,109 @@ private func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], apps: [Devic
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
-    return collectMacAgentDiscovery(homes: homes, systemBins: ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"])
+    let base = collectMacAgentDiscovery(homes: homes, systemBins: ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"])
+    let project = collectMacProjectAgentDiscovery(roots: configuredMacAgentWorkspaceRoots())
+    let servers = Array(Set(base.servers.map { "\($0.client)\u{0}\($0.name)\u{0}\($0.source)\u{0}\($0.transport)" } + project.servers.map { "\($0.client)\u{0}\($0.name)\u{0}\($0.source)\u{0}\($0.transport)" })).sorted().prefix(128).compactMap { entry -> DeviceMCPServer? in
+        let parts = entry.split(separator: "\u{0}")
+        guard parts.count == 4 else { return nil }
+        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]), source: String(parts[2]), transport: String(parts[3]))
+    }
+    let assets = Array(Set(base.assets.map { "\($0.client)\u{0}\($0.kind)\u{0}\($0.name)\u{0}\($0.source)" } + project.assets.map { "\($0.client)\u{0}\($0.kind)\u{0}\($0.name)\u{0}\($0.source)" })).sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
+        let parts = entry.split(separator: "\u{0}")
+        guard parts.count == 4 else { return nil }
+        return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
+    }
+    return (base.clis, base.apps, servers, assets)
+}
+
+private func configuredMacAgentWorkspaceRoots() -> [String] {
+    guard let raw = ProcessInfo.processInfo.environment["MERLIN_AGENT_WORKSPACE_ROOTS"], raw.utf8.count <= 4096,
+          let data = raw.data(using: .utf8), let paths = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+    return Array(paths.filter { path in
+        path.hasPrefix("/") && path.utf8.count <= 512 && !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." })
+    }.prefix(8))
+}
+
+private func macProjectDirectory(_ path: String) -> Bool {
+    var info = stat()
+    return lstat(path, &info) == 0 && (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+}
+
+func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    let configs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true)]
+    let assetDirs: [(String, String, String, String)] = [("agents", "skill", ".agents/skills", "skill"), ("claude", "skill", ".claude/skills", "skill"), ("claude", "agent", ".claude/agents", "md"), ("claude", "plugin", ".claude/plugins", "plugin"), ("codex", "skill", ".codex/skills", "skill"), ("cursor", "skill", ".cursor/skills", "skill"), ("maestro", "plugin", ".maestro/plugins", "plugin"), ("maestro", "plugin", ".composer/plugins", "plugin")]
+    var found = Set<String>()
+    var assets = Set<String>()
+    var pluginConfigReads = 0
+    for root in roots.prefix(8) where macProjectDirectory(root) {
+        let children = boundedAgentDirectoryEntries(root).filter { macProjectDirectory("\(root)/\($0)") }.prefix(32).map { "\(root)/\($0)" }
+        for project in [root] + children {
+            for (client, relative, isTOML) in configs {
+                let path = "\(project)/\(relative)"
+                if relative.contains("/"), !macProjectDirectory("\(project)/\(relative.split(separator: "/")[0])") { continue }
+                guard let data = readAgentConfigNoFollow(path) else { continue }
+                assets.insert("\(client)\u{0}config\u{0}project\u{0}project/\(relative)")
+                if relative == ".claude/settings.json",
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let plugins = object["enabledPlugins"] as? [String: Bool] {
+                    for (name, enabled) in plugins where enabled && safeAgentAssetName(name) {
+                        assets.insert("claude\u{0}plugin\u{0}\(name)\u{0}project/.claude/settings.json")
+                    }
+                }
+                let entries: [(String, String)]
+                if isTOML {
+                    let body = String(data: data, encoding: .utf8) ?? ""
+                    entries = tomlMCPEntries(body)
+                } else {
+                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    entries = mcpEntries(object?["mcpServers"] ?? object?["servers"])
+                }
+                for (name, transport) in entries where safeAgentAssetName(name) {
+                    found.insert("\(client)\u{0}\(name)\u{0}project/\(relative)\u{0}\(transport)")
+                }
+            }
+            for (client, kind, relative, format) in assetDirs {
+                let parts = relative.split(separator: "/")
+                guard parts.count == 2, macProjectDirectory("\(project)/\(parts[0])") else { continue }
+                let directory = "\(project)/\(relative)"
+                for entry in boundedAgentDirectoryEntries(directory) {
+                    let path = "\(directory)/\(entry)"
+                    var info = stat()
+                    guard lstat(path, &info) == 0 else { continue }
+                    let type = info.st_mode & mode_t(S_IFMT)
+                    let name: String?
+                    if format == "skill" && type == mode_t(S_IFDIR) {
+                        var manifest = stat()
+                        name = lstat("\(path)/SKILL.md", &manifest) == 0 && (manifest.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) ? entry : nil
+                    } else if format == "plugin" && type == mode_t(S_IFDIR) {
+                        name = entry
+                    } else if format == "md" && type == mode_t(S_IFREG) && entry.hasSuffix(".md") {
+                        name = String(entry.dropLast(3))
+                    } else { name = nil }
+                    if let name, safeAgentAssetName(name) {
+                        assets.insert("\(client)\u{0}\(kind)\u{0}\(name)\u{0}project/\(relative)")
+                        if client == "maestro" && kind == "plugin" {
+                            for config in ["mcp.json", ".mcp.json"] where pluginConfigReads < 32 {
+                                pluginConfigReads += 1
+                                guard let data = readAgentConfigNoFollow("\(path)/\(config)") else { continue }
+                                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                                for (server, transport) in mcpEntries(object?["mcpServers"] ?? object?["servers"]) where safeAgentAssetName(server) {
+                                    found.insert("maestro\u{0}\(server)\u{0}project/\(relative)/*/\(config)\u{0}\(transport)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (found.sorted().prefix(128).compactMap { entry in
+        let parts = entry.split(separator: "\u{0}")
+        return parts.count == 4 ? DeviceMCPServer(client: String(parts[0]), name: String(parts[1]), source: String(parts[2]), transport: String(parts[3])) : nil
+    }, assets.sorted().prefix(128).compactMap { entry in
+        let parts = entry.split(separator: "\u{0}")
+        return parts.count == 4 ? DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3])) : nil
+    })
 }
 
 // Fixed probes only: no CLI execution and no configuration values are emitted.
@@ -265,8 +367,8 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                     assetNames.insert("\(client)\u{0}\(kind)\u{0}\(name)\u{0}\(relative)")
                     if client == "gemini" && kind == "extension", let data = readAgentConfigNoFollow("\(path)/gemini-extension.json") {
                         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                        for server in ((object?["mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []) where safeAgentAssetName(server) {
-                            found.insert("gemini\u{0}\(server)\u{0}.gemini/extensions/*/gemini-extension.json")
+                        for (server, transport) in mcpEntries(object?["mcpServers"]) where safeAgentAssetName(server) {
+                            found.insert("gemini\u{0}\(server)\u{0}.gemini/extensions/*/gemini-extension.json\u{0}\(transport)")
                         }
                     }
                     if client == "maestro" && kind == "plugin" {
@@ -274,8 +376,8 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                             guard let data = readAgentConfigNoFollow("\(path)/\(config)") else { continue }
                             pluginConfigReads += 1
                             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                            for server in ((object?["mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []) where safeAgentAssetName(server) {
-                                found.insert("maestro\u{0}\(server)\u{0}\(relative)/*/\(config)")
+                            for (server, transport) in mcpEntries(object?["mcpServers"]) where safeAgentAssetName(server) {
+                                found.insert("maestro\u{0}\(server)\u{0}\(relative)/*/\(config)\u{0}\(transport)")
                             }
                         }
                     }
@@ -295,30 +397,22 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 }
                 continue
             }
-            let names: [String]
+            let entries: [(String, String)]
             if client == "amp" {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                names = (object?["amp.mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []
+                entries = mcpEntries(object?["amp.mcpServers"])
             } else if client == "opencode" {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                names = (object?["mcp"] as? [String: Any]).map { Array($0.keys) } ?? []
+                entries = mcpEntries(object?["mcp"])
             } else if isTOML {
                 let body = String(data: data, encoding: .utf8) ?? ""
-                names = body.split(separator: "\n").compactMap { line in
-                    let section = line.trimmingCharacters(in: .whitespaces)
-                    guard section.hasPrefix("[mcp_servers."), section.hasSuffix("]") else { return nil }
-                    let raw = String(section.dropFirst("[mcp_servers.".count).dropLast())
-                    let quoted = raw.hasPrefix("\"") && raw.hasSuffix("\"") && raw.count >= 2
-                    let name = quoted ? String(raw.dropFirst().dropLast()) : raw
-                    return name.isEmpty || name.contains(where: { "[]".contains($0) }) || (!quoted && name.contains(".")) ? nil : name
-                }
+                entries = tomlMCPEntries(body)
             } else {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                let entries = (object?["mcpServers"] ?? object?["servers"]) as? [String: Any]
-                names = entries.map { Array($0.keys) } ?? []
+                entries = mcpEntries(object?["mcpServers"] ?? object?["servers"])
             }
-            for name in names where name.utf8.count <= 128 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
-                found.insert("\(client)\u{0}\(name)\u{0}\(relative)")
+            for (name, transport) in entries where name.utf8.count <= 128 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+                found.insert("\(client)\u{0}\(name)\u{0}\(relative)\u{0}\(transport)")
                 if found.count >= 128 { break }
             }
             if found.count >= 128 { break }
@@ -327,8 +421,8 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
     }
     let servers = found.sorted().prefix(128).compactMap { entry -> DeviceMCPServer? in
         let parts = entry.split(separator: "\u{0}")
-        guard parts.count == 3 else { return nil }
-        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]), source: String(parts[2]))
+        guard parts.count == 4 else { return nil }
+        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]), source: String(parts[2]), transport: String(parts[3]))
     }
     let assets = assetNames.sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
         let parts = entry.split(separator: "\u{0}")
@@ -336,6 +430,51 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
     }
     return (clis, apps, servers, assets)
+}
+
+private func mcpEntries(_ raw: Any?) -> [(String, String)] {
+    guard let definitions = raw as? [String: Any] else { return [] }
+    return definitions.map { name, rawDefinition in
+        let definition = rawDefinition as? [String: Any] ?? [:]
+        let hasURL = ["url", "httpUrl", "http_url"].contains { definition[$0] is String }
+        let hasCommand = definition["command"] is String
+        let transport = hasURL == hasCommand ? "unknown" : (hasURL ? "remote" : "stdio")
+        return (name, transport)
+    }
+}
+
+private func tomlMCPEntries(_ body: String) -> [(String, String)] {
+    var entries: [(String, String)] = []
+    var name: String?
+    var hasURL = false
+    var hasCommand = false
+    func finish() {
+        if let name {
+            entries.append((name, hasURL == hasCommand ? "unknown" : (hasURL ? "remote" : "stdio")))
+        }
+    }
+    for line in body.split(separator: "\n") {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("[") && text.hasSuffix("]") {
+            finish()
+            name = nil
+            hasURL = false
+            hasCommand = false
+            if text.hasPrefix("[mcp_servers.") {
+                let raw = String(text.dropFirst("[mcp_servers.".count).dropLast())
+                let quoted = raw.hasPrefix("\"") && raw.hasSuffix("\"") && raw.count >= 2
+                let candidate = quoted ? String(raw.dropFirst().dropLast()) : raw
+                if !candidate.isEmpty && !candidate.contains(where: { "[]".contains($0) }) && (quoted || !candidate.contains(".")) {
+                    name = candidate
+                }
+            }
+        } else if name != nil, let key = text.split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) {
+            if key == "url" || key == "http_url" { hasURL = true }
+            if key == "command" { hasCommand = true }
+        }
+    }
+    finish()
+    return entries
 }
 
 private func boundedAgentDirectoryEntries(_ path: String) -> [String] {

@@ -32,6 +32,9 @@ struct EndpointDetailView: View {
                     EndpointSessionView(session: session).padding(12)
                 }
                 if let status = model.status {
+                    if let notice = status.enforcement {
+                        GroupBox { EnforcementNoticeView(notice: notice).padding(12) }
+                    }
                     reportingSection(status)
                     TimelineView(.periodic(from: .now, by: 15)) { context in
                         checksSection(status, stale: status.isStale(at: context.date) || !status.collectorRunning)
@@ -104,6 +107,30 @@ struct EndpointDetailView: View {
                 }
             }
         }
+    }
+}
+
+struct EnforcementNoticeView: View {
+    let notice: LocalEnforcementNotice
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(notice.action == .blocked ? "App blocked by policy" : "App stopped by policy",
+                  systemImage: "exclamationmark.shield.fill")
+                .font(.headline)
+            Text("Deixic Endpoint applied your organization's device policy at \(notice.occurredAt.formatted(date: .abbreviated, time: .shortened)).")
+                .font(.callout)
+            if let name = notice.approvedName, let url = notice.approvedURL {
+                Link("Use approved tool: \(name)", destination: url)
+                    .font(.callout)
+                Text("Your administrator configured this alternative.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Contact your administrator for an approved alternative.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

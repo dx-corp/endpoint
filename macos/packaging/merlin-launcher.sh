@@ -39,6 +39,7 @@ validate_config() {
   MERLIN_DEVICE_ID=$(plist_value DeviceID) || die "configuration is missing DeviceID"
   MERLIN_DEVICE_TOKEN=$(plist_value DeviceToken) || die "configuration is missing DeviceToken"
   MERLIN_POLICY_PUBLIC_KEYS=$(plist_value PolicyPublicKeys) || die "configuration is missing PolicyPublicKeys"
+  MERLIN_AGENT_WORKSPACE_ROOTS=$(plist_value AgentWorkspaceRootsJSON 2>/dev/null || true)
 
   case "$SYNC_URL" in
     https://*) ;;
@@ -63,7 +64,8 @@ validate_config() {
   done
   IFS=$old_ifs
 
-  export MERLIN_DEVICE_ID MERLIN_DEVICE_TOKEN MERLIN_POLICY_PUBLIC_KEYS
+  [ "${#MERLIN_AGENT_WORKSPACE_ROOTS}" -le 4096 ] || die "AgentWorkspaceRootsJSON exceeds 4096 bytes"
+  export MERLIN_DEVICE_ID MERLIN_DEVICE_TOKEN MERLIN_POLICY_PUBLIC_KEYS MERLIN_AGENT_WORKSPACE_ROOTS
 }
 
 validate_config

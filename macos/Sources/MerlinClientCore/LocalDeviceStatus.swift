@@ -23,6 +23,41 @@ public struct LocalPostureCheck: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+public enum LocalEnforcementAction: String, Codable, Sendable {
+    case blocked, stopped
+}
+
+/// Display-only guidance for the most recent local enforcement decision.
+/// The collector sends no process path, command line, or rule payload across IPC.
+public struct LocalEnforcementNotice: Codable, Sendable, Equatable {
+    public let action: LocalEnforcementAction
+    public let occurredAt: Date
+    public let approvedName: String?
+    public let approvedURL: URL?
+
+    public init(action: LocalEnforcementAction, occurredAt: Date, approvedName: String?, approvedURL: URL?) {
+        self.action = action
+        self.occurredAt = occurredAt
+        self.approvedName = approvedName
+        self.approvedURL = approvedURL
+    }
+
+    public func isRecent(at now: Date = Date()) -> Bool {
+        (0..<3600).contains(now.timeIntervalSince(occurredAt))
+    }
+
+    fileprivate var isValid: Bool {
+        guard occurredAt.timeIntervalSince1970.isFinite,
+              (approvedName == nil) == (approvedURL == nil) else { return false }
+        guard let approvedName, let approvedURL else { return true }
+        return !approvedName.isEmpty && approvedName.utf8.count <= 80 &&
+            !approvedName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+            approvedURL.absoluteString.utf8.count <= 2048 && approvedURL.scheme == "https" &&
+            approvedURL.host != nil && approvedURL.user == nil && approvedURL.password == nil &&
+            approvedURL.query == nil && approvedURL.fragment == nil
+    }
+}
+
 /// Non-authoritative local display data. Never use this snapshot for authorization.
 /// No credentials, raw command output, spool records, or user inventory cross IPC.
 public struct LocalDeviceStatus: Codable, Sendable, Equatable {
@@ -39,10 +74,11 @@ public struct LocalDeviceStatus: Codable, Sendable, Equatable {
     public let checks: [LocalPostureCheck]
     /// Latest accepted authenticated heartbeat, not proof the server accepted posture.
     public let lastServerContact: Date?
+    public let enforcement: LocalEnforcementNotice?
 
     public init(observedAt: Date, deviceID: String?, collectorRunning: Bool,
                 enrollment: LocalEnrollmentState, posture: LocalPostureSummary,
-                checks: [LocalPostureCheck], lastServerContact: Date?) {
+                checks: [LocalPostureCheck], lastServerContact: Date?, enforcement: LocalEnforcementNotice? = nil) {
         self.schemaVersion = 1
         self.observedAt = observedAt
         self.deviceID = deviceID
@@ -51,6 +87,7 @@ public struct LocalDeviceStatus: Codable, Sendable, Equatable {
         self.posture = posture
         self.checks = checks
         self.lastServerContact = lastServerContact
+        self.enforcement = enforcement
     }
 
     public func isStale(at now: Date = Date()) -> Bool {
@@ -66,7 +103,8 @@ public struct LocalDeviceStatus: Codable, Sendable, Equatable {
               result.checks.count == checkIDs.count,
               Set(result.checks.map(\.id)) == Set(checkIDs),
               result.observedAt.timeIntervalSince1970.isFinite,
-              result.lastServerContact?.timeIntervalSince1970.isFinite ?? true else {
+              result.lastServerContact?.timeIntervalSince1970.isFinite ?? true,
+              result.enforcement?.isValid ?? true else {
             throw LocalStatusError.invalidResponse
         }
         return result

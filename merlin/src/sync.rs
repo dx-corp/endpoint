@@ -408,6 +408,7 @@ struct DeviceMCPServer {
     client: String,
     name: String,
     source: String,
+    transport: String,
 }
 
 #[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
@@ -1871,13 +1872,216 @@ fn collect_agent_discovery() -> (
         candidates.sort();
         homes.extend(candidates.into_iter().take(64));
     }
-    collect_agent_discovery_from(
+    let mut discovery = collect_agent_discovery_from(
         &homes,
         &[
             "/usr/local/bin",
             "/usr/bin",
             "/home/linuxbrew/.linuxbrew/bin",
         ],
+    );
+    let roots = configured_agent_workspace_roots();
+    let (project_servers, project_assets) = collect_project_agent_discovery(&roots);
+    discovery.1.extend(project_servers);
+    discovery.1.sort();
+    discovery.1.dedup();
+    discovery.1.truncate(128);
+    discovery.2.extend(project_assets);
+    discovery.2.sort();
+    discovery.2.dedup();
+    discovery.2.truncate(128);
+    discovery
+}
+
+// MDM supplies a JSON array in the root-owned service configuration. No default
+// workspace roots are scanned, and no configured path is sent in inventory.
+fn configured_agent_workspace_roots() -> Vec<PathBuf> {
+    let Ok(raw) = std::env::var("MERLIN_AGENT_WORKSPACE_ROOTS") else {
+        return Vec::new();
+    };
+    if raw.len() > 4096 {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<String>>(&raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path.len() <= 512 && path.starts_with('/'))
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.components().all(|component| {
+                matches!(
+                    component,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+        })
+        .take(8)
+        .collect()
+}
+
+fn project_directory(path: &std::path::Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+}
+
+fn collect_project_agent_discovery(
+    roots: &[PathBuf],
+) -> (Vec<DeviceMCPServer>, Vec<DeviceAgentAsset>) {
+    const CONFIGS: &[(&str, &str, bool)] = &[
+        ("claude", ".mcp.json", false),
+        ("claude", ".claude/settings.json", false),
+        ("cursor", ".cursor/mcp.json", false),
+        ("codex", ".codex/config.toml", true),
+    ];
+    const ASSETS: &[(&str, &str, &str, &str)] = &[
+        ("agents", "skill", ".agents/skills", "skill"),
+        ("claude", "skill", ".claude/skills", "skill"),
+        ("claude", "agent", ".claude/agents", "md"),
+        ("claude", "plugin", ".claude/plugins", "plugin"),
+        ("codex", "skill", ".codex/skills", "skill"),
+        ("cursor", "skill", ".cursor/skills", "skill"),
+        ("maestro", "plugin", ".maestro/plugins", "plugin"),
+        ("maestro", "plugin", ".composer/plugins", "plugin"),
+    ];
+    let mut servers = BTreeSet::new();
+    let mut assets = BTreeSet::new();
+    let mut plugin_config_reads = 0;
+    for root in roots.iter().take(8).filter(|root| project_directory(root)) {
+        let mut projects = vec![root.clone()];
+        if let Ok(entries) = fs::read_dir(root) {
+            let mut children: Vec<_> = entries
+                .take(256)
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|entry| entry.path())
+                .collect();
+            children.sort();
+            projects.extend(children.into_iter().take(32));
+        }
+        for project in projects {
+            if !project_directory(&project) {
+                continue;
+            }
+            for (client, relative, is_toml) in CONFIGS {
+                let path = project.join(relative);
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent != project && !project_directory(parent))
+                {
+                    continue;
+                }
+                let Some(body) = read_agent_config(&path) else {
+                    continue;
+                };
+                assets.insert(DeviceAgentAsset {
+                    client: (*client).into(),
+                    kind: "config".into(),
+                    name: "project".into(),
+                    source: format!("project/{relative}"),
+                });
+                if *relative == ".claude/settings.json" {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+                        if let Some(plugins) =
+                            value.get("enabledPlugins").and_then(|v| v.as_object())
+                        {
+                            for (name, enabled) in plugins {
+                                if enabled.as_bool() == Some(true) && safe_agent_asset_name(name) {
+                                    assets.insert(DeviceAgentAsset {
+                                        client: "claude".into(),
+                                        kind: "plugin".into(),
+                                        name: name.clone(),
+                                        source: "project/.claude/settings.json".into(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                let entries = if *is_toml {
+                    codex_mcp_entries(&body)
+                } else {
+                    json_mcp_entries(&body, &["mcpServers", "servers"])
+                };
+                for (name, transport) in entries
+                    .into_iter()
+                    .filter(|(name, _)| safe_agent_asset_name(name))
+                {
+                    servers.insert(DeviceMCPServer {
+                        client: (*client).into(),
+                        name,
+                        source: format!("project/{relative}"),
+                        transport,
+                    });
+                }
+            }
+            for (client, kind, relative, format) in ASSETS {
+                let directory = project.join(relative);
+                if !project_directory(directory.parent().unwrap_or(&project))
+                    || !project_directory(&directory)
+                {
+                    continue;
+                }
+                let Ok(entries) = fs::read_dir(&directory) else {
+                    continue;
+                };
+                for entry in entries.take(256).flatten() {
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    let filename = entry.file_name().to_string_lossy().into_owned();
+                    let name = if *format == "skill"
+                        && file_type.is_dir()
+                        && entry
+                            .path()
+                            .join("SKILL.md")
+                            .symlink_metadata()
+                            .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+                    {
+                        Some(filename.as_str())
+                    } else if *format == "plugin" && file_type.is_dir() {
+                        Some(filename.as_str())
+                    } else if *format == "md" && file_type.is_file() {
+                        filename.strip_suffix(".md")
+                    } else {
+                        None
+                    };
+                    if let Some(name) = name.filter(|name| safe_agent_asset_name(name)) {
+                        assets.insert(DeviceAgentAsset {
+                            client: (*client).into(),
+                            kind: (*kind).into(),
+                            name: name.into(),
+                            source: format!("project/{relative}"),
+                        });
+                        if *client == "maestro" && *kind == "plugin" {
+                            for config in ["mcp.json", ".mcp.json"] {
+                                if plugin_config_reads >= 32 {
+                                    break;
+                                }
+                                plugin_config_reads += 1;
+                                if let Some(body) = read_agent_config(&entry.path().join(config)) {
+                                    for (server, transport) in
+                                        json_mcp_entries(&body, &["mcpServers", "servers"])
+                                    {
+                                        if safe_agent_asset_name(&server) {
+                                            servers.insert(DeviceMCPServer {
+                                                client: "maestro".into(),
+                                                name: server,
+                                                source: format!("project/{relative}/*/{config}"),
+                                                transport,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (
+        servers.into_iter().take(128).collect(),
+        assets.into_iter().take(128).collect(),
     )
 }
 
@@ -2011,12 +2215,15 @@ fn collect_agent_discovery_from(
                         if let Some(body) = read_agent_config(
                             &directory.join(&file_name).join("gemini-extension.json"),
                         ) {
-                            for server in json_mcp_names(&body) {
+                            for (server, transport) in
+                                json_mcp_entries(&body, &["mcpServers", "servers"])
+                            {
                                 if safe_agent_asset_name(&server) {
                                     servers.insert(DeviceMCPServer {
                                         client: "gemini".into(),
                                         name: server,
                                         source: ".gemini/extensions/*/gemini-extension.json".into(),
+                                        transport,
                                     });
                                 }
                             }
@@ -2031,12 +2238,15 @@ fn collect_agent_discovery_from(
                                 read_agent_config(&directory.join(&file_name).join(config))
                             {
                                 plugin_config_reads += 1;
-                                for server in json_mcp_names(&body) {
+                                for (server, transport) in
+                                    json_mcp_entries(&body, &["mcpServers", "servers"])
+                                {
                                     if safe_agent_asset_name(&server) {
                                         servers.insert(DeviceMCPServer {
                                             client: "maestro".into(),
                                             name: server,
                                             source: format!("{relative}/*/{config}"),
+                                            transport,
                                         });
                                     }
                                 }
@@ -2082,37 +2292,22 @@ fn collect_agent_discovery_from(
                 }
                 continue;
             }
-            let names: Vec<String> = if *client == "amp" {
-                serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("amp.mcpServers")?
-                            .as_object()
-                            .map(|object| object.keys().cloned().collect())
-                    })
-                    .unwrap_or_default()
+            let entries: Vec<(String, String)> = if *client == "amp" {
+                json_mcp_entries(&body, &["amp.mcpServers"])
             } else if *client == "opencode" {
-                serde_json::from_str::<serde_json::Value>(&body)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("mcp")?
-                            .as_object()
-                            .map(|object| object.keys().cloned().collect())
-                    })
-                    .unwrap_or_default()
+                json_mcp_entries(&body, &["mcp"])
             } else if *is_toml {
-                codex_mcp_names(&body)
+                codex_mcp_entries(&body)
             } else {
-                json_mcp_names(&body)
+                json_mcp_entries(&body, &["mcpServers", "servers"])
             };
-            for name in names {
+            for (name, transport) in entries {
                 if name.len() <= 128 && !name.chars().any(char::is_control) {
                     servers.insert(DeviceMCPServer {
                         client: (*client).into(),
                         name,
                         source: (*relative).into(),
+                        transport,
                     });
                     if servers.len() >= 128 {
                         break;
@@ -2161,36 +2356,84 @@ fn safe_agent_asset_name(name: &str) -> bool {
         && !name.contains('\\')
 }
 
-fn json_mcp_names(body: &str) -> Vec<String> {
+fn json_mcp_entries(body: &str, keys: &[&str]) -> Vec<(String, String)> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
     };
-    ["mcpServers", "servers"]
-        .iter()
+    keys.iter()
         .filter_map(|key| value.get(key)?.as_object())
-        .flat_map(|object| object.keys().cloned())
+        .flat_map(|object| {
+            object.iter().map(|(name, definition)| {
+                let has_url = ["url", "httpUrl", "http_url"].iter().any(|key| {
+                    definition
+                        .get(key)
+                        .is_some_and(serde_json::Value::is_string)
+                });
+                let has_command = definition
+                    .get("command")
+                    .is_some_and(serde_json::Value::is_string);
+                let transport = match (has_url, has_command) {
+                    (true, false) => "remote",
+                    (false, true) => "stdio",
+                    _ => "unknown",
+                };
+                (name.clone(), transport.to_string())
+            })
+        })
         .collect()
 }
 
-fn codex_mcp_names(body: &str) -> Vec<String> {
-    body.lines()
-        .filter_map(|line| {
-            let section = line
-                .trim()
-                .strip_prefix("[mcp_servers.")?
-                .strip_suffix(']')?;
-            let quoted = section.starts_with('"') && section.ends_with('"') && section.len() >= 2;
-            let name = if quoted {
-                &section[1..section.len() - 1]
-            } else {
-                section
+fn codex_mcp_entries(body: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut current: Option<String> = None;
+    let mut has_url = false;
+    let mut has_command = false;
+    let mut finish = |current: &mut Option<String>, has_url: &mut bool, has_command: &mut bool| {
+        if let Some(name) = current.take() {
+            let transport = match (*has_url, *has_command) {
+                (true, false) => "remote",
+                (false, true) => "stdio",
+                _ => "unknown",
             };
-            (!name.is_empty()
-                && !name.chars().any(|ch| "[]".contains(ch))
-                && (quoted || !name.contains('.')))
-            .then(|| name.to_string())
-        })
-        .collect()
+            entries.push((name, transport.to_string()));
+        }
+        *has_url = false;
+        *has_command = false;
+    };
+    for line in body.lines() {
+        let text = line.trim();
+        if text.starts_with('[') && text.ends_with(']') {
+            finish(&mut current, &mut has_url, &mut has_command);
+            let section = text
+                .strip_prefix("[mcp_servers.")
+                .and_then(|value| value.strip_suffix(']'));
+            if let Some(section) = section {
+                let quoted =
+                    section.starts_with('"') && section.ends_with('"') && section.len() >= 2;
+                let name = if quoted {
+                    &section[1..section.len() - 1]
+                } else {
+                    section
+                };
+                if !name.is_empty()
+                    && !name.chars().any(|ch| "[]".contains(ch))
+                    && (quoted || !name.contains('.'))
+                {
+                    current = Some(name.to_string());
+                }
+            }
+        } else if current.is_some() {
+            if let Some((key, _)) = text.split_once('=') {
+                match key.trim() {
+                    "url" | "http_url" => has_url = true,
+                    "command" => has_command = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    finish(&mut current, &mut has_url, &mut has_command);
+    entries
 }
 
 fn collect_os_info() -> DeviceOSInfo {
@@ -2398,32 +2641,38 @@ mod tests {
                 DeviceMCPServer {
                     client: "amp".into(),
                     name: "db".into(),
-                    source: ".config/amp/settings.json".into()
+                    source: ".config/amp/settings.json".into(),
+                    transport: "stdio".into()
                 },
                 DeviceMCPServer {
                     client: "codex".into(),
                     name: "github".into(),
-                    source: ".codex/config.toml".into()
+                    source: ".codex/config.toml".into(),
+                    transport: "remote".into()
                 },
                 DeviceMCPServer {
                     client: "cursor".into(),
                     name: "docs".into(),
-                    source: ".cursor/mcp.json".into()
+                    source: ".cursor/mcp.json".into(),
+                    transport: "stdio".into()
                 },
                 DeviceMCPServer {
                     client: "gemini".into(),
                     name: "search".into(),
-                    source: ".gemini/extensions/*/gemini-extension.json".into()
+                    source: ".gemini/extensions/*/gemini-extension.json".into(),
+                    transport: "unknown".into()
                 },
                 DeviceMCPServer {
                     client: "maestro".into(),
                     name: "managed".into(),
-                    source: ".maestro/config.toml".into()
+                    source: ".maestro/config.toml".into(),
+                    transport: "remote".into()
                 },
                 DeviceMCPServer {
                     client: "maestro".into(),
                     name: "pluginsearch".into(),
-                    source: ".maestro/plugins/*/mcp.json".into()
+                    source: ".maestro/plugins/*/mcp.json".into(),
+                    transport: "stdio".into()
                 },
             ]
         );
@@ -2476,6 +2725,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(collect_agent_discovery_from(&[home], &[]).1.len(), 5);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_discovery_is_bounded_and_hides_paths_and_values() {
+        let root =
+            std::env::temp_dir().join(format!("merlin-project-discovery-{}", std::process::id()));
+        let project = root.join("customer-private");
+        fs::create_dir_all(project.join(".cursor")).unwrap();
+        fs::create_dir_all(project.join(".claude/skills/review")).unwrap();
+        fs::create_dir_all(project.join(".maestro/plugins/audit")).unwrap();
+        fs::write(
+            project.join(".maestro/plugins/audit/mcp.json"),
+            r#"{"mcpServers":{"pluginsearch":{"url":"https://private.example/mcp"}}}"#,
+        )
+        .unwrap();
+        fs::write(project.join(".claude/settings.json"), r#"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false},"secret":"private-secret"}"#).unwrap();
+        fs::write(
+            project.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"private-secret"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            project.join(".claude/skills/review/SKILL.md"),
+            "private-secret",
+        )
+        .unwrap();
+        let (servers, assets) = collect_project_agent_discovery(std::slice::from_ref(&root));
+        assert!(servers.iter().any(|item| item.name == "docs"
+            && item.source == "project/.cursor/mcp.json"
+            && item.transport == "stdio"));
+        assert!(servers.iter().any(|item| item.name == "pluginsearch"
+            && item.source == "project/.maestro/plugins/*/mcp.json"
+            && item.transport == "remote"));
+        assert!(
+            assets
+                .iter()
+                .any(|item| item.name == "review" && item.source == "project/.claude/skills")
+        );
+        assert!(assets.iter().any(|item| item.name == "audit@marketplace"
+            && item.kind == "plugin"
+            && item.source == "project/.claude/settings.json"));
+        assert!(assets.iter().any(|item| item.name == "audit"
+            && item.kind == "plugin"
+            && item.source == "project/.maestro/plugins"));
+        assert!(!assets.iter().any(|item| item.name == "off@marketplace"));
+        let payload = serde_json::to_string(&(servers, assets)).unwrap();
+        assert!(!payload.contains("customer-private"));
+        assert!(!payload.contains("private-secret"));
+        fs::remove_file(project.join(".cursor/mcp.json")).unwrap();
+        std::os::unix::fs::symlink(
+            project.join(".claude/skills/review/SKILL.md"),
+            project.join(".cursor/mcp.json"),
+        )
+        .unwrap();
+        assert!(
+            !collect_project_agent_discovery(&[root.clone()])
+                .0
+                .iter()
+                .any(|item| item.name == "docs")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
