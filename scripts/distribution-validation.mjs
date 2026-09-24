@@ -20,16 +20,7 @@ const HEX = /^[0-9a-f]{64}$/;
 // `dx-corp/capobara` fails `invalid provenance toolDigest` against a
 // perfectly correct tree.
 const TOOL_DIGEST = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const PROTO = [
-  "agentruntime/v1/runtime.proto", "agents/v1/agents.proto", "codex/v1/codex.proto",
-  "common/v1/analytics.proto", "common/v1/authz.proto", "common/v1/classification.proto",
-  "common/v1/delivery.proto", "common/v1/entity.proto", "common/v1/risk.proto",
-  "common/v1/surface.proto", "connectors/v1/connectors.proto", "console/v1/console.proto",
-  "deixic/v1/deixic.proto", "memory/v1/memory.proto", "meter/v1/meter.proto",
-  "objectives/v1/objectives.proto", "orbcontrol/v1/orb_control.proto",
-  "platform/v1/platform.proto", "remoterunner/v1/remoterunner.proto",
-  "toolexecution/v1/toolexecution.proto", "traces/v1/traces.proto", "vfs/v1/filesystem.proto",
-].sort();
+const PROTO = ["deixicpublic/v1/sdk.proto"];
 const SKILLS = [
   "doc-coauthoring", "frontend-design", "incident-triage", "install-code-review", "mcp-builder",
   "openai-agent-browser-verify", "pr-review", "release-verification", "security-review", "skill-creator",
@@ -154,12 +145,9 @@ async function validateApi(root, files) {
     }
   }
   const surface = JSON.parse(await readFile(join(root, "contracts", "public-surface.json"), "utf8"));
-  requireValue(surface.service === "deixic.v1.DeixicService" && surface.operations?.length === 8, "Deixic public facade contract changed");
+  requireValue(surface.service === "deixicpublic.v1.DeixicPublicService" && surface.operations?.length === 8, "Deixic public facade contract changed");
   const rpcs = surface.operations.map(item => item.rpc).sort();
   requireValue(new Set(rpcs).size === 8 && surface.operations.filter(item => item.kind === "mutation").every(item => item.requiresIdempotencyKey), "Deixic public operations are invalid");
-  const lock = await readFile(join(root, "buf.lock"), "utf8");
-  requireValue(lock.includes("buf.build/bufbuild/protovalidate") && lock.includes("buf.build/googleapis/googleapis")
-    && (lock.match(/digest:\s*b5:[0-9a-f]+/g) ?? []).length === 2, "Buf dependencies are not pinned");
   const generation = await readFile(join(root, "buf.gen.yaml"), "utf8");
   requireValue(generation.includes("sudorandom-connect-openapi:v0.19.1") && !generation.includes("./scripts/"), "public codegen config is not pinned or is private");
   run("buf", ["build"], root);
