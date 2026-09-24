@@ -46,8 +46,8 @@ struct DeviceInventory: Encodable, Sendable {
 
 struct DeviceAgentCLI: Encodable, Sendable { let name: String }
 struct DeviceAgentApp: Encodable, Sendable { let name: String }
-struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String }
-struct DeviceAgentAsset: Encodable, Sendable { let client: String; let kind: String; let name: String }
+struct DeviceMCPServer: Encodable, Sendable { let client: String; let name: String; let source: String }
+struct DeviceAgentAsset: Encodable, Sendable { let client: String; let kind: String; let name: String; let source: String }
 
 struct DevicePackage: Encodable, Sendable {
     let name: String
@@ -214,9 +214,12 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         ("amp", ".config/amp/settings.json", false),
         ("qwen", ".qwen/settings.json", false),
         ("pi", ".pi/agent/settings.json", false),
+        ("maestro", ".maestro/config.toml", true),
+        ("maestro", ".composer/config.toml", true),
     ]
     var found = Set<String>()
     var assetNames = Set<String>()
+    var pluginConfigReads = 0
     for home in homes.prefix(65) {
         let assetDirs: [(String, String, String, String)] = [
             ("agents", "skill", ".agents/skills", "skill"),
@@ -232,6 +235,9 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
             ("qwen", "skill", ".qwen/skills", "skill"),
             ("pi", "skill", ".pi/agent/skills", "skill"),
             ("pi", "extension", ".pi/agent/extensions", "js-ts"),
+            ("maestro", "skill", ".composer/skills", "skill"),
+            ("maestro", "plugin", ".maestro/plugins", "plugin-directory"),
+            ("maestro", "plugin", ".composer/plugins", "plugin-directory"),
         ]
         for (client, kind, relative, format) in assetDirs {
             let directory = "\(home)/\(relative)"
@@ -248,17 +254,29 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 } else if format == "directory" && type == mode_t(S_IFDIR) {
                     var manifest = stat()
                     name = lstat("\(path)/gemini-extension.json", &manifest) == 0 && (manifest.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) ? entry : nil
+                } else if format == "plugin-directory" && type == mode_t(S_IFDIR) {
+                    name = entry
                 } else if type == mode_t(S_IFREG) && format == "md" && entry.hasSuffix(".md") {
                     name = String(entry.dropLast(3))
                 } else if type == mode_t(S_IFREG) && format == "js-ts" && (entry.hasSuffix(".js") || entry.hasSuffix(".ts")) {
                     name = String(entry.dropLast(3))
                 } else { name = nil }
                 if let name, safeAgentAssetName(name) {
-                    assetNames.insert("\(client)\u{0}\(kind)\u{0}\(name)")
+                    assetNames.insert("\(client)\u{0}\(kind)\u{0}\(name)\u{0}\(relative)")
                     if client == "gemini" && kind == "extension", let data = readAgentConfigNoFollow("\(path)/gemini-extension.json") {
                         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                         for server in ((object?["mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []) where safeAgentAssetName(server) {
-                            found.insert("gemini\u{0}\(server)")
+                            found.insert("gemini\u{0}\(server)\u{0}.gemini/extensions/*/gemini-extension.json")
+                        }
+                    }
+                    if client == "maestro" && kind == "plugin" {
+                        for config in ["mcp.json", ".mcp.json"] where pluginConfigReads < 32 {
+                            guard let data = readAgentConfigNoFollow("\(path)/\(config)") else { continue }
+                            pluginConfigReads += 1
+                            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                            for server in ((object?["mcpServers"] as? [String: Any]).map { Array($0.keys) } ?? []) where safeAgentAssetName(server) {
+                                found.insert("maestro\u{0}\(server)\u{0}\(relative)/*/\(config)")
+                            }
                         }
                     }
                     if assetNames.count >= 128 { break }
@@ -268,12 +286,12 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         }
         for (client, relative, isTOML) in configs {
             guard let data = readAgentConfigNoFollow("\(home)/\(relative)") else { continue }
-            assetNames.insert("\(client)\u{0}config\u{0}user")
+            assetNames.insert("\(client)\u{0}config\u{0}user\u{0}\(relative)")
             if client == "claude" && relative == ".claude/settings.json" {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                 let plugins = object?["enabledPlugins"] as? [String: Bool] ?? [:]
                 for (name, enabled) in plugins where enabled && safeAgentAssetName(name) {
-                    assetNames.insert("claude\u{0}plugin\u{0}\(name)")
+                    assetNames.insert("claude\u{0}plugin\u{0}\(name)\u{0}.claude/settings.json")
                 }
                 continue
             }
@@ -300,7 +318,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 names = entries.map { Array($0.keys) } ?? []
             }
             for name in names where name.utf8.count <= 128 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
-                found.insert("\(client)\u{0}\(name)")
+                found.insert("\(client)\u{0}\(name)\u{0}\(relative)")
                 if found.count >= 128 { break }
             }
             if found.count >= 128 { break }
@@ -308,14 +326,14 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         if found.count >= 128 { break }
     }
     let servers = found.sorted().prefix(128).compactMap { entry -> DeviceMCPServer? in
-        let parts = entry.split(separator: "\u{0}", maxSplits: 1)
-        guard parts.count == 2 else { return nil }
-        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]))
+        let parts = entry.split(separator: "\u{0}")
+        guard parts.count == 3 else { return nil }
+        return DeviceMCPServer(client: String(parts[0]), name: String(parts[1]), source: String(parts[2]))
     }
     let assets = assetNames.sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
         let parts = entry.split(separator: "\u{0}")
-        guard parts.count == 3 else { return nil }
-        return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]))
+        guard parts.count == 4 else { return nil }
+        return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
     }
     return (clis, apps, servers, assets)
 }
