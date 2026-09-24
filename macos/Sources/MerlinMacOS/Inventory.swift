@@ -203,24 +203,111 @@ private func configuredMacAgentWorkspaceRoots() -> [String] {
     }.prefix(8))
 }
 
-private func macProjectDirectory(_ path: String) -> Bool {
+private let macProjectDirectoryFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+
+// /var, /tmp, and /etc are system-owned aliases to /private on macOS. Preserve
+// those configured roots while refusing every other symlink in the path walk.
+private func canonicalMacProjectRoot(_ path: String) -> String {
+    for alias in ["var", "tmp", "etc"] where path == "/\(alias)" || path.hasPrefix("/\(alias)/") {
+        return "/private" + path
+    }
+    return path
+}
+
+func openMacProjectRoot(_ path: String) -> Int32? {
+    guard path.hasPrefix("/"), path.utf8.count <= 512, !path.utf8.contains(0),
+          !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else { return nil }
+    let resolved = canonicalMacProjectRoot(path)
+    var fd = open("/", macProjectDirectoryFlags)
+    guard fd >= 0 else { return nil }
+    for component in resolved.split(separator: "/") {
+        let next = openat(fd, String(component), macProjectDirectoryFlags)
+        close(fd)
+        guard next >= 0 else { return nil }
+        fd = next
+    }
+    return fd
+}
+
+private func openMacProjectSubdirectory(_ parentFD: Int32, _ path: String) -> Int32? {
+    var fd = dup(parentFD)
+    guard fd >= 0 else { return nil }
+    for component in path.split(separator: "/") {
+        guard component != "." && component != ".." else { close(fd); return nil }
+        let next = openat(fd, String(component), macProjectDirectoryFlags)
+        close(fd)
+        guard next >= 0 else { return nil }
+        fd = next
+    }
+    return fd
+}
+
+private func boundedMacProjectEntries(_ fd: Int32) -> [String] {
+    let copy = dup(fd)
+    guard copy >= 0 else { return [] }
+    guard let directory = fdopendir(copy) else { close(copy); return [] }
+    defer { closedir(directory) }
+    var names = [String]()
+    while names.count < 256, let entry = readdir(directory) {
+        let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+        if name != "." && name != ".." { names.append(name) }
+    }
+    return names.sorted()
+}
+
+private func macProjectEntryType(_ fd: Int32, _ name: String) -> mode_t? {
     var info = stat()
-    return lstat(path, &info) == 0 && (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+    guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { return nil }
+    return info.st_mode & mode_t(S_IFMT)
+}
+
+private func readMacProjectFile(_ fd: Int32, _ name: String) -> Data? {
+    let fileFD = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+    guard fileFD >= 0 else { return nil }
+    defer { close(fileFD) }
+    var info = stat()
+    guard fstat(fileFD, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+          info.st_size >= 0, info.st_size <= 64 << 10 else { return nil }
+    var bytes = [UInt8](repeating: 0, count: Int(info.st_size) + 1)
+    let capacity = bytes.count
+    let count = read(fileFD, &bytes, capacity)
+    guard count >= 0, count <= 64 << 10 else { return nil }
+    return Data(bytes.prefix(count))
 }
 
 func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    let rootFDs = roots.prefix(8).compactMap(openMacProjectRoot)
+    return collectMacProjectAgentDiscovery(rootFDs: rootFDs)
+}
+
+// Takes ownership of rootFDs. Kept internal so tests can replace a root path
+// after opening it and prove subsequent probes stay bound to that directory.
+func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+    defer { rootFDs.forEach { close($0) } }
     let configs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true), ("opencode", ".opencode/opencode.json", false), ("agents", ".agents/mcp.json", false)]
     let assetDirs: [(String, String, String, String)] = [("agents", "skill", ".agents/skills", "skill"), ("claude", "skill", ".claude/skills", "skill"), ("claude", "agent", ".claude/agents", "md"), ("claude", "plugin", ".claude/plugins", "plugin"), ("codex", "skill", ".codex/skills", "skill"), ("cursor", "skill", ".cursor/skills", "skill"), ("maestro", "plugin", ".maestro/plugins", "plugin"), ("maestro", "plugin", ".composer/plugins", "plugin")]
     var found = Set<String>()
     var assets = Set<String>()
     var pluginConfigReads = 0
-    for root in roots.prefix(8) where macProjectDirectory(root) {
-        let children = boundedAgentDirectoryEntries(root).filter { macProjectDirectory("\(root)/\($0)") }.prefix(32).map { "\(root)/\($0)" }
-        for project in [root] + children {
+    let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+    for rootFD in rootFDs.prefix(8) where DispatchTime.now().uptimeNanoseconds < deadline {
+        var projects: [(fd: Int32, depth: Int)] = [(dup(rootFD), 0)]
+        defer { projects.forEach { if $0.fd >= 0 { close($0.fd) } } }
+        var next = 0
+        // Breadth first: direct children retain priority within 32 descendants.
+        while next < projects.count && DispatchTime.now().uptimeNanoseconds < deadline {
+            let project = projects[next]
+            next += 1
+            guard project.fd >= 0 else { continue }
             for (client, relative, isTOML) in configs {
-                let path = "\(project)/\(relative)"
-                if relative.contains("/"), !macProjectDirectory("\(project)/\(relative.split(separator: "/")[0])") { continue }
-                guard let data = readAgentConfigNoFollow(path) else { continue }
+                let parts = relative.split(separator: "/").map(String.init)
+                let parentFD = parts.count == 1 ? dup(project.fd) : openMacProjectSubdirectory(project.fd, parts.dropLast().joined(separator: "/"))
+                guard let parentFD else { continue }
+                let data = readMacProjectFile(parentFD, parts.last!)
+                close(parentFD)
+                guard let data else { continue }
                 assets.insert("\(client)\u{0}config\u{0}project\u{0}project/\(relative)")
                 if relative == ".claude/settings.json",
                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -242,18 +329,16 @@ func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPSer
                 }
             }
             for (client, kind, relative, format) in assetDirs {
-                let parts = relative.split(separator: "/")
-                guard parts.count == 2, macProjectDirectory("\(project)/\(parts[0])") else { continue }
-                let directory = "\(project)/\(relative)"
-                for entry in boundedAgentDirectoryEntries(directory) {
-                    let path = "\(directory)/\(entry)"
-                    var info = stat()
-                    guard lstat(path, &info) == 0 else { continue }
-                    let type = info.st_mode & mode_t(S_IFMT)
+                guard let directoryFD = openMacProjectSubdirectory(project.fd, relative) else { continue }
+                defer { close(directoryFD) }
+                for entry in boundedMacProjectEntries(directoryFD) {
+                    guard let type = macProjectEntryType(directoryFD, entry) else { continue }
                     let name: String?
                     if format == "skill" && type == mode_t(S_IFDIR) {
-                        var manifest = stat()
-                        name = lstat("\(path)/SKILL.md", &manifest) == 0 && (manifest.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) ? entry : nil
+                        if let skillFD = openMacProjectSubdirectory(directoryFD, entry) {
+                            name = macProjectEntryType(skillFD, "SKILL.md") == mode_t(S_IFREG) ? entry : nil
+                            close(skillFD)
+                        } else { name = nil }
                     } else if format == "plugin" && type == mode_t(S_IFDIR) {
                         name = entry
                     } else if format == "md" && type == mode_t(S_IFREG) && entry.hasSuffix(".md") {
@@ -262,15 +347,25 @@ func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPSer
                     if let name, safeAgentAssetName(name) {
                         assets.insert("\(client)\u{0}\(kind)\u{0}\(name)\u{0}project/\(relative)")
                         if client == "maestro" && kind == "plugin" {
+                            guard let pluginFD = openMacProjectSubdirectory(directoryFD, entry) else { continue }
+                            defer { close(pluginFD) }
                             for config in ["mcp.json", ".mcp.json"] where pluginConfigReads < 32 {
                                 pluginConfigReads += 1
-                                guard let data = readAgentConfigNoFollow("\(path)/\(config)") else { continue }
+                                guard let data = readMacProjectFile(pluginFD, config) else { continue }
                                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                                 for (server, transport) in mcpEntries(object?["mcpServers"] ?? object?["servers"]) where safeAgentAssetName(server) {
                                     found.insert("maestro\u{0}\(server)\u{0}project/\(relative)/*/\(config)\u{0}\(transport)")
                                 }
                             }
                         }
+                    }
+                }
+            }
+            if project.depth < 2 {
+                for entry in boundedMacProjectEntries(project.fd) {
+                    guard projects.count < 33, DispatchTime.now().uptimeNanoseconds < deadline else { break }
+                    if let childFD = openMacProjectSubdirectory(project.fd, entry) {
+                        projects.append((childFD, project.depth + 1))
                     }
                 }
             }
@@ -325,6 +420,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
     var found = Set<String>()
     var assetNames = Set<String>()
     var pluginConfigReads = 0
+    var cursorPluginDirectoriesSeen = 0
     for home in homes.prefix(65) {
         let assetDirs: [(String, String, String, String)] = [
             ("agents", "skill", ".agents/skills", "skill"),
@@ -389,6 +485,36 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
             }
             if assetNames.count >= 128 { break }
         }
+        if let agents = openAgentDirectoryNoFollow(home: home, relative: ".cursor/agents") {
+            defer { close(agents) }
+            for entry in boundedAgentDirectoryEntries(descriptor: agents) where entry.hasSuffix(".md") && assetNames.count < 128 {
+                let name = String(entry.dropLast(3))
+                var info = stat()
+                guard safeAgentAssetName(name), fstatat(agents, entry, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                      info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0, info.st_size <= 64 << 10 else { continue }
+                assetNames.insert("cursor\u{0}agent\u{0}\(name)\u{0}.cursor/agents")
+            }
+        }
+        if let localPlugins = openAgentDirectoryNoFollow(home: home, relative: ".cursor/plugins/local") {
+            defer { close(localPlugins) }
+            for entry in boundedAgentDirectoryEntries(descriptor: localPlugins) where cursorPluginDirectoriesSeen < 32 && assetNames.count < 128 {
+                guard safeAgentAssetName(entry) else { continue }
+                let plugin = openat(localPlugins, entry, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                guard plugin >= 0 else { continue }
+                defer { close(plugin) }
+                cursorPluginDirectoriesSeen += 1
+                let direct = readAgentConfigNoFollow(descriptor: plugin, name: "plugin.json")
+                let cursor = openat(plugin, ".cursor-plugin", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                let nested = cursor >= 0 ? readAgentConfigNoFollow(descriptor: cursor, name: "plugin.json") : nil
+                if cursor >= 0 { close(cursor) }
+                if [direct, nested].compactMap({ $0 }).contains(where: { data in
+                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    return object?["name"] as? String == entry
+                }) {
+                    assetNames.insert("cursor\u{0}plugin\u{0}\(entry)\u{0}.cursor/plugins/local")
+                }
+            }
+        }
         for (client, relative, isTOML) in configs {
             guard let data = readAgentConfigNoFollow("\(home)/\(relative)") else { continue }
             assetNames.insert("\(client)\u{0}config\u{0}user\u{0}\(relative)")
@@ -433,6 +559,44 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
     }
     return (clis, apps, servers, assets)
+}
+
+private func openAgentDirectoryNoFollow(home: String, relative: String) -> Int32? {
+    var directory = open(home, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+    guard directory >= 0 else { return nil }
+    for segment in relative.split(separator: "/") {
+        let next = openat(directory, String(segment), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        close(directory)
+        guard next >= 0 else { return nil }
+        directory = next
+    }
+    return directory
+}
+
+private func boundedAgentDirectoryEntries(descriptor: Int32) -> [String] {
+    let copy = dup(descriptor)
+    guard copy >= 0 else { return [] }
+    guard let directory = fdopendir(copy) else { close(copy); return [] }
+    defer { closedir(directory) }
+    var names = [String]()
+    while names.count < 256, let entry = readdir(directory) {
+        let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+        if name != "." && name != ".." { names.append(name) }
+    }
+    return names.sorted()
+}
+
+private func readAgentConfigNoFollow(descriptor: Int32, name: String) -> Data? {
+    let file = openat(descriptor, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+    guard file >= 0 else { return nil }
+    defer { close(file) }
+    var info = stat()
+    guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+          info.st_size >= 0, info.st_size <= 64 << 10 else { return nil }
+    let data = FileHandle(fileDescriptor: file, closeOnDealloc: false).readData(ofLength: (64 << 10) + 1)
+    return data.count <= 64 << 10 ? data : nil
 }
 
 private func mcpEntries(_ raw: Any?) -> [(String, String)] {

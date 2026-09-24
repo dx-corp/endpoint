@@ -206,6 +206,57 @@ struct SyncTests {
         #expect(collectMacAgentDiscovery(homes: [home], systemBins: []).servers.count == 5)
     }
 
+    @Test("Cursor user agents and local plugins require bounded regular files and real manifests")
+    func cursorUserAssets() throws {
+        let home = NSTemporaryDirectory() + "merlin-cursor-assets-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let cursor = home + "/.cursor"
+        try FileManager.default.createDirectory(atPath: cursor + "/agents", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/portable", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/native/.cursor-plugin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/invalid", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/mismatch", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/linked", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/oversized", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: cursor + "/plugins/local/nested-link", withIntermediateDirectories: true)
+        try "secret prompt".write(toFile: cursor + "/agents/reviewer.md", atomically: true, encoding: .utf8)
+        try "oversized".padding(toLength: (64 << 10) + 1, withPad: "x", startingAt: 0).write(toFile: cursor + "/agents/oversized.md", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: cursor + "/agents/linked.md", withDestinationPath: cursor + "/agents/reviewer.md")
+        try #"{"name":"portable","description":"secret"}"#.write(toFile: cursor + "/plugins/local/portable/plugin.json", atomically: true, encoding: .utf8)
+        try #"{"name":"native","description":"secret"}"#.write(toFile: cursor + "/plugins/local/native/.cursor-plugin/plugin.json", atomically: true, encoding: .utf8)
+        try "not JSON".write(toFile: cursor + "/plugins/local/invalid/plugin.json", atomically: true, encoding: .utf8)
+        try #"{"name":"another"}"#.write(toFile: cursor + "/plugins/local/mismatch/plugin.json", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: cursor + "/plugins/local/linked/plugin.json", withDestinationPath: cursor + "/plugins/local/portable/plugin.json")
+        try (#"{"name":"oversized","padding":""# + String(repeating: "x", count: 64 << 10) + #""}"#).write(toFile: cursor + "/plugins/local/oversized/plugin.json", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: cursor + "/plugins/local/nested-link/.cursor-plugin", withDestinationPath: cursor + "/plugins/local/native/.cursor-plugin")
+        let assets = collectMacAgentDiscovery(homes: [home], systemBins: []).assets
+        #expect(assets.contains { $0.client == "cursor" && $0.kind == "agent" && $0.name == "reviewer" && $0.source == ".cursor/agents" })
+        #expect(assets.contains { $0.client == "cursor" && $0.kind == "plugin" && $0.name == "portable" && $0.source == ".cursor/plugins/local" })
+        #expect(assets.contains { $0.client == "cursor" && $0.kind == "plugin" && $0.name == "native" })
+        #expect(!assets.contains { ["linked", "oversized", "invalid", "mismatch", "nested-link"].contains($0.name) })
+        #expect(!String(decoding: try JSONEncoder().encode(assets), as: UTF8.self).contains("secret"))
+
+        try FileManager.default.removeItem(atPath: cursor + "/agents")
+        try FileManager.default.createSymbolicLink(atPath: cursor + "/agents", withDestinationPath: cursor + "/plugins/local")
+        #expect(!collectMacAgentDiscovery(homes: [home], systemBins: []).assets.contains { $0.client == "cursor" && $0.kind == "agent" })
+    }
+
+    @Test("Cursor local plugin manifest probes stop after 32 directories")
+    func cursorPluginProbeCap() throws {
+        let home = NSTemporaryDirectory() + "merlin-cursor-cap-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let local = home + "/.cursor/plugins/local"
+        for index in 0...32 {
+            let name = String(format: "plugin-%02d", index)
+            try FileManager.default.createDirectory(atPath: local + "/" + name, withIntermediateDirectories: true)
+            try "{\"name\":\"\(name)\"}".write(toFile: local + "/" + name + "/plugin.json", atomically: true, encoding: .utf8)
+        }
+        let plugins = collectMacAgentDiscovery(homes: [home], systemBins: []).assets.filter { $0.client == "cursor" && $0.kind == "plugin" }
+        #expect(plugins.count == 32)
+        #expect(plugins.contains { $0.name == "plugin-31" })
+        #expect(!plugins.contains { $0.name == "plugin-32" })
+    }
+
     @Test("project discovery reports fixed labels and ignores linked configs")
     func projectAgentDiscovery() throws {
         let root = NSTemporaryDirectory() + "merlin-project-discovery-\(UUID().uuidString)"
@@ -237,6 +288,70 @@ struct SyncTests {
         try FileManager.default.removeItem(atPath: project + "/.cursor/mcp.json")
         try FileManager.default.createSymbolicLink(atPath: project + "/.cursor/mcp.json", withDestinationPath: project + "/.claude/skills/review/SKILL.md")
         #expect(!collectMacProjectAgentDiscovery(roots: [root]).servers.contains { $0.name == "docs" })
+    }
+
+    @Test("project discovery visits grandchildren but not linked or deeper directories")
+    func nestedProjectAgentDiscovery() throws {
+        let base = NSTemporaryDirectory() + "merlin-nested-discovery-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let root = base + "/workspaces"
+        let nested = root + "/team/repository"
+        let deeper = nested + "/deeper"
+        let outside = base + "/outside"
+        for directory in [nested + "/.cursor", deeper + "/.cursor", outside + "/.cursor"] {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+        try #"{"mcpServers":{"nested":{"command":"private-command"}}}"#.write(toFile: nested + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"too-deep":{"command":"private-command"}}}"#.write(toFile: deeper + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"linked":{"command":"private-command"}}}"#.write(toFile: outside + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: root + "/linked", withDestinationPath: outside)
+        try FileManager.default.createSymbolicLink(atPath: root + "/team/linked", withDestinationPath: outside)
+
+        let discovered = collectMacProjectAgentDiscovery(roots: [root])
+        #expect(discovered.servers.map(\.name) == ["nested"])
+        let payload = String(decoding: try JSONEncoder().encode(discovered.servers), as: UTF8.self)
+        #expect(!payload.contains("repository") && !payload.contains("private-command"))
+    }
+
+    @Test("project discovery limits each root to 32 descendant directories")
+    func projectAgentDiscoveryDirectoryCap() throws {
+        let root = NSTemporaryDirectory() + "merlin-project-cap-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        for index in 0..<40 {
+            let directory = root + "/project-\(String(format: "%02d", index))/.cursor"
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try "{\"mcpServers\":{\"server-\(index)\":{\"command\":\"run\"}}}".write(toFile: directory + "/mcp.json", atomically: true, encoding: .utf8)
+        }
+        let discovered = collectMacProjectAgentDiscovery(roots: [root])
+        #expect(discovered.servers.count == 32)
+    }
+
+    @Test("project discovery remains inside the opened root after a path swap")
+    func projectAgentDiscoveryRootSwap() throws {
+        let base = NSTemporaryDirectory() + "merlin-project-swap-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let root = base + "/approved"
+        let moved = base + "/original"
+        let outside = base + "/outside"
+        for directory in [root + "/team/repo/.cursor", outside + "/team/repo/.cursor", base + "/.cursor/plugins/local/portable"] {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+        try #"{"mcpServers":{"inside":{"command":"run"}}}"#.write(toFile: root + "/team/repo/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"outside":{"command":"run"}}}"#.write(toFile: outside + "/team/repo/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"name":"portable"}"#.write(toFile: base + "/.cursor/plugins/local/portable/plugin.json", atomically: true, encoding: .utf8)
+
+        let rootFD = try #require(openMacProjectRoot(root))
+        try FileManager.default.moveItem(atPath: root, toPath: moved)
+        try FileManager.default.createSymbolicLink(atPath: root, withDestinationPath: outside)
+        let discovered = collectMacProjectAgentDiscovery(rootFDs: [rootFD])
+        #expect(discovered.servers.map(\.name) == ["inside"])
+        #expect(collectMacAgentDiscovery(homes: [base], systemBins: []).assets.contains {
+            $0.client == "cursor" && $0.kind == "plugin" && $0.name == "portable" && $0.source == ".cursor/plugins/local"
+        })
+        #expect(openMacProjectRoot(root) == nil)
+        try FileManager.default.createSymbolicLink(atPath: base + "/linked-parent", withDestinationPath: outside)
+        #expect(openMacProjectRoot(base + "/linked-parent/team/repo") == nil)
+        #expect(openMacProjectRoot(base + "/outside\0/../approved") == nil)
     }
 
     @Test("host id is a 16-char hash, not the raw UUID")
