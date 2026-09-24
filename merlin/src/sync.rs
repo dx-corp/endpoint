@@ -16,9 +16,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::Read;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+mod project_discovery;
+use project_discovery::{collect_project_agent_discovery, configured_agent_workspace_roots};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -1893,202 +1898,6 @@ fn collect_agent_discovery() -> (
     discovery
 }
 
-// MDM supplies a JSON array in the root-owned service configuration. No default
-// workspace roots are scanned, and no configured path is sent in inventory.
-fn configured_agent_workspace_roots() -> Vec<PathBuf> {
-    let Ok(raw) = std::env::var("MERLIN_AGENT_WORKSPACE_ROOTS") else {
-        return Vec::new();
-    };
-    if raw.len() > 4096 {
-        return Vec::new();
-    }
-    serde_json::from_str::<Vec<String>>(&raw)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|path| path.len() <= 512 && path.starts_with('/'))
-        .map(PathBuf::from)
-        .filter(|path| {
-            path.components().all(|component| {
-                matches!(
-                    component,
-                    std::path::Component::RootDir | std::path::Component::Normal(_)
-                )
-            })
-        })
-        .take(8)
-        .collect()
-}
-
-fn project_directory(path: &std::path::Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
-}
-
-fn collect_project_agent_discovery(
-    roots: &[PathBuf],
-) -> (Vec<DeviceMCPServer>, Vec<DeviceAgentAsset>) {
-    const CONFIGS: &[(&str, &str, bool)] = &[
-        ("claude", ".mcp.json", false),
-        ("claude", ".claude/settings.json", false),
-        ("cursor", ".cursor/mcp.json", false),
-        ("codex", ".codex/config.toml", true),
-        ("opencode", ".opencode/opencode.json", false),
-        ("agents", ".agents/mcp.json", false),
-    ];
-    const ASSETS: &[(&str, &str, &str, &str)] = &[
-        ("agents", "skill", ".agents/skills", "skill"),
-        ("claude", "skill", ".claude/skills", "skill"),
-        ("claude", "agent", ".claude/agents", "md"),
-        ("claude", "plugin", ".claude/plugins", "plugin"),
-        ("codex", "skill", ".codex/skills", "skill"),
-        ("cursor", "skill", ".cursor/skills", "skill"),
-        ("maestro", "plugin", ".maestro/plugins", "plugin"),
-        ("maestro", "plugin", ".composer/plugins", "plugin"),
-    ];
-    let mut servers = BTreeSet::new();
-    let mut assets = BTreeSet::new();
-    let mut plugin_config_reads = 0;
-    for root in roots.iter().take(8).filter(|root| project_directory(root)) {
-        let mut projects = vec![root.clone()];
-        if let Ok(entries) = fs::read_dir(root) {
-            let mut children: Vec<_> = entries
-                .take(256)
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .map(|entry| entry.path())
-                .collect();
-            children.sort();
-            projects.extend(children.into_iter().take(32));
-        }
-        for project in projects {
-            if !project_directory(&project) {
-                continue;
-            }
-            for (client, relative, is_toml) in CONFIGS {
-                let path = project.join(relative);
-                if path
-                    .parent()
-                    .is_some_and(|parent| parent != project && !project_directory(parent))
-                {
-                    continue;
-                }
-                let Some(body) = read_agent_config(&path) else {
-                    continue;
-                };
-                assets.insert(DeviceAgentAsset {
-                    client: (*client).into(),
-                    kind: "config".into(),
-                    name: "project".into(),
-                    source: format!("project/{relative}"),
-                });
-                if *relative == ".claude/settings.json" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-                        if let Some(plugins) =
-                            value.get("enabledPlugins").and_then(|v| v.as_object())
-                        {
-                            for (name, enabled) in plugins {
-                                if enabled.as_bool() == Some(true) && safe_agent_asset_name(name) {
-                                    assets.insert(DeviceAgentAsset {
-                                        client: "claude".into(),
-                                        kind: "plugin".into(),
-                                        name: name.clone(),
-                                        source: "project/.claude/settings.json".into(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                let entries = if *is_toml {
-                    codex_mcp_entries(&body)
-                } else if *client == "opencode" {
-                    json_mcp_entries(&body, &["mcp"])
-                } else {
-                    json_mcp_entries(&body, &["mcpServers", "servers"])
-                };
-                for (name, transport) in entries
-                    .into_iter()
-                    .filter(|(name, _)| safe_agent_asset_name(name))
-                {
-                    servers.insert(DeviceMCPServer {
-                        client: (*client).into(),
-                        name,
-                        source: format!("project/{relative}"),
-                        transport,
-                    });
-                }
-            }
-            for (client, kind, relative, format) in ASSETS {
-                let directory = project.join(relative);
-                if !project_directory(directory.parent().unwrap_or(&project))
-                    || !project_directory(&directory)
-                {
-                    continue;
-                }
-                let Ok(entries) = fs::read_dir(&directory) else {
-                    continue;
-                };
-                for entry in entries.take(256).flatten() {
-                    let Ok(file_type) = entry.file_type() else {
-                        continue;
-                    };
-                    let filename = entry.file_name().to_string_lossy().into_owned();
-                    let name = if *format == "skill"
-                        && file_type.is_dir()
-                        && entry
-                            .path()
-                            .join("SKILL.md")
-                            .symlink_metadata()
-                            .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
-                    {
-                        Some(filename.as_str())
-                    } else if *format == "plugin" && file_type.is_dir() {
-                        Some(filename.as_str())
-                    } else if *format == "md" && file_type.is_file() {
-                        filename.strip_suffix(".md")
-                    } else {
-                        None
-                    };
-                    if let Some(name) = name.filter(|name| safe_agent_asset_name(name)) {
-                        assets.insert(DeviceAgentAsset {
-                            client: (*client).into(),
-                            kind: (*kind).into(),
-                            name: name.into(),
-                            source: format!("project/{relative}"),
-                        });
-                        if *client == "maestro" && *kind == "plugin" {
-                            for config in ["mcp.json", ".mcp.json"] {
-                                if plugin_config_reads >= 32 {
-                                    break;
-                                }
-                                plugin_config_reads += 1;
-                                if let Some(body) = read_agent_config(&entry.path().join(config)) {
-                                    for (server, transport) in
-                                        json_mcp_entries(&body, &["mcpServers", "servers"])
-                                    {
-                                        if safe_agent_asset_name(&server) {
-                                            servers.insert(DeviceMCPServer {
-                                                client: "maestro".into(),
-                                                name: server,
-                                                source: format!("project/{relative}/*/{config}"),
-                                                transport,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (
-        servers.into_iter().take(128).collect(),
-        assets.into_iter().take(128).collect(),
-    )
-}
-
 fn collect_agent_discovery_from(
     homes: &[PathBuf],
     system_bins: &[&str],
@@ -2120,6 +1929,7 @@ fn collect_agent_discovery_from(
     let mut servers = BTreeSet::new();
     let mut assets = BTreeSet::new();
     let mut plugin_config_reads = 0;
+    let mut cursor_manifest_reads = 0;
     for name in CLIS {
         let found = system_bins
             .iter()
@@ -2144,6 +1954,7 @@ fn collect_agent_discovery_from(
         }
     }
     for home in homes.iter().take(65) {
+        collect_cursor_user_assets(home, &mut assets, &mut cursor_manifest_reads);
         for (client, kind, relative, extension) in [
             ("agents", "skill", ".agents/skills", ""),
             ("codex", "skill", ".codex/skills", ""),
@@ -2267,7 +2078,12 @@ fn collect_agent_discovery_from(
             }
         }
         for (client, relative, is_toml) in CONFIGS {
-            let Some(body) = read_agent_config(&home.join(relative)) else {
+            let body = if *client == "codex" {
+                read_agent_config_beneath(home, relative)
+            } else {
+                read_agent_config(&home.join(relative))
+            };
+            let Some(body) = body else {
                 continue;
             };
             assets.insert(DeviceAgentAsset {
@@ -2295,6 +2111,19 @@ fn collect_agent_discovery_from(
                     }
                 }
                 continue;
+            }
+            if *client == "codex" && *relative == ".codex/config.toml" {
+                for name in codex_enabled_plugin_names(&body) {
+                    if assets.len() >= 128 {
+                        break;
+                    }
+                    assets.insert(DeviceAgentAsset {
+                        client: "codex".into(),
+                        kind: "plugin".into(),
+                        name,
+                        source: ".codex/config.toml".into(),
+                    });
+                }
             }
             let entries: Vec<(String, String)> = if *client == "amp" {
                 json_mcp_entries(&body, &["amp.mcpServers"])
@@ -2331,6 +2160,172 @@ fn collect_agent_discovery_from(
         servers.into_iter().take(128).collect(),
         assets.into_iter().take(128).collect(),
     )
+}
+
+/// Open each path component relative to the previous directory. A pathname
+/// check followed by `read_dir` would let a user replace a parent with a link
+/// while the root collector is traversing it.
+fn open_agent_directory(path: &Path) -> Option<fs::File> {
+    use std::path::Component;
+    let mut directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .ok()?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => continue,
+            Component::Normal(name) => {
+                directory = open_agent_child_dir(&directory, name.as_bytes())?;
+            }
+            _ => return None,
+        }
+    }
+    Some(directory)
+}
+
+fn open_agent_child_dir(parent: &fs::File, name: &[u8]) -> Option<fs::File> {
+    let name = CString::new(name).ok()?;
+    // SAFETY: `parent` is open during the call, the name is NUL terminated,
+    // and ownership of a successful descriptor transfers to File.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    (fd >= 0).then(|| unsafe { fs::File::from_raw_fd(fd) })
+}
+
+fn open_agent_regular_file_at(parent: &fs::File, name: &str) -> Option<fs::File> {
+    let name = CString::new(name).ok()?;
+    // O_NONBLOCK prevents an attacker from stalling a root collector with a FIFO.
+    // SAFETY: `parent` is open during the call and `name` is NUL terminated.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the successful descriptor is owned solely by this File.
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    if !file
+        .metadata()
+        .ok()
+        .is_some_and(|meta| meta.is_file() && meta.len() <= 64 << 10)
+    {
+        return None;
+    }
+    Some(file)
+}
+
+fn read_agent_file_at(parent: &fs::File, name: &str) -> Option<String> {
+    let file = open_agent_regular_file_at(parent, name)?;
+    let mut body = String::new();
+    file.take((64 << 10) + 1).read_to_string(&mut body).ok()?;
+    (body.len() <= 64 << 10).then_some(body)
+}
+
+fn read_agent_config_beneath(home: &Path, relative: &str) -> Option<String> {
+    let (parent, file) = relative.rsplit_once('/')?;
+    let directory = open_agent_directory(&home.join(parent))?;
+    read_agent_file_at(&directory, file)
+}
+
+fn read_agent_dir_entries(directory: &fs::File) -> Option<fs::ReadDir> {
+    fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd())).ok()
+}
+
+fn collect_cursor_user_assets(
+    home: &Path,
+    assets: &mut BTreeSet<DeviceAgentAsset>,
+    manifest_reads: &mut usize,
+) {
+    if let Some(directory) = open_agent_directory(&home.join(".cursor/agents")) {
+        if let Some(entries) = read_agent_dir_entries(&directory) {
+            for entry in entries.take(256).flatten() {
+                if assets.len() >= 128 {
+                    break;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some(name) = name
+                    .strip_suffix(".md")
+                    .filter(|name| safe_agent_asset_name(name))
+                else {
+                    continue;
+                };
+                if open_agent_regular_file_at(&directory, &format!("{name}.md")).is_some() {
+                    assets.insert(DeviceAgentAsset {
+                        client: "cursor".into(),
+                        kind: "agent".into(),
+                        name: name.into(),
+                        source: ".cursor/agents".into(),
+                    });
+                }
+            }
+        }
+    }
+    let Some(directory) = open_agent_directory(&home.join(".cursor/plugins/local")) else {
+        return;
+    };
+    let Some(entries) = read_agent_dir_entries(&directory) else {
+        return;
+    };
+    for entry in entries.take(256).flatten() {
+        if assets.len() >= 128 || *manifest_reads >= 256 {
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !safe_agent_asset_name(&name) {
+            continue;
+        }
+        let Some(plugin_dir) = open_agent_child_dir(&directory, name.as_bytes()) else {
+            continue;
+        };
+        *manifest_reads += 1;
+        let manifest = read_agent_file_at(&plugin_dir, "plugin.json").or_else(|| {
+            let cursor_dir = open_agent_child_dir(&plugin_dir, b".cursor-plugin")?;
+            read_agent_file_at(&cursor_dir, "plugin.json")
+        });
+        let Some(manifest) = manifest else {
+            continue;
+        };
+        let valid_name = serde_json::from_str::<serde_json::Value>(&manifest)
+            .ok()
+            .and_then(|value| value.get("name")?.as_str().map(str::to_string))
+            .is_some_and(|manifest_name| safe_agent_asset_name(&manifest_name));
+        if valid_name {
+            assets.insert(DeviceAgentAsset {
+                client: "cursor".into(),
+                kind: "plugin".into(),
+                name,
+                source: ".cursor/plugins/local".into(),
+            });
+        }
+    }
+}
+
+fn codex_enabled_plugin_names(body: &str) -> Vec<String> {
+    let Ok(value) = body.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    value
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|plugins| plugins.iter())
+        .filter_map(|(name, config)| {
+            (safe_agent_asset_name(name)
+                && config.get("enabled").and_then(toml::Value::as_bool) == Some(true))
+            .then(|| name.clone())
+        })
+        .take(128)
+        .collect()
 }
 
 fn read_agent_config(path: &std::path::Path) -> Option<String> {
@@ -2736,10 +2731,152 @@ mod tests {
     }
 
     #[test]
+    fn user_cursor_and_codex_plugin_probes_validate_files_and_hide_values() {
+        let root = tmpdir("user-agent-plugins");
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".cursor/agents")).unwrap();
+        fs::write(home.join(".cursor/agents/reviewer.md"), "private prompt").unwrap();
+        fs::write(home.join(".cursor/agents/.hidden.md"), "private prompt").unwrap();
+        std::os::unix::fs::symlink(
+            home.join(".cursor/agents/reviewer.md"),
+            home.join(".cursor/agents/linked.md"),
+        )
+        .unwrap();
+        for plugin in [
+            "agent-format",
+            "cursor-format",
+            "invalid",
+            "linked",
+            "oversized",
+        ] {
+            fs::create_dir_all(home.join(".cursor/plugins/local").join(plugin)).unwrap();
+        }
+        fs::write(
+            home.join(".cursor/plugins/local/agent-format/plugin.json"),
+            r#"{"name":"agent-format","description":"private"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".cursor/plugins/local/cursor-format/.cursor-plugin"))
+            .unwrap();
+        fs::write(
+            home.join(".cursor/plugins/local/cursor-format/.cursor-plugin/plugin.json"),
+            r#"{"name":"cursor-format","url":"https://private.example"}"#,
+        )
+        .unwrap();
+        fs::write(
+            home.join(".cursor/plugins/local/invalid/plugin.json"),
+            "not json",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            home.join(".cursor/plugins/local/agent-format/plugin.json"),
+            home.join(".cursor/plugins/local/linked/plugin.json"),
+        )
+        .unwrap();
+        fs::write(
+            home.join(".cursor/plugins/local/oversized/plugin.json"),
+            format!(
+                "{{\"name\":\"oversized\",\"data\":\"{}\"}}",
+                "x".repeat(65 << 10)
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            "[plugins.\"audit@marketplace\"]\nenabled = true\nsecret = 'private'\n[plugins.\"off@marketplace\"]\nenabled = false\n[plugins.\"unset@marketplace\"]\nfoo = true\n[plugins.\"https://private.example/path\"]\nenabled = true\n",
+        )
+        .unwrap();
+        let (_, _, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
+        for (client, kind, name) in [
+            ("cursor", "agent", "reviewer"),
+            ("cursor", "plugin", "agent-format"),
+            ("cursor", "plugin", "cursor-format"),
+            ("codex", "plugin", "audit@marketplace"),
+        ] {
+            assert!(
+                assets.iter().any(|asset| asset.client == client
+                    && asset.kind == kind
+                    && asset.name == name),
+                "missing {client}/{kind}/{name}"
+            );
+        }
+        for name in [
+            ".hidden",
+            "linked",
+            "invalid",
+            "oversized",
+            "off@marketplace",
+            "unset@marketplace",
+            "https://private.example/path",
+        ] {
+            assert!(
+                !assets.iter().any(|asset| asset.name == name),
+                "unexpected {name}"
+            );
+        }
+        let output = serde_json::to_string(&assets).unwrap();
+        assert!(!output.contains("private"));
+        assert!(!output.contains("https://"));
+        assert!(!output.contains("plugin.json"));
+
+        // A symlink in any parent, including the user directory, is rejected.
+        let link = root.join("linked-home");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let (_, _, linked_assets) = collect_agent_discovery_from(&[link], &[]);
+        assert!(
+            !linked_assets
+                .iter()
+                .any(|asset| asset.kind == "plugin" && asset.client == "cursor")
+        );
+        assert!(
+            !linked_assets
+                .iter()
+                .any(|asset| asset.kind == "agent" && asset.client == "cursor")
+        );
+        assert!(
+            !linked_assets
+                .iter()
+                .any(|asset| asset.kind == "plugin" && asset.client == "codex")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn user_cursor_probe_keeps_asset_and_directory_entry_caps() {
+        let root = tmpdir("user-agent-cap");
+        let home = root.join("home");
+        let agents = home.join(".cursor/agents");
+        fs::create_dir_all(&agents).unwrap();
+        for index in 0..300 {
+            fs::write(agents.join(format!("agent-{index:03}.md")), "private").unwrap();
+        }
+        let (_, _, assets) = collect_agent_discovery_from(&[home], &[]);
+        assert!(assets.len() <= 128);
+        assert!(
+            assets
+                .iter()
+                .all(|asset| asset.client == "cursor" && asset.kind == "agent")
+        );
+        let plugin_home = root.join("plugin-home");
+        for index in 0..300 {
+            let plugin = plugin_home.join(format!(".cursor/plugins/local/plugin-{index:03}"));
+            fs::create_dir_all(&plugin).unwrap();
+            fs::write(plugin.join("plugin.json"), "invalid").unwrap();
+        }
+        let mut plugin_assets = BTreeSet::new();
+        let mut manifest_reads = 0;
+        collect_cursor_user_assets(&plugin_home, &mut plugin_assets, &mut manifest_reads);
+        assert_eq!(manifest_reads, 256);
+        assert!(plugin_assets.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn project_discovery_is_bounded_and_hides_paths_and_values() {
         let root =
             std::env::temp_dir().join(format!("merlin-project-discovery-{}", std::process::id()));
-        let project = root.join("customer-private");
+        let project = root.join("team/customer-private");
         fs::create_dir_all(project.join(".cursor")).unwrap();
         fs::create_dir_all(project.join(".opencode")).unwrap();
         fs::create_dir_all(project.join(".agents")).unwrap();
@@ -2803,6 +2940,7 @@ mod tests {
         assert!(!assets.iter().any(|item| item.name == "off@marketplace"));
         let payload = serde_json::to_string(&(servers, assets)).unwrap();
         assert!(!payload.contains("customer-private"));
+        assert!(!payload.contains("team"));
         assert!(!payload.contains("private-secret"));
         fs::remove_file(project.join(".cursor/mcp.json")).unwrap();
         std::os::unix::fs::symlink(
@@ -2816,6 +2954,63 @@ mod tests {
                 .iter()
                 .any(|item| item.name == "docs")
         );
+        let outside = tmpdir("project-outside");
+        fs::create_dir_all(outside.join(".cursor")).unwrap();
+        fs::write(
+            outside.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"outside":{"command":"ignored"}}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked-project")).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("linked-team")).unwrap();
+        assert!(
+            !collect_project_agent_discovery(&[root.clone()])
+                .0
+                .iter()
+                .any(|item| item.name == "outside")
+        );
+        assert!(
+            collect_project_agent_discovery(&[root.join("linked-team")])
+                .0
+                .is_empty()
+        );
+        fs::remove_dir_all(outside).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_discovery_caps_descendants_and_depth() {
+        let root = tmpdir("project-depth-cap");
+        for index in 0..31 {
+            fs::create_dir_all(root.join(format!("a{index:02}/deep/.cursor"))).unwrap();
+        }
+        fs::write(
+            root.join("a00/deep/.cursor/mcp.json"),
+            r#"{"mcpServers":{"within-cap":{"command":"ignored"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("a01/deep/.cursor/mcp.json"),
+            r#"{"mcpServers":{"past-cap":{"command":"ignored"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("a00/deep/too-deep/.cursor")).unwrap();
+        fs::write(
+            root.join("a00/deep/too-deep/.cursor/mcp.json"),
+            r#"{"mcpServers":{"past-depth":{"command":"ignored"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            project_discovery::project_directory_count(
+                &root,
+                Instant::now() + Duration::from_secs(5),
+            ),
+            33
+        );
+        let (servers, _) = collect_project_agent_discovery(&[root.clone()]);
+        assert!(servers.iter().any(|item| item.name == "within-cap"));
+        assert!(!servers.iter().any(|item| item.name == "past-cap"));
+        assert!(!servers.iter().any(|item| item.name == "past-depth"));
         fs::remove_dir_all(root).unwrap();
     }
 
