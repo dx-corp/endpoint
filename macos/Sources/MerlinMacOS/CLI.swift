@@ -16,7 +16,8 @@ struct Merlin: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "merlin-macos",
         abstract: "Deixic Endpoint: endpoint telemetry and policy enforcement for macOS",
-        subcommands: [RunCommand.self, CheckCommand.self, PostureCommand.self, GenHashCommand.self]
+        subcommands: [RunCommand.self, CheckCommand.self, PostureCommand.self, GenHashCommand.self,
+                      MCPHookCommand.self]
     )
 }
 
