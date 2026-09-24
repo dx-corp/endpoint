@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::rules::{Action, Rule};
 use crate::sync;
 
 pub const QUEUE_CAP: usize = 1000;
@@ -50,6 +51,47 @@ impl AlertHook {
             "exe": exe,
             "ts": crate::spool::now_ts(),
         })
+    }
+
+    /// Add only policy-authored guidance for rules that actually enforced this
+    /// event. The event's process paths and command line are never consulted.
+    pub fn enforcement_alert(
+        kind: &str,
+        matched: &[String],
+        comm: &str,
+        exe: Option<&str>,
+        matched_rules: &[&Rule],
+        action: Action,
+    ) -> Value {
+        let mut event = Self::alert(kind, matched, comm, exe);
+        let alternatives: Vec<Value> = matched_rules
+            .iter()
+            .filter(|rule| rule.action == action)
+            .filter_map(|rule| {
+                let alternative = rule.approved_alternative.as_ref()?;
+                // Local rules may not have come from the managed policy
+                // validator. Keep this optional extension bounded even then.
+                if rule.name.is_empty()
+                    || rule.name.len() > 128
+                    || rule
+                        .name
+                        .chars()
+                        .any(|c| c == '/' || c == '\\' || c.is_control())
+                {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "rule": rule.name,
+                    "name": alternative.name,
+                    "url": alternative.url,
+                }))
+            })
+            .take(16)
+            .collect();
+        if !alternatives.is_empty() {
+            event["approved_alternatives"] = Value::Array(alternatives);
+        }
+        event
     }
 }
 
@@ -98,6 +140,7 @@ pub fn spawn(url: String) -> AlertHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::Rules;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc::Receiver;
@@ -154,6 +197,7 @@ mod tests {
         assert_eq!(parsed["rules"][0], "kill-netcat");
         assert_eq!(parsed["comm"], "nc");
         assert_eq!(parsed["exe"], "/usr/bin/nc");
+        assert!(parsed.get("approved_alternatives").is_none());
         assert!(parsed["host"].is_string());
         assert!(parsed["ts"].is_number());
     }
@@ -168,5 +212,53 @@ mod tests {
             hook.fire(AlertHook::alert("deny", &[], "evil", None));
         }
         assert_eq!(dropped.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn guidance_only_uses_matching_enforcing_rules() {
+        let rules = Rules::parse(concat!(
+            "rules:\n",
+            "  - name: block-cursor\n    match:\n      path_basename: Cursor\n    action: block\n    approved_alternative:\n      name: Approved editor\n      url: https://tools.example.com/editor\n",
+            "  - name: block-other\n    match:\n      path_basename: Other\n    action: block\n    approved_alternative:\n      name: Other editor\n      url: https://tools.example.com/other\n",
+            "  - name: kill-agent\n    match:\n      path_basename: Agent\n    action: kill\n    approved_alternative:\n      name: Approved agent\n      url: https://tools.example.com/agent\n",
+            "  - name: observe\n    match:\n      path_basename: Monitor\n    action: log\n",
+        ))
+        .unwrap();
+        let deny = AlertHook::enforcement_alert(
+            "deny",
+            &["block-cursor".into(), "kill-agent".into(), "observe".into()],
+            "Cursor",
+            None,
+            &[&rules.rules[0]],
+            Action::Block,
+        );
+        assert_eq!(deny["approved_alternatives"].as_array().unwrap().len(), 1);
+        assert_eq!(deny["approved_alternatives"][0]["rule"], "block-cursor");
+        assert_eq!(deny["approved_alternatives"][0]["name"], "Approved editor");
+        assert_eq!(
+            deny["approved_alternatives"][0]["url"],
+            "https://tools.example.com/editor"
+        );
+        assert!(!deny.to_string().contains("Other editor"));
+        assert!(!deny.to_string().contains("Approved agent"));
+
+        let kill = AlertHook::enforcement_alert(
+            "kill",
+            &["kill-agent".into()],
+            "Agent",
+            None,
+            &[&rules.rules[2]],
+            Action::Kill,
+        );
+        assert_eq!(kill["approved_alternatives"][0]["name"], "Approved agent");
+        let absent = AlertHook::enforcement_alert(
+            "deny",
+            &["block-other".into()],
+            "Other",
+            None,
+            &[&rules.rules[1]],
+            Action::Kill,
+        );
+        assert!(absent.get("approved_alternatives").is_none());
     }
 }

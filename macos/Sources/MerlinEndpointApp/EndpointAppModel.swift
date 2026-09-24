@@ -10,11 +10,13 @@ final class EndpointAppModel: ObservableObject {
     @Published private(set) var readFailed = false
 
     private let readStatus: @Sendable () async throws -> LocalDeviceStatus
+    private let notifications: EnforcementNotifications
 
     init(readStatus: @escaping @Sendable () async throws -> LocalDeviceStatus = {
         try await LocalStatusClient().readStatus()
-    }) {
+    }, notifications: EnforcementNotifications = EnforcementNotifications()) {
         self.readStatus = readStatus
+        self.notifications = notifications
     }
 
     func refresh() async {
@@ -22,8 +24,12 @@ final class EndpointAppModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            status = try await readStatus()
+            let current = try await readStatus()
+            status = current
             readFailed = false
+            if let notice = current.enforcement {
+                Task { [notifications] in await notifications.presentIfNeeded(notice) }
+            }
         } catch {
             // A previously successful read cannot establish current collector health.
             status = nil

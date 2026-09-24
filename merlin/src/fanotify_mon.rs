@@ -314,11 +314,24 @@ fn handle_event(
             matched
         );
         if let Some(hook) = alert {
-            hook.fire(crate::alert::AlertHook::alert(
+            let enforcing_rules: Vec<_> = rules
+                .rules
+                .iter()
+                .filter(|rule| {
+                    rule.action == Action::Block
+                        && (rule.matches(&ctx)
+                            || (unhashable
+                                && !policy.allow_unhashable
+                                && rule.matches_with_unresolved_sha256(&ctx)))
+                })
+                .collect();
+            hook.fire(crate::alert::AlertHook::enforcement_alert(
                 "deny",
                 &matched,
                 comm.as_deref().unwrap_or(""),
                 path_str.as_deref(),
+                &enforcing_rules,
+                Action::Block,
             ));
         }
         spool::try_send(

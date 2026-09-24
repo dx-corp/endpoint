@@ -22,6 +22,7 @@ struct DeviceInventory: Encodable, Sendable {
     let agentApps: [DeviceAgentApp]
     let mcpServers: [DeviceMCPServer]
     let agentAssets: [DeviceAgentAsset]
+    let mcpHookCoverage: DeviceMCPHookCoverage
     let cloudProvider: String
     let cloudInstanceID: String
     let cloudRegion: String
@@ -37,6 +38,7 @@ struct DeviceInventory: Encodable, Sendable {
         case agentApps = "agent_apps"
         case mcpServers = "mcp_servers"
         case agentAssets = "agent_assets"
+        case mcpHookCoverage = "mcp_hook_coverage"
         case cloudProvider = "cloud_provider"
         case cloudInstanceID = "cloud_instance_id"
         case cloudRegion = "cloud_region"
@@ -163,6 +165,7 @@ func collectDeviceInventory() -> DeviceInventory {
         agentApps: discovery.apps,
         mcpServers: discovery.servers,
         agentAssets: discovery.assets,
+        mcpHookCoverage: collectMCPHookCoverage(),
         cloudProvider: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_PROVIDER"], 128),
         cloudInstanceID: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_INSTANCE_ID"], 128),
         cloudRegion: inventoryText(ProcessInfo.processInfo.environment["MERLIN_CLOUD_REGION"], 128),
@@ -206,7 +209,7 @@ private func macProjectDirectory(_ path: String) -> Bool {
 }
 
 func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
-    let configs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true)]
+    let configs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true), ("opencode", ".opencode/opencode.json", false), ("agents", ".agents/mcp.json", false)]
     let assetDirs: [(String, String, String, String)] = [("agents", "skill", ".agents/skills", "skill"), ("claude", "skill", ".claude/skills", "skill"), ("claude", "agent", ".claude/agents", "md"), ("claude", "plugin", ".claude/plugins", "plugin"), ("codex", "skill", ".codex/skills", "skill"), ("cursor", "skill", ".cursor/skills", "skill"), ("maestro", "plugin", ".maestro/plugins", "plugin"), ("maestro", "plugin", ".composer/plugins", "plugin")]
     var found = Set<String>()
     var assets = Set<String>()
@@ -232,7 +235,7 @@ func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPSer
                     entries = tomlMCPEntries(body)
                 } else {
                     let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                    entries = mcpEntries(object?["mcpServers"] ?? object?["servers"])
+                    entries = mcpEntries(client == "opencode" ? object?["mcp"] : (object?["mcpServers"] ?? object?["servers"]))
                 }
                 for (name, transport) in entries where safeAgentAssetName(name) {
                     found.insert("\(client)\u{0}\(name)\u{0}project/\(relative)\u{0}\(transport)")
@@ -411,7 +414,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                 entries = mcpEntries(object?["mcpServers"] ?? object?["servers"])
             }
-            for (name, transport) in entries where name.utf8.count <= 128 && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+            for (name, transport) in entries where safeAgentAssetName(name) {
                 found.insert("\(client)\u{0}\(name)\u{0}\(relative)\u{0}\(transport)")
                 if found.count >= 128 { break }
             }

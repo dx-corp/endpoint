@@ -3,25 +3,63 @@ import SwiftUI
 
 @main
 struct MerlinEndpointApp: App {
-    @StateObject private var model = EndpointAppModel()
+    @NSApplicationDelegateAdaptor(EndpointAppDelegate.self) private var appDelegate
     @StateObject private var session = EndpointSessionModel()
     @StateObject private var updater = EndpointUpdaterModel()
 
     var body: some Scene {
         // The primary scene presents device details on launch, including a fresh install.
         Window("Deixic Endpoint", id: "device-details") {
-            EndpointDetailView(model: model, session: session, updater: updater)
+            EndpointDetailView(model: appDelegate.model, session: session, updater: updater)
         }
         .defaultSize(width: 700, height: 680)
         .windowResizability(.contentMinSize)
 
         MenuBarExtra {
-            EndpointPopover(model: model, session: session, updater: updater)
+            EndpointPopover(model: appDelegate.model, session: session, updater: updater)
         } label: {
-            Label("Deixic Endpoint", systemImage: model.status?.enforcement == nil ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
+            EndpointMenuBarLabel(model: appDelegate.model)
         }
         .menuBarExtraStyle(.window)
 
+    }
+}
+
+private struct EndpointMenuBarLabel: View {
+    @ObservedObject var model: EndpointAppModel
+
+    var body: some View {
+        Label("Deixic Endpoint", systemImage: model.status?.enforcement == nil
+            ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
+    }
+}
+
+@MainActor
+final class EndpointAppDelegate: NSObject, NSApplicationDelegate {
+    let model: EndpointAppModel
+    private let installNotifications: () -> Void
+    private var monitorTask: Task<Void, Never>?
+
+    override convenience init() {
+        self.init(model: EndpointAppModel(),
+                  installNotifications: { EnforcementNotificationRouter.shared.install() })
+    }
+
+    init(model: EndpointAppModel, installNotifications: @escaping () -> Void) {
+        self.model = model
+        self.installNotifications = installNotifications
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard monitorTask == nil else { return }
+        installNotifications()
+        monitorTask = Task { [model] in await model.monitor() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        monitorTask?.cancel()
+        monitorTask = nil
     }
 }
 
@@ -76,6 +114,5 @@ struct EndpointPopover: View {
         .padding(20)
         .frame(width: 360)
         .task { await session.monitor() }
-        .task { await model.monitor() }
     }
 }

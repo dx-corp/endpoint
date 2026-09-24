@@ -59,7 +59,6 @@ struct EndpointDetailView: View {
         }
         .frame(minWidth: 560, minHeight: 480)
         .task { await session.monitor() }
-        .task { await model.monitor() }
     }
 
     private func reportingSection(_ status: LocalDeviceStatus) -> some View {
