@@ -60,6 +60,17 @@ private func spoolEvents(_ path: String) -> [[String: Any]] {
     }
 }
 
+private func waitForSleep(_ pid: pid_t) throws -> ProcessIdentity {
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline {
+        if let process = procInfo(pid), process.comm == "sleep" {
+            return process.identity
+        }
+        usleep(10_000)
+    }
+    throw MerlinError.plain("child did not exec /bin/sleep before suspend test deadline")
+}
+
 @Suite("suspend guardrails", .serialized)
 struct SuspendGuardrailTests {
     private func makeEngine(
@@ -99,7 +110,7 @@ struct SuspendGuardrailTests {
     @Test("no second-stage match: child is stopped, inspected, and resumed (suspend_released)")
     func resumeOnMismatch() throws {
         let signals = SignalRecorder(forReal: true)
-        let (engine, spoolPath) = try makeEngine(rulesYaml: """
+        var (engine, spoolPath) = try makeEngine(rulesYaml: """
         rules:
           - name: susp-sleep
             match: {path_basename: sleep}
@@ -108,8 +119,8 @@ struct SuspendGuardrailTests {
         defer { try? FileManager.default.removeItem(atPath: spoolPath) }
         let child = forkExec("/bin/sleep", ["30"])
         defer { Darwin.kill(child, SIGKILL); reap(child) }
-        usleep(200_000) // let the child exec
-        let identity = procInfo(child)?.identity
+        let identity = try waitForSleep(child)
+        engine.processIdentity = { pid in pid == child ? identity : procInfo(pid)?.identity }
         engine.handleExec(
             pid: child, ppid: getpid(), uid: getuid(), comm: "sleep", exe: "/bin/sleep",
             cmdline: "sleep 30", sha256: nil, cdhash: nil, identity: identity
@@ -126,7 +137,7 @@ struct SuspendGuardrailTests {
     @Test("second-stage kill rule matches: frozen child is killed (via_suspend)")
     func killOnMatch() throws {
         let signals = SignalRecorder(forReal: true)
-        let (engine, spoolPath) = try makeEngine(rulesYaml: """
+        var (engine, spoolPath) = try makeEngine(rulesYaml: """
         rules:
           - name: susp-sleep
             match: {path_basename: sleep}
@@ -140,8 +151,8 @@ struct SuspendGuardrailTests {
         defer { try? FileManager.default.removeItem(atPath: spoolPath) }
         let child = forkExec("/bin/sleep", ["30"])
         defer { Darwin.kill(child, SIGKILL); reap(child) }
-        usleep(200_000)
-        let identity = procInfo(child)?.identity
+        let identity = try waitForSleep(child)
+        engine.processIdentity = { pid in pid == child ? identity : procInfo(pid)?.identity }
         engine.handleExec(
             pid: child, ppid: getpid(), uid: getuid(), comm: "sleep", exe: "/bin/sleep",
             cmdline: "sleep 30", sha256: nil, cdhash: nil, identity: identity

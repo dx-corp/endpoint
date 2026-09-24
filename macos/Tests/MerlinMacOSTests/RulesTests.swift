@@ -1,4 +1,5 @@
 import Foundation
+import MerlinClientCore
 import Testing
 @testable import MerlinMacOS
 
@@ -26,6 +27,44 @@ struct RulesTests {
         #expect(parsed.approvedAlternative?.url.absoluteString == "https://tools.example.com/editor")
         #expect(throws: Error.self) { try rule(base.replacingOccurrences(of: "action: block", with: "action: log")) }
         #expect(throws: Error.self) { try rule(base.replacingOccurrences(of: "https://tools.example.com/editor", with: "http://tools.example.com/editor")) }
+    }
+
+    @Test("an actual deny publishes the mapped alternative, and a failsafe does not")
+    func deniedExecutionGuidance() throws {
+        let parsed = try rule("name: block-cursor\nmatch:\n  path_basename: Cursor\naction: block\napproved_alternative:\n  name: Approved editor\n  url: https://tools.example.com/editor\n")
+        let store = LocalStatusStore()
+        var engine = Engine(rules: Rules(rules: [parsed]),
+                            spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                            canBlock: true)
+        engine.onEnforcement = { action, alternative in
+            store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
+        #expect(engine.authVerdict(pid: 1, uid: 0, path: "/tmp/Cursor", sha256: nil, cdhash: nil).allow)
+        #expect(store.snapshot().enforcement == nil)
+        #expect(!engine.authVerdict(pid: 42_424, uid: 501, path: "/tmp/Cursor", sha256: nil, cdhash: nil).allow)
+        #expect(store.snapshot().enforcement?.action == .blocked)
+        #expect(store.snapshot().enforcement?.approvedName == "Approved editor")
+    }
+
+    @Test("reactive kill guidance appears only after a successful kill")
+    func stoppedExecutionGuidance() throws {
+        let parsed = try rule("name: stop-claude\nmatch:\n  path_basename: claude\naction: kill\napproved_alternative:\n  name: Approved agent\n  url: https://tools.example.com/agent\n")
+        let store = LocalStatusStore()
+        let identity = ProcessIdentity(startSec: 1, startUsec: 1)
+        var engine = Engine(rules: Rules(rules: [parsed]),
+                            spool: try SpoolWriter(path: NSTemporaryDirectory() + "merlin-guidance-\(UUID().uuidString).jsonl"),
+                            canBlock: false, killImpl: { _ in 0 }, selfPID: 42_424,
+                            processIdentity: { _ in identity })
+        engine.onEnforcement = { action, alternative in
+            store.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
+        engine.handleExec(pid: 1, ppid: nil, uid: 0, comm: "claude", exe: "/tmp/claude",
+                          cmdline: nil, sha256: nil, cdhash: nil, identity: identity)
+        #expect(store.snapshot().enforcement == nil)
+        engine.handleExec(pid: 123, ppid: nil, uid: 501, comm: "claude", exe: "/tmp/claude",
+                          cmdline: nil, sha256: nil, cdhash: nil, identity: identity)
+        #expect(store.snapshot().enforcement?.action == .stopped)
+        #expect(store.snapshot().enforcement?.approvedName == "Approved agent")
     }
     @Test("cross-loads the Linux repo's rules/block-demo.yaml")
     func blockDemoYaml() throws {

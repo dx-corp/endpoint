@@ -10,6 +10,12 @@ final class LocalStatusStore: @unchecked Sendable {
     private var deviceID: String?
     private var enrollment: LocalEnrollmentState = .unconfigured
     private var lastServerContact: Date?
+    private var enforcement: LocalEnforcementNotice?
+
+    func recordEnforcement(action: LocalEnforcementAction, approvedName: String?, approvedURL: URL?, at now: Date = Date()) {
+        let notice = LocalEnforcementNotice(action: action, occurredAt: now, approvedName: approvedName, approvedURL: approvedURL)
+        lock.withLock { enforcement = notice }
+    }
 
     func configure(deviceID: String?) {
         lock.withLock {
@@ -73,7 +79,8 @@ final class LocalStatusStore: @unchecked Sendable {
             return LocalDeviceStatus(
                 observedAt: report.flatMap { Double($0.collectedAt) }.map(Date.init(timeIntervalSince1970:)) ?? .distantPast,
                 deviceID: safeID, collectorRunning: true, enrollment: enrollment,
-                posture: summary, checks: checks, lastServerContact: lastServerContact)
+                posture: summary, checks: checks, lastServerContact: lastServerContact,
+                enforcement: enforcement.flatMap { $0.isRecent() ? $0 : nil })
         }
     }
 }

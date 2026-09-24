@@ -45,6 +45,30 @@ import Testing
         #expect(try LocalDeviceStatus.decode(encoded).checks.first?.status == .finding)
     }
 
+    @Test func enforcementGuidanceIsRecentAndContainsOnlyApprovedMapping() throws {
+        let store = LocalStatusStore()
+        let approvedURL = try #require(URL(string: "https://approved.example.com/editor"))
+        store.recordEnforcement(action: .blocked, approvedName: "Approved editor", approvedURL: approvedURL)
+        let data = try JSONEncoder().encode(store.snapshot())
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.contains("Approved editor"))
+        #expect(!text.contains("process"))
+        #expect(try LocalDeviceStatus.decode(data).enforcement?.approvedURL == approvedURL)
+
+        store.recordEnforcement(action: .stopped, approvedName: nil, approvedURL: nil,
+                                at: Date().addingTimeInterval(-3601))
+        #expect(store.snapshot().enforcement == nil)
+    }
+
+    @Test func malformedGuidanceIsRejectedAtIPCBoundary() throws {
+        let status = LocalDeviceStatus(observedAt: Date(), deviceID: nil, collectorRunning: true,
+                                       enrollment: .configured, posture: .unknown,
+                                       checks: LocalStatusStore().snapshot().checks, lastServerContact: nil,
+                                       enforcement: LocalEnforcementNotice(action: .blocked, occurredAt: Date(),
+                                           approvedName: "Injected", approvedURL: URL(string: "https://user:secret@example.com")))
+        #expect(throws: (any Error).self) { try LocalDeviceStatus.decode(JSONEncoder().encode(status)) }
+    }
+
     @Test func unknownChecksDoNotBecomeSecure() {
         let store = LocalStatusStore()
         store.publish(makeDevicePostureReport(snapshot: PostureSnapshot(values: ["filevault": "unknown"], findings: [:])))

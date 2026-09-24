@@ -248,27 +248,27 @@ struct RunCommand: ParsableCommand {
             try withExtendedLifetime(syncClient) {
             switch provider {
         case .es:
-            let p = try makeES(rulesBox: rulesBox, spool: spoolWriter)
+            let p = try makeES(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
             merlinLog("info", "merlin is running; ctrl-c to stop")
             withExtendedLifetime(p) { parkUntilSignal() }
         case .kqueue:
-            let p = try makeKqueue(rulesBox: rulesBox, spool: spoolWriter)
+            let p = try makeKqueue(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
             merlinLog("info", "merlin is running; ctrl-c to stop")
             withExtendedLifetime(p) { parkUntilSignal() }
         case .bsm:
-            let p = try makeBSM(rulesBox: rulesBox, spool: spoolWriter)
+            let p = try makeBSM(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
             merlinLog("info", "merlin is running; ctrl-c to stop")
             withExtendedLifetime(p) { parkUntilSignal() }
         case .auto:
             do {
-                let p = try makeES(rulesBox: rulesBox, spool: spoolWriter)
+                let p = try makeES(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
                 merlinLog("info", "merlin is running; ctrl-c to stop")
                 withExtendedLifetime(p) { parkUntilSignal() }
             } catch {
                 merlinLog("warn", "ES provider unavailable: \(error)")
                 merlinLog("warn", "falling back to kqueue provider (telemetry only)")
                 do {
-                    let p = try makeKqueue(rulesBox: rulesBox, spool: spoolWriter)
+                    let p = try makeKqueue(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
                     merlinLog("info", "merlin is running; ctrl-c to stop")
                     withExtendedLifetime(p) { parkUntilSignal() }
                 } catch {
@@ -278,7 +278,7 @@ struct RunCommand: ParsableCommand {
                     // only for older systems where it still works.
                     merlinLog("warn", "kqueue provider unavailable: \(error)")
                     merlinLog("warn", "falling back to OpenBSM provider (telemetry only; dead on macOS 14+)")
-                    let p = try makeBSM(rulesBox: rulesBox, spool: spoolWriter)
+                    let p = try makeBSM(rulesBox: rulesBox, spool: spoolWriter, localStatus: localStatus)
                     merlinLog("info", "merlin is running; ctrl-c to stop")
                     withExtendedLifetime(p) { parkUntilSignal() }
                 }
@@ -290,8 +290,11 @@ struct RunCommand: ParsableCommand {
         }
     }
 
-    private func makeES(rulesBox: RulesBox, spool: SpoolWriter) throws -> ESProvider {
-        let engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: true)
+    private func makeES(rulesBox: RulesBox, spool: SpoolWriter, localStatus: LocalStatusStore) throws -> ESProvider {
+        var engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: true)
+        engine.onEnforcement = { action, alternative in
+            localStatus.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
         let provider = ESProvider(engine: engine)
         try provider.start()
         merlinLog("info", "provider: Endpoint Security (AUTH_EXEC enforcement active)")
@@ -340,8 +343,11 @@ struct RunCommand: ParsableCommand {
         }
     }
 
-    private func makeKqueue(rulesBox: RulesBox, spool: SpoolWriter) throws -> KqueueProvider {
-        let engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: false)
+    private func makeKqueue(rulesBox: RulesBox, spool: SpoolWriter, localStatus: LocalStatusStore) throws -> KqueueProvider {
+        var engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: false)
+        engine.onEnforcement = { action, alternative in
+            localStatus.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
         let degraded = engine.degradedBlockRuleNames()
         if !degraded.isEmpty {
             merlinLog("warn", "block rules \(degraded) cannot deny execs under the kqueue provider; degrading to kill+log")
@@ -352,8 +358,11 @@ struct RunCommand: ParsableCommand {
         return provider
     }
 
-    private func makeBSM(rulesBox: RulesBox, spool: SpoolWriter) throws -> BSMProvider {
-        let engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: false)
+    private func makeBSM(rulesBox: RulesBox, spool: SpoolWriter, localStatus: LocalStatusStore) throws -> BSMProvider {
+        var engine = Engine(rulesBox: rulesBox, spool: spool, canBlock: false)
+        engine.onEnforcement = { action, alternative in
+            localStatus.recordEnforcement(action: action, approvedName: alternative?.name, approvedURL: alternative?.url)
+        }
         let degraded = engine.degradedBlockRuleNames()
         if !degraded.isEmpty {
             merlinLog("warn", "block rules \(degraded) cannot deny execs under the BSM provider; degrading to kill+log")

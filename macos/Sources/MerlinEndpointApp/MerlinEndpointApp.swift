@@ -18,7 +18,7 @@ struct MerlinEndpointApp: App {
         MenuBarExtra {
             EndpointPopover(model: model, session: session, updater: updater)
         } label: {
-            Label("Deixic Endpoint", systemImage: "shield.lefthalf.filled")
+            Label("Deixic Endpoint", systemImage: model.status?.enforcement == nil ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
         }
         .menuBarExtraStyle(.window)
 
@@ -43,6 +43,10 @@ struct EndpointPopover: View {
             }
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 LocalStatusSummary(model: model, now: context.date, compact: true)
+            }
+            if let notice = model.status?.enforcement {
+                Divider()
+                EnforcementNoticeView(notice: notice)
             }
             Divider()
             EndpointSessionView(session: session, compact: true)
