@@ -407,6 +407,7 @@ struct DeviceAgentCLI {
 struct DeviceMCPServer {
     client: String,
     name: String,
+    source: String,
 }
 
 #[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
@@ -414,6 +415,7 @@ struct DeviceAgentAsset {
     client: String,
     kind: String,
     name: String,
+    source: String,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -1903,10 +1905,13 @@ fn collect_agent_discovery_from(
         ("amp", ".config/amp/settings.json", false),
         ("qwen", ".qwen/settings.json", false),
         ("pi", ".pi/agent/settings.json", false),
+        ("maestro", ".maestro/config.toml", true),
+        ("maestro", ".composer/config.toml", true),
     ];
     let mut clis = BTreeSet::new();
     let mut servers = BTreeSet::new();
     let mut assets = BTreeSet::new();
+    let mut plugin_config_reads = 0;
     for name in CLIS {
         let found = system_bins
             .iter()
@@ -1945,6 +1950,9 @@ fn collect_agent_discovery_from(
             ("qwen", "skill", ".qwen/skills", ""),
             ("pi", "skill", ".pi/agent/skills", ""),
             ("pi", "extension", ".pi/agent/extensions", "js-ts"),
+            ("maestro", "skill", ".composer/skills", ""),
+            ("maestro", "plugin", ".maestro/plugins", "plugin"),
+            ("maestro", "plugin", ".composer/plugins", "plugin"),
         ] {
             let directory = home.join(relative);
             if !directory
@@ -1987,6 +1995,8 @@ fn collect_agent_discovery_from(
                         .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
                 {
                     Some(file_name.as_str())
+                } else if extension == "plugin" && kind_on_disk.is_dir() {
+                    Some(file_name.as_str())
                 } else {
                     None
                 };
@@ -1995,6 +2005,7 @@ fn collect_agent_discovery_from(
                         client: client.into(),
                         kind: kind.into(),
                         name: name.into(),
+                        source: relative.into(),
                     });
                     if client == "gemini" && kind == "extension" {
                         if let Some(body) = read_agent_config(
@@ -2005,7 +2016,29 @@ fn collect_agent_discovery_from(
                                     servers.insert(DeviceMCPServer {
                                         client: "gemini".into(),
                                         name: server,
+                                        source: ".gemini/extensions/*/gemini-extension.json".into(),
                                     });
+                                }
+                            }
+                        }
+                    }
+                    if client == "maestro" && kind == "plugin" {
+                        for config in ["mcp.json", ".mcp.json"] {
+                            if plugin_config_reads >= 32 {
+                                break;
+                            }
+                            if let Some(body) =
+                                read_agent_config(&directory.join(&file_name).join(config))
+                            {
+                                plugin_config_reads += 1;
+                                for server in json_mcp_names(&body) {
+                                    if safe_agent_asset_name(&server) {
+                                        servers.insert(DeviceMCPServer {
+                                            client: "maestro".into(),
+                                            name: server,
+                                            source: format!("{relative}/*/{config}"),
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -2027,6 +2060,7 @@ fn collect_agent_discovery_from(
                 client: (*client).into(),
                 kind: "config".into(),
                 name: "user".into(),
+                source: (*relative).into(),
             });
             if *client == "claude" && *relative == ".claude/settings.json" {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -2040,6 +2074,7 @@ fn collect_agent_discovery_from(
                                     client: "claude".into(),
                                     kind: "plugin".into(),
                                     name: name.clone(),
+                                    source: ".claude/settings.json".into(),
                                 });
                             }
                         }
@@ -2077,6 +2112,7 @@ fn collect_agent_discovery_from(
                     servers.insert(DeviceMCPServer {
                         client: (*client).into(),
                         name,
+                        source: (*relative).into(),
                     });
                     if servers.len() >= 128 {
                         break;
@@ -2321,6 +2357,29 @@ mod tests {
             "secret plugin",
         )
         .unwrap();
+        fs::create_dir_all(home.join(".maestro/plugins/audit/.plugin")).unwrap();
+        fs::write(
+            home.join(".maestro/plugins/audit/.plugin/plugin.json"),
+            "secret plugin",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".maestro/plugins/audit/mcp.json"),
+            r#"{"mcpServers":{"pluginsearch":{"command":"secret"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".maestro/plugins/convention")).unwrap();
+        fs::create_dir_all(home.join(".composer/skills/review")).unwrap();
+        fs::write(
+            home.join(".composer/skills/review/SKILL.md"),
+            "secret skill",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".maestro/config.toml"),
+            "[mcp_servers.managed]\nurl = 'https://secret.example'\n",
+        )
+        .unwrap();
         let (clis, servers, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
         assert_eq!(
             clis,
@@ -2338,19 +2397,33 @@ mod tests {
             vec![
                 DeviceMCPServer {
                     client: "amp".into(),
-                    name: "db".into()
+                    name: "db".into(),
+                    source: ".config/amp/settings.json".into()
                 },
                 DeviceMCPServer {
                     client: "codex".into(),
-                    name: "github".into()
+                    name: "github".into(),
+                    source: ".codex/config.toml".into()
                 },
                 DeviceMCPServer {
                     client: "cursor".into(),
-                    name: "docs".into()
+                    name: "docs".into(),
+                    source: ".cursor/mcp.json".into()
                 },
                 DeviceMCPServer {
                     client: "gemini".into(),
-                    name: "search".into()
+                    name: "search".into(),
+                    source: ".gemini/extensions/*/gemini-extension.json".into()
+                },
+                DeviceMCPServer {
+                    client: "maestro".into(),
+                    name: "managed".into(),
+                    source: ".maestro/config.toml".into()
+                },
+                DeviceMCPServer {
+                    client: "maestro".into(),
+                    name: "pluginsearch".into(),
+                    source: ".maestro/plugins/*/mcp.json".into()
                 },
             ]
         );
@@ -2375,6 +2448,19 @@ mod tests {
         assert!(assets.iter().any(|item| item.client == "opencode"
             && item.kind == "plugin"
             && item.name == "trace"));
+        assert!(
+            assets.iter().any(|item| item.client == "maestro"
+                && item.kind == "plugin"
+                && item.name == "audit")
+        );
+        assert!(
+            assets.iter().any(|item| item.client == "maestro"
+                && item.kind == "skill"
+                && item.name == "review")
+        );
+        assert!(assets.iter().any(|item| item.client == "maestro"
+            && item.kind == "plugin"
+            && item.name == "convention"));
         assert!(!assets.iter().any(|item| item.name == "off@marketplace"));
         assert!(!assets.iter().any(|item| item.name == "not-extension"));
         assert!(
@@ -2389,7 +2475,7 @@ mod tests {
             home.join(".cursor/mcp.json"),
         )
         .unwrap();
-        assert_eq!(collect_agent_discovery_from(&[home], &[]).1.len(), 3);
+        assert_eq!(collect_agent_discovery_from(&[home], &[]).1.len(), 5);
         fs::remove_dir_all(root).unwrap();
     }
 
