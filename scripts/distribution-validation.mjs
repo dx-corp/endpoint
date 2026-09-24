@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -75,6 +75,24 @@ export async function validateSafeTree(name, root) {
   return files;
 }
 
+export async function validateApiDocLinks(root, files) {
+  for (const file of files.filter(path => path.endsWith(".md"))) {
+    const source = await readFile(join(root, file), "utf8");
+    const links = [...source.matchAll(/\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g)]
+      .map(match => ({ target: match[1], base: dirname(join(root, file)) }));
+    const sourcePaths = [...source.matchAll(/(?<![A-Za-z0-9_./-])(?:sdk\/deixic|contracts|proto)\/[A-Za-z0-9_./-]+/g)]
+      .map(match => ({ target: match[0], base: root }));
+    for (const { target, base } of [...links, ...sourcePaths]) {
+      if (/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(target)) continue;
+      const pathname = decodeURIComponent(target.split(/[?#]/, 1)[0]);
+      const resolved = resolve(base, pathname);
+      const path = relative(root, resolved).split("\\").join("/");
+      requireValue(path && !path.startsWith("../") && path !== ".." && files.includes(path),
+        `broken API documentation link: ${file} -> ${target}`);
+    }
+  }
+}
+
 export async function validateProvenance(name, root) {
   const provenance = JSON.parse(await readFile(join(root, ".repository-projection.json"), "utf8"));
   exactKeys(provenance, [
@@ -127,6 +145,7 @@ async function validateDeployment(root, files) {
 }
 
 async function validateApi(root, files) {
+  await validateApiDocLinks(root, files);
   requireValue(files.includes("scripts/contracts/normalize-openapi-generated.py"), "API OpenAPI normalizer is missing");
   const actualProto = files.filter(path => path.startsWith("proto/") && path.endsWith(".proto")).map(path => path.slice(6)).sort();
   requireValue(JSON.stringify(actualProto) === JSON.stringify(PROTO), "API protobuf allowlist differs from the public SDK closure");
