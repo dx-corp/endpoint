@@ -54,4 +54,61 @@ struct MCPHookCoverageTests {
             Issue.record("accepted a symlinked managed file ancestor")
         }
     }
+
+    @Test("audit would-deny records append, bound, and count without exposing arguments")
+    func auditRecordAppendAndCount() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        appendMCPHookAuditRecord(
+            client: "claude",
+            record: MCPHookAuditRecord(server: "shadow", tool: "search", rule: "unapproved_server", observedAt: 1),
+            home: home.path)
+        appendMCPHookAuditRecord(
+            client: "claude",
+            record: MCPHookAuditRecord(server: "shadow", tool: "write", rule: "unapproved_server", observedAt: 2),
+            home: home.path)
+        appendMCPHookAuditRecord(
+            client: "codex",
+            record: MCPHookAuditRecord(server: "other", tool: "search", rule: "unapproved_server", observedAt: 3),
+            home: home.path)
+
+        let storePath = home.appendingPathComponent("Library/Application Support/Merlin/mcp-hook-audit-claude.jsonl").path
+        let contents = try #require(FileManager.default.contents(atPath: storePath))
+        let text = try #require(String(data: contents, encoding: .utf8))
+        #expect(text.contains("\"server\":\"shadow\""))
+        #expect(!text.contains("secret"))
+        #expect(text.split(separator: "\n").count == 2)
+
+        let coverage = collectMCPHookCoverage(homes: [home.path])
+        let claude = try #require(coverage.clients.first { $0.client == "claude" })
+        #expect(claude.wouldDenyCount == 2)
+        let codex = try #require(coverage.clients.first { $0.client == "codex" })
+        #expect(codex.wouldDenyCount == 1)
+        let cursor = try #require(coverage.clients.first { $0.client == "cursor" })
+        #expect(cursor.wouldDenyCount == 0)
+    }
+
+    @Test("the audit store resets instead of growing without bound")
+    func auditStoreBounded() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        for index in 0..<4096 {
+            appendMCPHookAuditRecord(
+                client: "cursor",
+                record: MCPHookAuditRecord(server: "shadow-\(index)", tool: "search", rule: "unapproved_server", observedAt: Double(index)),
+                home: home.path)
+        }
+        let storePath = home.appendingPathComponent("Library/Application Support/Merlin/mcp-hook-audit-cursor.jsonl").path
+        let attributes = try FileManager.default.attributesOfItem(atPath: storePath)
+        let size = (attributes[.size] as? NSNumber)?.intValue ?? Int.max
+        #expect(size <= 16 * 1024)
+
+        let coverage = collectMCPHookCoverage(homes: [home.path])
+        let cursor = try #require(coverage.clients.first { $0.client == "cursor" })
+        #expect(cursor.wouldDenyCount <= 128)
+    }
 }

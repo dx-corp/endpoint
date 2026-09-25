@@ -18,11 +18,91 @@ struct DeviceMCPHookCoverage: Encodable, Sendable {
 struct DeviceMCPHookClientCoverage: Encodable, Sendable {
     let client: String
     let registration: String
+    let wouldDenyCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case client, registration
+        case wouldDenyCount = "would_deny_count"
+    }
 }
 
 private let hookBinary = "/Library/Application Support/Merlin/bin/merlin-macos"
 private let hookReadLimit = 64 * 1024
 private let hookPolicyFile = "/Library/Application Support/Merlin/mcp-hook-policy.json"
+
+// Where the unprivileged mcp-hook CLI records audit-mode would-denies, one
+// bounded file per client per user. The root collector below only counts
+// entries; it never writes here and never uploads an entry's contents.
+private let hookAuditDirectory = "Library/Application Support/Merlin"
+private let hookAuditMaxBytes = 16 * 1024
+private let hookAuditMaxRecordsPerFile = 128
+
+private func hookAuditStorePath(home: String, client: String) -> String {
+    "\(home)/\(hookAuditDirectory)/mcp-hook-audit-\(client).jsonl"
+}
+
+// Called by the mcp-hook CLI, which runs as the interactive user invoking
+// Cursor, Claude Code, or Codex, so the store lives under that user's home
+// directory rather than the root-owned policy directory. Bounded: once the
+// file reaches the byte cap it is reset instead of growing without limit or
+// paying for a read-modify-write ring buffer.
+func appendMCPHookAuditRecord(client: String, record: MCPHookAuditRecord, home: String = NSHomeDirectory()) {
+    guard let line = try? JSONEncoder().encode(record), line.count <= hookAuditMaxBytes else { return }
+    let directory = "\(home)/\(hookAuditDirectory)"
+    try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+    let path = hookAuditStorePath(home: home, client: client)
+    let fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { return }
+    defer { close(fd) }
+    var info = stat()
+    guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return }
+    let currentSize = info.st_size >= 0 ? Int(info.st_size) : hookAuditMaxBytes
+    if currentSize + line.count + 1 > hookAuditMaxBytes {
+        _ = ftruncate(fd, 0)
+        lseek(fd, 0, SEEK_SET)
+    } else {
+        lseek(fd, 0, SEEK_END)
+    }
+    var payload = line
+    payload.append(0x0a)
+    payload.withUnsafeBytes { buffer in
+        _ = write(fd, buffer.baseAddress, buffer.count)
+    }
+}
+
+// Bounded, best-effort count of would-deny records left by the mcp-hook CLI
+// across every local account. A record that fails to parse still counts as
+// one line so a would-deny count cannot be hidden by corrupting the file.
+private func hookAuditWouldDenyCount(homes: [String], client: String) -> Int {
+    var total = 0
+    for home in homes.prefix(65) {
+        let path = hookAuditStorePath(home: home, client: client)
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { continue }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size >= 0, info.st_size <= hookAuditMaxBytes else { continue }
+        let data = FileHandle(fileDescriptor: fd, closeOnDealloc: false).readData(ofLength: hookAuditMaxBytes + 1)
+        guard data.count <= hookAuditMaxBytes, let text = String(data: data, encoding: .utf8) else { continue }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        total += min(lines.count, hookAuditMaxRecordsPerFile)
+    }
+    return min(total, hookAuditMaxRecordsPerFile * 65)
+}
+
+// Every local account with a home directory, plus root's. The collector runs
+// privileged and cannot know which account ran a given client, so it sums
+// across all of them, matching the enumeration collectMacAgentDiscovery uses
+// for the same reason in Inventory.swift.
+private func hookAuditHomes() -> [String] {
+    let root = "/Users"
+    let users = ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).sorted().prefix(64)
+    return ["/var/root"] + users.map { "\(root)/\($0)" }.filter { path in
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+}
 
 enum HookFileObservation {
     case absent
@@ -72,7 +152,7 @@ func observeManagedHookFile(_ path: String) -> HookFileObservation {
     return data.count <= hookReadLimit ? .data(data) : .unreadable
 }
 
-func collectMCPHookCoverage() -> DeviceMCPHookCoverage {
+func collectMCPHookCoverage(homes: [String] = hookAuditHomes()) -> DeviceMCPHookCoverage {
     let policy: String
     let digest: String?
     switch observeManagedHookFile(hookPolicyFile) {
@@ -106,7 +186,7 @@ func collectMCPHookCoverage() -> DeviceMCPHookCoverage {
         case .unreadable: registration = "unreadable"
         case .data(let data): registration = matches(data) ? "observed" : "not_observed"
         }
-        return DeviceMCPHookClientCoverage(client: client, registration: registration)
+        return DeviceMCPHookClientCoverage(client: client, registration: registration, wouldDenyCount: hookAuditWouldDenyCount(homes: homes, client: client))
     }
     return DeviceMCPHookCoverage(policy: policy, policySHA256: digest, clients: clients)
 }

@@ -78,5 +78,82 @@ struct MCPHookTests {
         let link = directory.appendingPathComponent("link.json")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: plain)
         #expect(throws: Error.self) { try readMCPHookPolicy(path: link.path) }
+        // A user-owned file cannot be told apart from a missing one: both
+        // report unavailablePolicy, not malformedPolicy, so a call still
+        // allows rather than denying on the strength of an attacker-writable
+        // file.
+        do {
+            _ = try readMCPHookPolicy(path: plain.path)
+            Issue.record("expected readMCPHookPolicy to throw")
+        } catch MCPHookError.unavailablePolicy {
+        } catch {
+            Issue.record("expected unavailablePolicy, got \(error)")
+        }
+    }
+
+    @Test("a tool name with an extra __ segment still resolves to its server")
+    func extraSegments() throws {
+        let parsed = try MCPHookPolicy.parse(Data(policy.utf8))
+        // "mcp__shadow__search__preview" previously split into 3 "__" parts
+        // and was treated as unrecognized (and so allowed) instead of being
+        // read as server "shadow", tool "search__preview".
+        for client in ["claude", "codex"] {
+            let verdict = try parsed.verdict(client: client, input: ["tool_name": "mcp__shadow__search__preview"])
+            guard case .deny(let reason) = verdict else {
+                Issue.record("\(client) allowed an unapproved server behind an extra __ segment")
+                continue
+            }
+            #expect(reason.contains("shadow"))
+        }
+        // The same shape resolves to an approved server and allows.
+        #expect(try parsed.verdict(client: "claude", input: ["tool_name": "mcp__deixic-gateway__search__preview"]) == .allow)
+    }
+
+    @Test("audit mode records a would-deny without denying")
+    func auditRecordsWouldDeny() throws {
+        let audit = try MCPHookPolicy.parse(Data(policy.replacingOccurrences(of: "enforce", with: "audit").utf8))
+        let denied = try audit.verdict(client: "claude", input: ["tool_name": "mcp__shadow__search"])
+        #expect(denied == .allow)
+        let record = audit.auditWouldDenyRecord(client: "claude", input: ["tool_name": "mcp__shadow__search"])
+        #expect(record?.server == "shadow")
+        #expect(record?.tool == "search")
+        #expect(record?.rule == "unapproved_server")
+        // Never records an approved call or one that never resolves to a server.
+        #expect(audit.auditWouldDenyRecord(client: "claude", input: ["tool_name": "mcp__deixic-gateway__search"]) == nil)
+        #expect(audit.auditWouldDenyRecord(client: "claude", input: ["tool_name": "Bash"]) == nil)
+        // Enforce mode never records: it denies directly instead.
+        let enforce = try MCPHookPolicy.parse(Data(policy.utf8))
+        #expect(enforce.auditWouldDenyRecord(client: "claude", input: ["tool_name": "mcp__shadow__search"]) == nil)
+    }
+
+    @Test("a malformed policy denies only when it declares enforce mode")
+    func malformedPolicyMode() {
+        let input: [String: Any] = ["tool_name": "mcp__shadow__search"]
+        let enforceVerdict = mcpHookErrorVerdict(MCPHookError.malformedPolicy(mode: "enforce"), client: "claude", input: input)
+        guard case .deny(let reason) = enforceVerdict else {
+            Issue.record("a malformed policy declaring enforce mode did not deny")
+            return
+        }
+        #expect(reason.contains("shadow"))
+        #expect(reason.contains("Contact your administrator"))
+        #expect(mcpHookErrorVerdict(MCPHookError.malformedPolicy(mode: "audit"), client: "claude", input: input) == .allow)
+        #expect(mcpHookErrorVerdict(MCPHookError.malformedPolicy(mode: nil), client: "claude", input: input) == .allow)
+        #expect(mcpHookErrorVerdict(MCPHookError.unavailablePolicy, client: "claude", input: input) == .allow)
+        #expect(mcpHookErrorVerdict(MCPHookError.invalidInput, client: "claude", input: input) == .allow)
+        // No input recovered (e.g. stdin failed before the policy did) still allows.
+        #expect(mcpHookErrorVerdict(MCPHookError.malformedPolicy(mode: "enforce"), client: "claude", input: nil) == .allow)
+        // A malformed enforce-mode policy on a call that never resolves to a server still allows.
+        #expect(mcpHookErrorVerdict(MCPHookError.malformedPolicy(mode: "enforce"), client: "claude", input: ["tool_name": "Bash"]) == .allow)
+    }
+
+    @Test("peekMCPHookPolicyMode reads a mode from an otherwise malformed policy")
+    func peekMode() {
+        #expect(peekMCPHookPolicyMode(Data(#"{"schema_version":1,"mode":"enforce","approved_servers":"not an array"}"#.utf8)) == "enforce")
+        #expect(peekMCPHookPolicyMode(Data(#"{"mode":"audit","surprise":true}"#.utf8)) == "audit")
+        #expect(peekMCPHookPolicyMode(Data(#"{"mode":"disabled"}"#.utf8)) == nil)
+        #expect(peekMCPHookPolicyMode(Data(#"{"schema_version":1}"#.utf8)) == nil)
+        #expect(peekMCPHookPolicyMode(Data("not json".utf8)) == nil)
+        #expect(peekMCPHookPolicyMode(Data("[]".utf8)) == nil)
+        #expect(peekMCPHookPolicyMode(Data(String(repeating: "x", count: 65_537).utf8)) == nil)
     }
 }
