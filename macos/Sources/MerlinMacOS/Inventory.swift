@@ -526,6 +526,11 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 }
                 continue
             }
+            if client == "codex" && relative == ".codex/config.toml" {
+                for name in codexEnabledPluginNames(data) where assetNames.count < 128 {
+                    assetNames.insert("codex\u{0}plugin\u{0}\(name)\u{0}.codex/config.toml")
+                }
+            }
             let entries: [(String, String)]
             if client == "amp" {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -659,7 +664,7 @@ private func boundedAgentDirectoryEntries(_ path: String) -> [String] {
     return names.sorted()
 }
 
-private func safeAgentAssetName(_ name: String) -> Bool {
+func safeAgentAssetName(_ name: String) -> Bool {
     !name.isEmpty && name.utf8.count <= 128 && !name.hasPrefix(".") &&
         !name.contains("/") && !name.contains("\\") &&
         !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)

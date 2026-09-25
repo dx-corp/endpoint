@@ -22,16 +22,26 @@ struct MCPHookCommand: ParsableCommand {
 
     func run() throws {
         let output: [String: Any]
+        var input: [String: Any]?
         do {
-            let input = try readMCPHookInput()
+            input = try readMCPHookInput()
             let policy = try readMCPHookPolicy(path: mcpHookPolicyPath)
-            let verdict = try policy.verdict(client: client.rawValue, input: input)
+            let verdict = try policy.verdict(client: client.rawValue, input: input!)
+            if let record = policy.auditWouldDenyRecord(client: client.rawValue, input: input!) {
+                appendMCPHookAuditRecord(client: client.rawValue, record: record)
+            }
             output = mcpHookOutput(client: client.rawValue, verdict: verdict)
         } catch {
-            // Endpoint enforcement points allow on internal errors. Client
-            // hooks must never turn a missing or malformed policy into a deny.
+            // Every enforcement point allows on internal errors, with one
+            // exception handled by mcpHookErrorVerdict: a policy that is
+            // present, safely owned, and declares enforce mode, but fails
+            // schema validation, still denies. An administrator who pushed
+            // enforcement does not get a silent fail-open because the pushed
+            // file happened to be broken. Every other error (a missing or
+            // unsafe policy file, a malformed policy that is absent or
+            // declares audit mode, oversized or invalid input) allows.
             fputs("deixic endpoint mcp hook: \(error)\n", stderr)
-            output = mcpHookOutput(client: client.rawValue, verdict: .allow)
+            output = mcpHookOutput(client: client.rawValue, verdict: mcpHookErrorVerdict(error, client: client.rawValue, input: input))
         }
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)
@@ -39,13 +49,48 @@ struct MCPHookCommand: ParsableCommand {
     }
 }
 
-private enum MCPHookError: Error {
-    case invalidInput, invalidPolicy, unsafePolicyFile, oversizedInput
+enum MCPHookError: Error, Equatable {
+    case invalidInput, invalidPolicy, unavailablePolicy, oversizedInput
+    case malformedPolicy(mode: String?)
+}
+
+// Pulled out of run()'s catch block so the one case that is not a plain
+// fail-open (a malformed policy that declares enforce mode) is testable
+// without a root-owned policy file on disk.
+func mcpHookErrorVerdict(_ error: Error, client: String, input: [String: Any]?) -> MCPHookVerdict {
+    guard case MCPHookError.malformedPolicy(let mode) = error, mode == "enforce" else { return .allow }
+    guard let input, let server = mcpHookServer(client: client, input: input) else { return .allow }
+    return .deny(mcpHookBlockedMessage(server: server, approvedName: nil, approvedURL: nil))
 }
 
 enum MCPHookVerdict: Equatable {
     case allow
     case deny(String)
+}
+
+// Local, bounded evidence that an audit-mode call would have been denied
+// under enforce mode. Only fixed identifiers and a timestamp; never the tool
+// call's arguments.
+struct MCPHookAuditRecord: Codable, Equatable, Sendable {
+    let server: String
+    let tool: String
+    let rule: String
+    let observedAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case server, tool, rule
+        case observedAt = "observed_at"
+    }
+}
+
+private func mcpHookBlockedMessage(server: String, approvedName: String?, approvedURL: String?) -> String {
+    var message = "Deixic Endpoint blocked an unapproved MCP server (\(server))."
+    if let approvedName, let approvedURL {
+        message += " Use the administrator-approved tool \(approvedName): \(approvedURL)"
+    } else {
+        message += " Contact your administrator for an approved tool."
+    }
+    return message
 }
 
 struct MCPHookPolicy {
@@ -97,21 +142,28 @@ struct MCPHookPolicy {
     }
 
     func verdict(client: String, input: [String: Any]) throws -> MCPHookVerdict {
-        guard let server = mcpHookServer(client: client, input: input) else {
+        guard let call = evaluateCall(client: client, input: input) else {
             // Unrecognized hook events and malformed names do not become an
             // implicit block. Managed client matchers limit calls to MCP.
             return .allow
         }
-        guard enforced, !approvedServers[client, default: []].contains(server) else {
+        guard enforced, !call.approved else {
             return .allow
         }
-        var message = "Deixic Endpoint blocked an unapproved MCP server (\(server))."
-        if let approvedName, let approvedURL {
-            message += " Use the administrator-approved tool \(approvedName): \(approvedURL)"
-        } else {
-            message += " Contact your administrator for an approved tool."
-        }
-        return .deny(message)
+        return .deny(mcpHookBlockedMessage(server: call.server, approvedName: approvedName, approvedURL: approvedURL))
+    }
+
+    // A call that would have been denied had this policy been in enforce
+    // mode. Enforce mode itself never audits: it denies outright through
+    // `verdict(client:input:)` instead.
+    func auditWouldDenyRecord(client: String, input: [String: Any]) -> MCPHookAuditRecord? {
+        guard !enforced, let call = evaluateCall(client: client, input: input), !call.approved else { return nil }
+        return MCPHookAuditRecord(server: call.server, tool: call.tool, rule: "unapproved_server", observedAt: Date().timeIntervalSince1970)
+    }
+
+    private func evaluateCall(client: String, input: [String: Any]) -> (server: String, tool: String, approved: Bool)? {
+        guard let (server, tool) = mcpHookServerAndTool(client: client, input: input) else { return nil }
+        return (server, tool, approvedServers[client, default: []].contains(server))
     }
 }
 
@@ -122,15 +174,25 @@ private func validMCPHookName(_ value: String) -> Bool {
 }
 
 private func mcpHookServer(client: String, input: [String: Any]) -> String? {
+    mcpHookServerAndTool(client: client, input: input)?.server
+}
+
+// Claude Code and Codex encode a tool call as "mcp__<server>__<tool>". The
+// tool name itself may contain "__" (for example a plugin-qualified tool),
+// so only the first "__"-separated segment is the server; everything after
+// it, rejoined with "__", is the tool.
+private func mcpHookServerAndTool(client: String, input: [String: Any]) -> (server: String, tool: String)? {
     if client == "cursor" {
         guard let server = input["mcp_server_name"] as? String, validMCPHookName(server),
               let tool = input["tool_name"] as? String, validMCPHookName(tool) else { return nil }
-        return server
+        return (server, tool)
     }
-    guard let tool = input["tool_name"] as? String, tool.hasPrefix("mcp__") else { return nil }
-    let parts = tool.dropFirst(5).components(separatedBy: "__")
-    guard parts.count == 2, validMCPHookName(parts[0]), validMCPHookName(parts[1]) else { return nil }
-    return parts[0]
+    guard let raw = input["tool_name"] as? String, raw.hasPrefix("mcp__") else { return nil }
+    let parts = raw.dropFirst(5).components(separatedBy: "__")
+    guard parts.count >= 2, validMCPHookName(parts[0]) else { return nil }
+    let tool = parts.dropFirst().joined(separator: "__")
+    guard validMCPHookName(tool) else { return nil }
+    return (parts[0], tool)
 }
 
 func mcpHookOutput(client: String, verdict: MCPHookVerdict) -> [String: Any] {
@@ -158,9 +220,21 @@ private func readMCPHookInput() throws -> [String: Any] {
     return input
 }
 
+// Best-effort extraction of a raw policy's declared mode, tolerant of a file
+// that otherwise fails MCPHookPolicy.parse's strict schema validation. It
+// grants no server approvals by itself; it exists only so a policy that
+// safely passed the file-ownership checks below but is malformed can still
+// signal that it intended enforce mode.
+func peekMCPHookPolicyMode(_ data: Data) -> String? {
+    guard data.count <= mcpHookMaximumBytes,
+          let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let mode = root["mode"] as? String, ["audit", "enforce"].contains(mode) else { return nil }
+    return mode
+}
+
 func readMCPHookPolicy(path: String) throws -> MCPHookPolicy {
     let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-    guard fd >= 0 else { throw MCPHookError.unsafePolicyFile }
+    guard fd >= 0 else { throw MCPHookError.unavailablePolicy }
     defer { close(fd) }
     var metadata = stat()
     guard fstat(fd, &metadata) == 0,
@@ -169,9 +243,16 @@ func readMCPHookPolicy(path: String) throws -> MCPHookPolicy {
           metadata.st_mode & 0o022 == 0,
           metadata.st_size >= 0,
           metadata.st_size <= mcpHookMaximumBytes else {
-        throw MCPHookError.unsafePolicyFile
+        throw MCPHookError.unavailablePolicy
     }
     let data = FileHandle(fileDescriptor: fd, closeOnDealloc: false).readData(ofLength: mcpHookMaximumBytes + 1)
-    guard data.count <= mcpHookMaximumBytes else { throw MCPHookError.unsafePolicyFile }
-    return try MCPHookPolicy.parse(data)
+    guard data.count <= mcpHookMaximumBytes else { throw MCPHookError.unavailablePolicy }
+    do {
+        return try MCPHookPolicy.parse(data)
+    } catch {
+        // The file passed every ownership and size check above, so its bytes
+        // are trustworthy enough to peek at for a mode, even though the full
+        // schema failed to validate.
+        throw MCPHookError.malformedPolicy(mode: peekMCPHookPolicyMode(data))
+    }
 }
