@@ -164,9 +164,9 @@ async function validateApi(root, files) {
     }
   }
   const surface = JSON.parse(await readFile(join(root, "contracts", "public-surface.json"), "utf8"));
-  requireValue(surface.service === "deixicpublic.v1.DeixicPublicService" && surface.operations?.length === 8, "Deixic public facade contract changed");
+  requireValue(surface.service === "deixicpublic.v1.DeixicPublicService" && surface.operations?.length === 9, "Deixic public facade contract changed");
   const rpcs = surface.operations.map(item => item.rpc).sort();
-  requireValue(new Set(rpcs).size === 8 && surface.operations.filter(item => item.kind === "mutation").every(item => item.requiresIdempotencyKey), "Deixic public operations are invalid");
+  requireValue(new Set(rpcs).size === 9 && surface.operations.filter(item => item.kind === "mutation").every(item => item.requiresIdempotencyKey), "Deixic public operations are invalid");
   const generation = await readFile(join(root, "buf.gen.yaml"), "utf8");
   requireValue(generation.includes("sudorandom-connect-openapi:v0.19.1") && !generation.includes("./scripts/"), "public codegen config is not pinned or is private");
   run("buf", ["build"], root);
