@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara"]);
+const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara", "borg"]);
 const SHA = /^[0-9a-f]{40}$/;
 const HEX = /^[0-9a-f]{64}$/;
 // `toolDigest` is the one provenance field with two legitimate shapes. Node
@@ -306,6 +306,34 @@ async function validateCapobara(root, files) {
   requireValue(member?.name === "capobara", "capobara standalone workspace member is not the crate");
 }
 
+// `borg` is a self-projection of `rust/tools/borg`, like `capobara`: the crate
+// must stand alone (its own manifest and lockfile, no workspace inheritance)
+// and carry nothing internal. The compile proof is the public repository's own
+// CI; this checks the standalone closure without compiling.
+const BORG_INTERNAL = [
+  [/evalops/i, "an internal organization name"],
+  [/\.ts\.net\b/i, "a tailnet hostname"],
+  [/\bdesktop-[a-z0-9]{6,}\b/i, "an internal host name"],
+  [/\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/, "a private IP address"],
+];
+
+async function validateBorg(root, files) {
+  for (const required of ["Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "src/main.rs", "src/lib.rs"]) {
+    requireValue(files.includes(required), `borg is missing ${required}`);
+  }
+  for (const path of files) requireValue(!/^scripts\//.test(path), `borg contains an internal surface: ${path}`);
+  const manifest = await readFile(join(root, "Cargo.toml"), "utf8");
+  requireValue(!/\bworkspace\s*=\s*true/.test(manifest), "borg Cargo.toml still inherits from the Mono workspace");
+  for (const path of files.filter(f => /^(?:src\/|tests\/|README\.md$|Cargo\.toml$)/.test(f))) {
+    const text = await readFile(join(root, path), "utf8");
+    for (const [pattern, what] of BORG_INTERNAL) requireValue(!pattern.test(text), `borg ${path} contains ${what}`);
+  }
+  const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"], root));
+  requireValue(metadata.workspace_members.length === 1, "borg standalone workspace gained a member");
+  const member = metadata.packages.find(pkg => pkg.id === metadata.workspace_members[0]);
+  requireValue(member?.name === "borg", "borg standalone workspace member is not the crate");
+}
+
 export async function validateDistribution({ name, target }) {
   requireValue(NAMES.has(name), `unsupported distribution: ${name}`);
   const root = resolve(target);
@@ -314,7 +342,7 @@ export async function validateDistribution({ name, target }) {
   await validateProvenance(name, root);
   const validators = {
     endpoint: validateEndpoint, "private-runner": validateRunner, "private-deployment": validateDeployment,
-    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara,
+    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara, borg: validateBorg,
   };
   await validators[name](root, files);
   return { name, target: root, files: files.length, valid: true };
