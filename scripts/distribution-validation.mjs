@@ -317,6 +317,13 @@ const BORG_INTERNAL = [
   [/\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/, "a private IP address"],
 ];
 
+export async function validateBorgPublicText(root, files) {
+  for (const path of files.filter(f => /^(?:src\/|tests\/|docs\/|README\.md$|Cargo\.toml$)/.test(f))) {
+    const text = await readFile(join(root, path), "utf8");
+    for (const [pattern, what] of BORG_INTERNAL) requireValue(!pattern.test(text), `borg ${path} contains ${what}`);
+  }
+}
+
 async function validateBorg(root, files) {
   for (const required of ["Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "src/main.rs", "src/lib.rs"]) {
     requireValue(files.includes(required), `borg is missing ${required}`);
@@ -324,10 +331,7 @@ async function validateBorg(root, files) {
   for (const path of files) requireValue(!/^scripts\//.test(path), `borg contains an internal surface: ${path}`);
   const manifest = await readFile(join(root, "Cargo.toml"), "utf8");
   requireValue(!/\bworkspace\s*=\s*true/.test(manifest), "borg Cargo.toml still inherits from the Mono workspace");
-  for (const path of files.filter(f => /^(?:src\/|tests\/|README\.md$|Cargo\.toml$)/.test(f))) {
-    const text = await readFile(join(root, path), "utf8");
-    for (const [pattern, what] of BORG_INTERNAL) requireValue(!pattern.test(text), `borg ${path} contains ${what}`);
-  }
+  await validateBorgPublicText(root, files);
   const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"], root));
   requireValue(metadata.workspace_members.length === 1, "borg standalone workspace gained a member");
   const member = metadata.packages.find(pkg => pkg.id === metadata.workspace_members[0]);
