@@ -4,12 +4,14 @@
 //! hashes of the underlying kernel evidence; raw EFI variables, TPM event logs,
 //! and kernel policy values never leave the device.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -17,6 +19,11 @@ use sha2::{Digest, Sha256};
 const MAX_EFI_VARIABLE_BYTES: u64 = 64;
 const MAX_TEXT_EVIDENCE_BYTES: u64 = 4 << 10;
 const MAX_MEASURED_BOOT_BYTES: u64 = 8 << 20;
+const MAX_MOUNTINFO_BYTES: u64 = 1 << 20;
+const MAX_FIREWALL_OUTPUT_BYTES: u64 = 1 << 20;
+const FIREWALL_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_DM_STACK_DEPTH: usize = 8;
+const MAX_DM_SLAVES: usize = 16;
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct DevicePosture {
@@ -33,7 +40,7 @@ pub struct DevicePosture {
 struct PostureCheck {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<&'static str>,
+    value: Option<Cow<'static, str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     severity: Option<&'static str>,
     detail: &'static str,
@@ -74,7 +81,7 @@ struct PostureCoverage {
     redacted_fields: u8,
     collection_duration_ms: u64,
     max_age_seconds: u16,
-    capabilities: [&'static str; 3],
+    capabilities: [&'static str; 5],
 }
 
 struct EvidencePaths {
@@ -82,6 +89,10 @@ struct EvidencePaths {
     tpm_version_major: PathBuf,
     measured_boot_log: PathBuf,
     kernel_lockdown: PathBuf,
+    mountinfo: PathBuf,
+    sys_dev_block: PathBuf,
+    nft_binaries: Vec<PathBuf>,
+    iptables_binaries: Vec<PathBuf>,
 }
 
 impl EvidencePaths {
@@ -91,6 +102,14 @@ impl EvidencePaths {
             tpm_version_major: PathBuf::from("/sys/class/tpm/tpm0/tpm_version_major"),
             measured_boot_log: PathBuf::from("/sys/kernel/security/tpm0/binary_bios_measurements"),
             kernel_lockdown: PathBuf::from("/sys/kernel/security/lockdown"),
+            mountinfo: PathBuf::from("/proc/self/mountinfo"),
+            sys_dev_block: PathBuf::from("/sys/dev/block"),
+            nft_binaries: ["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"]
+                .map(PathBuf::from)
+                .to_vec(),
+            iptables_binaries: ["/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables"]
+                .map(PathBuf::from)
+                .to_vec(),
         }
     }
 }
@@ -128,6 +147,11 @@ fn collect_from(paths: &EvidencePaths) -> DevicePosture {
         "kernel_lockdown",
         kernel_lockdown_check(paths, &observed_at, privilege),
     );
+    checks.insert(
+        "disk_encryption",
+        disk_encryption_check(paths, &observed_at, privilege),
+    );
+    checks.insert("firewall", firewall_check(paths, &observed_at, privilege));
 
     let mut findings = Vec::new();
     let mut risk_score = 0u8;
@@ -193,7 +217,13 @@ fn collect_from(paths: &EvidencePaths) -> DevicePosture {
             redacted_fields: checks_with_evidence,
             collection_duration_ms: started.elapsed().as_millis().min(120_000) as u64,
             max_age_seconds: 300,
-            capabilities: ["secure_boot", "tpm2", "measured_boot"],
+            capabilities: [
+                "secure_boot",
+                "tpm2",
+                "measured_boot",
+                "disk_encryption",
+                "firewall",
+            ],
         },
         checks,
     }
@@ -393,6 +423,282 @@ fn kernel_lockdown_check(
     }
 }
 
+/// Root filesystem encryption: the block device behind `/` (or any device it
+/// stacks on, such as LVM on LUKS) is a dm-crypt target (`dm/uuid` starts with
+/// `CRYPT-`). Only the fixed target type reaches the evidence hash; device
+/// UUIDs and names do not.
+fn disk_encryption_check(
+    paths: &EvidencePaths,
+    observed_at: &str,
+    privilege: &'static str,
+) -> PostureCheck {
+    const SOURCE: &str = "procfs.mountinfo+sysfs.dm";
+    let mountinfo = match read_bounded_nofollow(&paths.mountinfo, MAX_MOUNTINFO_BYTES) {
+        EvidenceRead::Data(bytes) => bytes,
+        EvidenceRead::RequiresRoot => {
+            return unavailable_check(
+                "requires_root",
+                "Disk encryption evidence requires root access",
+            );
+        }
+        _ => {
+            return unavailable_check("unavailable", "Disk encryption evidence is unavailable");
+        }
+    };
+    let Some(root_device) = root_device_from_mountinfo(&String::from_utf8_lossy(&mountinfo)) else {
+        return unavailable_check("unavailable", "Root filesystem device is not identifiable");
+    };
+    let mut pending = vec![(root_device, 0usize)];
+    let mut seen = BTreeSet::new();
+    let mut chain = String::new();
+    while let Some((device, depth)) = pending.pop() {
+        if depth > MAX_DM_STACK_DEPTH || !seen.insert(device.clone()) {
+            continue;
+        }
+        let dir = paths.sys_dev_block.join(&device);
+        if !dir.is_dir() {
+            return unavailable_check("unavailable", "Root block device is not visible in sysfs");
+        }
+        match read_bounded_nofollow(&dir.join("dm/uuid"), MAX_TEXT_EVIDENCE_BYTES) {
+            EvidenceRead::Data(bytes) => {
+                let uuid = String::from_utf8_lossy(&bytes);
+                let kind = uuid.trim().split('-').take(2).collect::<Vec<_>>().join("-");
+                chain.push_str(&kind);
+                chain.push('\n');
+                if uuid.trim().starts_with("CRYPT-") {
+                    return evidence_check(
+                        "pass",
+                        "on",
+                        None,
+                        "Root filesystem is on an encrypted dm-crypt device",
+                        SOURCE,
+                        privilege,
+                        observed_at,
+                        chain.as_bytes(),
+                    );
+                }
+            }
+            EvidenceRead::Missing => chain.push_str("plain\n"),
+            EvidenceRead::RequiresRoot => {
+                return unavailable_check(
+                    "requires_root",
+                    "Disk encryption evidence requires root access",
+                );
+            }
+            EvidenceRead::Unavailable => {
+                return unavailable_check("unavailable", "Disk encryption evidence is unreadable");
+            }
+        }
+        let Ok(slaves) = fs::read_dir(dir.join("slaves")) else {
+            continue;
+        };
+        for slave in slaves.filter_map(Result::ok).take(MAX_DM_SLAVES) {
+            if let EvidenceRead::Data(bytes) =
+                read_bounded_nofollow(&slave.path().join("dev"), MAX_TEXT_EVIDENCE_BYTES)
+            {
+                let id = normalized_text(&bytes);
+                if is_major_minor(&id) {
+                    pending.push((id, depth + 1));
+                }
+            }
+        }
+    }
+    evidence_check(
+        "finding",
+        "off",
+        Some("critical"),
+        "Root filesystem is not on an encrypted dm-crypt device",
+        SOURCE,
+        privilege,
+        observed_at,
+        chain.as_bytes(),
+    )
+}
+
+fn is_major_minor(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(major, minor)| {
+        [major, minor].iter().all(|part| {
+            !part.is_empty() && part.len() <= 8 && part.bytes().all(|b| b.is_ascii_digit())
+        })
+    })
+}
+
+/// Returns the `major:minor` of the topmost mount at `/`.
+fn root_device_from_mountinfo(mountinfo: &str) -> Option<String> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let device = fields.nth(2)?;
+            (fields.nth(1)? == "/" && is_major_minor(device)).then(|| device.to_string())
+        })
+        .last()
+}
+
+enum FirewallProbe {
+    /// Tool ran and reported a filtering input path.
+    Active(Vec<u8>),
+    /// Tool ran and reported nothing filtering input.
+    Inactive(Vec<u8>),
+    Denied,
+    Failed,
+    NotInstalled,
+}
+
+/// Host firewall: an nftables input-hook chain with rules or a restrictive
+/// policy, or an iptables INPUT chain with rules or a non-ACCEPT policy.
+/// The kernel exposes no readable file for rules, so this runs `nft` and
+/// `iptables` from fixed paths with a cleared environment, a timeout, and
+/// capped output. Both need CAP_NET_ADMIN; without it the check reports
+/// `requires_root`. IPv6-only rules (ip6tables) are not inspected.
+fn firewall_check(
+    paths: &EvidencePaths,
+    observed_at: &str,
+    privilege: &'static str,
+) -> PostureCheck {
+    const SOURCE: &str = "netfilter.nft_iptables";
+    let probes = [
+        probe_firewall(&paths.nft_binaries, &["list", "ruleset"], nft_input_active),
+        probe_firewall(
+            &paths.iptables_binaries,
+            &["-S", "INPUT"],
+            iptables_input_active,
+        ),
+    ];
+    let mut inactive: Vec<u8> = Vec::new();
+    let (mut saw_inactive, mut denied, mut failed) = (false, false, false);
+    for probe in probes {
+        match probe {
+            FirewallProbe::Active(raw) => {
+                return evidence_check(
+                    "pass",
+                    "enabled",
+                    None,
+                    "Host firewall has active input filtering",
+                    SOURCE,
+                    privilege,
+                    observed_at,
+                    &raw,
+                );
+            }
+            FirewallProbe::Inactive(raw) => {
+                saw_inactive = true;
+                inactive.extend(raw);
+            }
+            FirewallProbe::Denied => denied = true,
+            FirewallProbe::Failed => failed = true,
+            FirewallProbe::NotInstalled => {}
+        }
+    }
+    if denied {
+        unavailable_check("requires_root", "Firewall evidence requires root access")
+    } else if failed {
+        unavailable_check("unavailable", "Firewall evidence is unreadable")
+    } else if saw_inactive {
+        evidence_check(
+            "finding",
+            "disabled",
+            Some("medium"),
+            "Host firewall has no active input filtering",
+            SOURCE,
+            privilege,
+            observed_at,
+            &inactive,
+        )
+    } else {
+        unavailable_check("unavailable", "No supported firewall tool is installed")
+    }
+}
+
+fn probe_firewall(binaries: &[PathBuf], args: &[&str], active: fn(&str) -> bool) -> FirewallProbe {
+    let Some(binary) = binaries.iter().find(|path| path.is_file()) else {
+        return FirewallProbe::NotInstalled;
+    };
+    let Ok(mut child) = Command::new(binary)
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return FirewallProbe::Failed;
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return FirewallProbe::Failed;
+    };
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout
+            .take(MAX_FIREWALL_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + FIREWALL_COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    // On timeout the reader is detached: a grandchild may still hold the pipe.
+    let Some(status) = status else {
+        return FirewallProbe::Failed;
+    };
+    let bytes = reader.join().unwrap_or_default();
+    if !status.success() {
+        // nft and iptables exit non-zero with an EPERM message when unprivileged.
+        return if unsafe { libc::geteuid() } != 0 {
+            FirewallProbe::Denied
+        } else {
+            FirewallProbe::Failed
+        };
+    }
+    if bytes.len() as u64 > MAX_FIREWALL_OUTPUT_BYTES {
+        return FirewallProbe::Failed;
+    }
+    if active(&String::from_utf8_lossy(&bytes)) {
+        FirewallProbe::Active(bytes)
+    } else {
+        FirewallProbe::Inactive(bytes)
+    }
+}
+
+fn nft_input_active(ruleset: &str) -> bool {
+    let mut in_input_chain = false;
+    for line in ruleset.lines().map(str::trim) {
+        if in_input_chain {
+            if line == "}" {
+                in_input_chain = false;
+            } else if !line.is_empty() && !line.starts_with("type ") {
+                return true;
+            }
+        }
+        if line.starts_with("type filter hook input ") {
+            if line.contains("policy drop") || line.contains("policy reject") {
+                return true;
+            }
+            in_input_chain = true;
+        }
+    }
+    false
+}
+
+fn iptables_input_active(rules: &str) -> bool {
+    rules.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("-A INPUT ")
+            || (line.starts_with("-P INPUT ") && !line.ends_with(" ACCEPT"))
+    })
+}
+
 fn evidence_check(
     status: &'static str,
     value: &'static str,
@@ -405,7 +711,7 @@ fn evidence_check(
 ) -> PostureCheck {
     PostureCheck {
         status,
-        value: Some(value),
+        value: Some(Cow::Borrowed(value)),
         severity,
         detail,
         evidence: Some(PostureEvidence {
@@ -485,7 +791,9 @@ fn risk_weight(check: &str) -> u8 {
         "secure_boot" => 45,
         "tpm2" => 35,
         "measured_boot" => 20,
+        "disk_encryption" => 40,
         "kernel_lockdown" => 15,
+        "firewall" => 15,
         _ => 0,
     }
 }
@@ -511,7 +819,12 @@ mod tests {
             tpm_version_major: root.join("tpm_version_major"),
             measured_boot_log: root.join("binary_bios_measurements"),
             kernel_lockdown: root.join("lockdown"),
+            mountinfo: root.join("mountinfo"),
+            sys_dev_block: root.join("sys-dev-block"),
+            nft_binaries: vec![root.join("bin/nft")],
+            iptables_binaries: vec![root.join("bin/iptables")],
         };
+        fs::create_dir_all(root.join("bin")).unwrap();
         (root, paths)
     }
 
@@ -533,13 +846,20 @@ mod tests {
         )
         .unwrap();
 
+        write_mountinfo(&paths, "253:0");
+        add_block_device(&paths, "253:0", Some("CRYPT-LUKS2-1-x"), &[]);
+        write_script(
+            &paths.nft_binaries[0],
+            "echo '\ttype filter hook input priority filter; policy drop;'",
+        );
+
         let posture = collect_from(&paths);
 
         assert_eq!(posture.overall, "secure");
         assert_eq!(posture.risk_score, 0);
         assert!(posture.findings.is_empty());
-        assert_eq!(posture.coverage.checks_available, 4);
-        assert_eq!(posture.coverage.checks_with_evidence, 4);
+        assert_eq!(posture.coverage.checks_available, 6);
+        assert_eq!(posture.coverage.checks_with_evidence, 6);
         for check in posture.checks.values() {
             assert_eq!(check.status, "pass");
             assert_eq!(check.evidence.as_ref().unwrap().evidence_hash.len(), 64);
@@ -585,7 +905,7 @@ mod tests {
         assert_eq!(posture.risk_score, 0);
         assert!(posture.findings.is_empty());
         assert_eq!(posture.coverage.checks_available, 0);
-        assert_eq!(posture.coverage.checks_unavailable, 4);
+        assert_eq!(posture.coverage.checks_unavailable, 6);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -600,6 +920,151 @@ mod tests {
 
         assert_eq!(posture.checks["kernel_lockdown"].status, "unavailable");
         assert!(posture.checks["kernel_lockdown"].evidence.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn add_block_device(paths: &EvidencePaths, id: &str, dm_uuid: Option<&str>, slaves: &[&str]) {
+        let dir = paths.sys_dev_block.join(id);
+        fs::create_dir_all(&dir).unwrap();
+        if let Some(uuid) = dm_uuid {
+            fs::create_dir_all(dir.join("dm")).unwrap();
+            fs::write(dir.join("dm/uuid"), format!("{uuid}\n")).unwrap();
+        }
+        for slave in slaves {
+            let slave_dir = dir.join("slaves").join(format!("dev-{slave}"));
+            fs::create_dir_all(&slave_dir).unwrap();
+            fs::write(slave_dir.join("dev"), format!("{slave}\n")).unwrap();
+        }
+    }
+
+    fn write_mountinfo(paths: &EvidencePaths, device: &str) {
+        fs::write(
+            &paths.mountinfo,
+            format!(
+                "20 1 {device} / / rw,relatime shared:1 - ext4 /dev/mapper/root rw\n25 20 0:6 / /dev rw - devtmpfs udev rw\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn root_on_lvm_over_luks_is_encrypted() {
+        let (root, paths) = test_paths("luks");
+        write_mountinfo(&paths, "253:1");
+        add_block_device(&paths, "253:1", Some("LVM-abcdef"), &["253:0"]);
+        add_block_device(&paths, "253:0", Some("CRYPT-LUKS2-1234-luks"), &["8:2"]);
+        add_block_device(&paths, "8:2", None, &[]);
+
+        let check = disk_encryption_check(&paths, "1", "user");
+
+        assert_eq!(check.status, "pass");
+        assert_eq!(check.value.as_deref(), Some("on"));
+        assert!(check.evidence.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plain_root_device_is_a_critical_finding() {
+        let (root, paths) = test_paths("plain-root");
+        write_mountinfo(&paths, "8:1");
+        add_block_device(&paths, "8:1", None, &[]);
+
+        let check = disk_encryption_check(&paths, "1", "user");
+
+        assert_eq!(check.status, "finding");
+        assert_eq!(check.value.as_deref(), Some("off"));
+        assert_eq!(check.severity, Some("critical"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unidentifiable_root_device_is_unavailable_not_a_finding() {
+        let (root, paths) = test_paths("anon-root");
+        write_mountinfo(&paths, "0:42");
+
+        assert_eq!(
+            disk_encryption_check(&paths, "1", "user").status,
+            "unavailable"
+        );
+        let _ = fs::remove_file(&paths.mountinfo);
+        assert_eq!(
+            disk_encryption_check(&paths, "1", "user").status,
+            "unavailable"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dm_cycle_terminates() {
+        let (root, paths) = test_paths("dm-cycle");
+        write_mountinfo(&paths, "253:1");
+        add_block_device(&paths, "253:1", Some("LVM-a"), &["253:2"]);
+        add_block_device(&paths, "253:2", Some("LVM-b"), &["253:1"]);
+
+        assert_eq!(disk_encryption_check(&paths, "1", "user").status, "finding");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nft_input_policy_and_rules_are_detected() {
+        let drop = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t}\n}";
+        let rules = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 22 accept\n\t}\n}";
+        let empty = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t}\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tct state established accept\n\t}\n}";
+        assert!(nft_input_active(drop));
+        assert!(nft_input_active(rules));
+        assert!(!nft_input_active(empty));
+        assert!(!nft_input_active(""));
+    }
+
+    #[test]
+    fn iptables_input_policy_and_rules_are_detected() {
+        assert!(iptables_input_active("-P INPUT DROP"));
+        assert!(iptables_input_active(
+            "-P INPUT ACCEPT\n-A INPUT -p tcp -j DROP"
+        ));
+        assert!(!iptables_input_active("-P INPUT ACCEPT"));
+    }
+
+    #[test]
+    fn firewall_check_reads_tool_output_and_reports_honestly() {
+        let (root, paths) = test_paths("firewall");
+        assert_eq!(firewall_check(&paths, "1", "root").status, "unavailable");
+
+        write_script(&paths.iptables_binaries[0], "echo '-P INPUT ACCEPT'");
+        let check = firewall_check(&paths, "1", "root");
+        assert_eq!(check.status, "finding");
+        assert_eq!(check.severity, Some("medium"));
+
+        write_script(
+            &paths.nft_binaries[0],
+            "echo 'table inet f {'; echo '  chain input {'; echo '    type filter hook input priority filter; policy drop;'; echo '  }'; echo '}'",
+        );
+        let check = firewall_check(&paths, "1", "root");
+        assert_eq!(check.status, "pass");
+        assert_eq!(check.value.as_deref(), Some("enabled"));
+
+        write_script(&paths.nft_binaries[0], "exit 1");
+        write_script(&paths.iptables_binaries[0], "exit 1");
+        let check = firewall_check(&paths, "1", "root");
+        assert!(matches!(check.status, "unavailable" | "requires_root"));
+        assert!(check.evidence.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn firewall_command_timeout_does_not_hang() {
+        let (root, paths) = test_paths("firewall-hang");
+        write_script(&paths.nft_binaries[0], "sleep 30");
+        let started = Instant::now();
+        let check = firewall_check(&paths, "1", "root");
+        assert_eq!(check.status, "unavailable");
+        assert!(started.elapsed() < Duration::from_secs(10));
         let _ = fs::remove_dir_all(root);
     }
 }

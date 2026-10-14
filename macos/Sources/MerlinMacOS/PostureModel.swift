@@ -90,10 +90,14 @@ struct DevicePostureCoverage: Encodable, Sendable {
 
 private func postureSeverity(for check: String) -> String {
     switch check {
-    case "filevault": return "critical"
+    case "filevault", "disk_encryption": return "critical"
+    case "screen_lock", "os_updates": return "high"
     case "sip", "gatekeeper", "authenticated_root", "secure_boot", "boot_args": return "high"
-    case "firewall", "software_updates", "mdm", "sysext", "eventtaps": return "medium"
+    case "endpoint_protection": return "high"
+    case "remote_access": return "medium"
+    case "firewall", "software_updates", "auto_updates", "mdm", "sysext", "eventtaps": return "medium"
     case "proxy", "profiles", "loginhooks", "tcc", "filevault_users": return "medium"
+    case "password_manager": return "low"
     default:
         if check.hasPrefix("launchd/") { return "high" }
         return "low"
@@ -120,7 +124,7 @@ private func postureRiskPoints(_ severity: String) -> Int {
 
 private func postureEvidenceSource(for check: String) -> String {
     switch check {
-    case "sip", "gatekeeper", "filevault", "authenticated_root", "secure_boot", "boot_args":
+    case "sip", "gatekeeper", "filevault", "disk_encryption", "authenticated_root", "secure_boot", "boot_args":
         return "security_tool"
     case "firewall", "firewall_rules":
         return "application_firewall"
@@ -128,8 +132,12 @@ private func postureEvidenceSource(for check: String) -> String {
         return "device_management"
     case "tcc":
         return "tcc_metadata"
-    case "software_updates":
+    case "software_updates", "os_updates":
         return "software_update"
+    case "auto_updates":
+        return "software_update_preferences"
+    case "screen_lock":
+        return "screen_lock_settings"
     case "proxy", "dns", "router":
         return "system_configuration"
     case "sysext":
@@ -138,6 +146,8 @@ private func postureEvidenceSource(for check: String) -> String {
         return "launchd_inventory"
     case "eventtaps":
         return "event_tap_api"
+    case "endpoint_protection", "password_manager", "remote_access":
+        return "product_inventory"
     default:
         if check.hasPrefix("launchd/") || check.hasPrefix("launchd@") {
             return "launchd_inventory"
@@ -159,6 +169,10 @@ private func postureRedactions(for source: String) -> [String] {
         return ["package_names", "download_urls"]
     case "launchd_inventory":
         return ["program_arguments", "plist_payloads"]
+    case "product_inventory":
+        return ["app_paths", "account_names", "raw_command_output"]
+    case "screen_lock_settings":
+        return ["account_names", "raw_command_output"]
     default:
         return ["raw_command_output"]
     }

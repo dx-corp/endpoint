@@ -269,9 +269,14 @@ func capturePosture(expectedSysexTeams: [String] = []) -> PostureSnapshot {
     if let r = shellOut("/usr/bin/fdesetup", ["status"]) {
         let v = parseFdesetup(r.stdout)
         snap.values["filevault"] = v
-        if v == "off" { snap.findings["filevault"] = "FileVault off" }
+        snap.values["disk_encryption"] = v
+        if v == "off" {
+            snap.findings["filevault"] = "FileVault off"
+            snap.findings["disk_encryption"] = "System volume is not encrypted"
+        }
     } else {
         snap.values["filevault"] = "unavailable"
+        snap.values["disk_encryption"] = "unavailable"
     }
 
     // The authenticated system volume is a separate integrity signal from
@@ -346,9 +351,25 @@ func capturePosture(expectedSysexTeams: [String] = []) -> PostureSnapshot {
         let v = parseSoftwareUpdate(r.stdout + r.stderr)
         snap.values["software_updates"] = v
         if v != "none available" { snap.findings["software_updates"] = "Software updates available: \(v)" }
+        let pending = osUpdatesValue(fromSoftwareUpdate: v)
+        snap.values["os_updates"] = pending
+        if pending != "none" { snap.findings["os_updates"] = "OS updates pending: \(pending)" }
     } else {
         snap.values["software_updates"] = "unavailable"
+        snap.values["os_updates"] = "unavailable"
     }
+
+    if let r = shellOut("/usr/bin/defaults", ["read", "/Library/Preferences/com.apple.SoftwareUpdate"], timeout: 2) {
+        let v = r.status == 0 ? parseAutoUpdates(r.stdout) : (r.stderr.contains("does not exist") ? "off" : "unknown")
+        snap.values["auto_updates"] = v
+        if v == "off" { snap.findings["auto_updates"] = "Automatic OS update download and install is off" }
+    } else {
+        snap.values["auto_updates"] = "unavailable"
+    }
+
+    let lock = captureScreenLock()
+    snap.values["screen_lock"] = lock.value
+    if let f = lock.finding { snap.findings["screen_lock"] = f }
 
     if let r = shellOut("/usr/sbin/nvram", ["boot-args"], timeout: 2) {
         let parsed = parseBootArgs(r.stdout + r.stderr)
@@ -400,6 +421,8 @@ func capturePosture(expectedSysexTeams: [String] = []) -> PostureSnapshot {
     } else {
         snap.values["profiles"] = "unavailable"
     }
+
+    capturePostureProducts(into: &snap)
 
     // Login hooks (should be none).
     let hooks = extractLoginHooks(path: "/Library/Preferences/com.apple.loginwindow.plist")
