@@ -16,6 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+#[path = "linux_posture_host.rs"]
+mod host;
+
 const MAX_EFI_VARIABLE_BYTES: u64 = 64;
 const MAX_TEXT_EVIDENCE_BYTES: u64 = 4 << 10;
 const MAX_MEASURED_BOOT_BYTES: u64 = 8 << 20;
@@ -93,6 +96,7 @@ struct EvidencePaths {
     sys_dev_block: PathBuf,
     nft_binaries: Vec<PathBuf>,
     iptables_binaries: Vec<PathBuf>,
+    host: host::HostPaths,
 }
 
 impl EvidencePaths {
@@ -110,6 +114,7 @@ impl EvidencePaths {
             iptables_binaries: ["/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables"]
                 .map(PathBuf::from)
                 .to_vec(),
+            host: host::HostPaths::system(),
         }
     }
 }
@@ -152,6 +157,7 @@ fn collect_from(paths: &EvidencePaths) -> DevicePosture {
         disk_encryption_check(paths, &observed_at, privilege),
     );
     checks.insert("firewall", firewall_check(paths, &observed_at, privilege));
+    host::collect(&paths.host, &observed_at, privilege, &mut checks);
 
     let mut findings = Vec::new();
     let mut risk_score = 0u8;
@@ -794,6 +800,10 @@ fn risk_weight(check: &str) -> u8 {
         "disk_encryption" => 40,
         "kernel_lockdown" => 15,
         "firewall" => 15,
+        "os_updates" => 15,
+        "endpoint_protection" => 15,
+        "remote_access" => 10,
+        "auto_updates" => 5,
         _ => 0,
     }
 }
@@ -823,6 +833,15 @@ mod tests {
             sys_dev_block: root.join("sys-dev-block"),
             nft_binaries: vec![root.join("bin/nft")],
             iptables_binaries: vec![root.join("bin/iptables")],
+            host: host::HostPaths {
+                proc_root: root.join("proc"),
+                apt_conf_dir: root.join("apt.conf.d"),
+                update_notifier: root.join("updates-available"),
+                dnf_automatic_conf: root.join("automatic.conf"),
+                timer_wants_dirs: vec![root.join("timers.target.wants")],
+                application_dirs: vec![root.join("applications")],
+                graphical_markers: vec![root.join("X11-unix")],
+            },
         };
         fs::create_dir_all(root.join("bin")).unwrap();
         (root, paths)
@@ -853,13 +872,27 @@ mod tests {
             "echo '\ttype filter hook input priority filter; policy drop;'",
         );
 
+        fs::create_dir_all(&paths.host.apt_conf_dir).unwrap();
+        fs::write(
+            paths.host.apt_conf_dir.join("20auto-upgrades"),
+            "APT::Periodic::Unattended-Upgrade \"1\";\n",
+        )
+        .unwrap();
+        fs::write(
+            &paths.host.update_notifier,
+            "0 updates can be applied immediately.\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.host.proc_root.join("7")).unwrap();
+        fs::write(paths.host.proc_root.join("7/comm"), "falcon-sensor\n").unwrap();
+
         let posture = collect_from(&paths);
 
         assert_eq!(posture.overall, "secure");
         assert_eq!(posture.risk_score, 0);
         assert!(posture.findings.is_empty());
-        assert_eq!(posture.coverage.checks_available, 6);
-        assert_eq!(posture.coverage.checks_with_evidence, 6);
+        assert_eq!(posture.coverage.checks_available, 10);
+        assert_eq!(posture.coverage.checks_with_evidence, 10);
         for check in posture.checks.values() {
             assert_eq!(check.status, "pass");
             assert_eq!(check.evidence.as_ref().unwrap().evidence_hash.len(), 64);
@@ -905,7 +938,7 @@ mod tests {
         assert_eq!(posture.risk_score, 0);
         assert!(posture.findings.is_empty());
         assert_eq!(posture.coverage.checks_available, 0);
-        assert_eq!(posture.coverage.checks_unavailable, 6);
+        assert_eq!(posture.coverage.checks_unavailable, 10);
         let _ = fs::remove_dir_all(root);
     }
 
