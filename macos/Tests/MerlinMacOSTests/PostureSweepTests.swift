@@ -189,3 +189,112 @@ struct PostureEncodingTests {
         #expect((d?["detail"] as? [String: String])?["value"] == "proxy configured")
     }
 }
+
+@Suite("product presence checks")
+struct ProductCheckTests {
+    @Test("launchctl list labels")
+    func labels() {
+        let out = "PID\tStatus\tLabel\n123\t0\tcom.crowdstrike.falcond\n-\t0\tcom.apple.screensharing\n"
+        #expect(parseLaunchctlListLabels(out) == ["com.crowdstrike.falcond", "com.apple.screensharing"])
+    }
+
+    @Test("endpoint protection needs a running signal; XProtect never counts")
+    func endpointProtection() {
+        let active = SysexEntry(teamId: "X123456789", bundleId: "com.crowdstrike.falcon.Agent", name: "Falcon", state: "[activated enabled]")
+        let stale = SysexEntry(teamId: "X123456789", bundleId: "com.sentinelone.extension", name: "S1", state: "[terminated waiting to uninstall on reboot]")
+        let names = runningMatches(endpointProtectionCatalog, sysext: [active, stale], labels: ["com.microsoft.fresno", "com.apple.XProtect.daemon.scan"])
+        #expect(names == ["CrowdStrike Falcon", "Microsoft Defender"])
+        #expect(runningMatches(endpointProtectionCatalog, sysext: [], labels: ["com.apple.XProtect.daemon.scan"]).isEmpty)
+        #expect(productListValue([]) == "none")
+    }
+
+    @Test("password managers match bundle id or app name only")
+    func passwordManagers() {
+        let apps = [InstalledApp(bundleId: "com.bitwarden.desktop", name: "Bitwarden"),
+                    InstalledApp(bundleId: nil, name: "1Password"),
+                    InstalledApp(bundleId: "com.example.notes", name: "Notes")]
+        #expect(installedMatches(passwordManagerCatalog, apps: apps) == ["1Password", "Bitwarden"])
+        #expect(installedMatches(passwordManagerCatalog, apps: []).isEmpty)
+    }
+
+    @Test("remote access: built-in services and third-party tools")
+    func remoteAccess() {
+        #expect(builtinRemoteAccess(labels: ["com.apple.screensharing", "com.openssh.sshd"]) == ["Screen Sharing", "Remote Login"])
+        #expect(builtinRemoteAccess(labels: ["com.apple.other"]).isEmpty)
+        let apps = [InstalledApp(bundleId: "com.teamviewer.TeamViewer", name: "TeamViewer")]
+        #expect(installedMatches(remoteAccessCatalog, apps: apps) == ["TeamViewer"])
+        #expect(runningMatches(remoteAccessCatalog, sysext: [], labels: ["com.philandro.anydesk.service"]) == ["AnyDesk"])
+    }
+
+    @Test("severity, status and source for product keys")
+    func report() {
+        var snap = PostureSnapshot()
+        snap.values = ["endpoint_protection": "none", "password_manager": "Bitwarden", "remote_access": "unavailable"]
+        snap.findings = ["endpoint_protection": "none"]
+        let r = makeDevicePostureReport(snapshot: snap, root: false, networkExtension: "not_configured")
+        #expect(r.checks["endpoint_protection"]?.severity == "high")
+        #expect(r.checks["endpoint_protection"]?.status == "finding")
+        #expect(r.checks["password_manager"]?.status == "pass")
+        #expect(r.checks["remote_access"]?.status == "unavailable")
+        #expect(r.checks["password_manager"]?.evidence.source == "product_inventory")
+        #expect(r.checks["password_manager"]?.evidence.redactions.contains("app_paths") == true)
+    }
+}
+
+@Suite("neutral compliance checks")
+struct NeutralCheckTests {
+    @Test("os_updates maps softwareupdate summary")
+    func osUpdates() {
+        #expect(osUpdatesValue(fromSoftwareUpdate: "none available") == "none")
+        #expect(osUpdatesValue(fromSoftwareUpdate: "2 update(s) available") == "2 pending")
+        #expect(osUpdatesValue(fromSoftwareUpdate: "updates available") == "pending")
+        #expect(osUpdatesValue(fromSoftwareUpdate: "unavailable") == "unavailable")
+    }
+
+    @Test("auto_updates parses defaults output")
+    func autoUpdates() {
+        let on = "{\n    AutomaticDownload = 1;\n    AutomaticallyInstallMacOSUpdates = 1;\n    CriticalUpdateInstall = 1;\n}"
+        let off = "{\n    AutomaticDownload = 1;\n    AutomaticallyInstallMacOSUpdates = 0;\n}"
+        let missing = "{\n    LastFullSuccessfulDate = \"2026-10-01\";\n}"
+        #expect(parseAutoUpdates(on) == "on")
+        #expect(parseAutoUpdates(off) == "off")
+        #expect(parseAutoUpdates(missing) == "off")
+        #expect(parseAutoUpdates("") == "unknown")
+    }
+
+    @Test("sysadminctl screenLock output")
+    func sysadminctl() {
+        #expect(parseSysadminctlScreenLock("sysadminctl[1:2] screenLock delay is immediate").delay == 0)
+        let five = parseSysadminctlScreenLock("screenLock delay is 300 seconds")
+        #expect(five.ask == true && five.delay == 300)
+        #expect(parseSysadminctlScreenLock("screenLock is off").ask == false)
+        #expect(parseSysadminctlScreenLock("garbage").ask == nil)
+    }
+
+    @Test("screen_lock policy never passes on unreadable input")
+    func screenLockPolicy() {
+        #expect(evaluateScreenLock(ScreenLockSettings()).value == "unavailable")
+        #expect(evaluateScreenLock(ScreenLockSettings(idleSeconds: 300, askForPassword: nil)).value == "unavailable")
+        #expect(evaluateScreenLock(ScreenLockSettings(idleSeconds: nil, askForPassword: true)).value == "unavailable")
+        let ok = evaluateScreenLock(ScreenLockSettings(idleSeconds: 300, askForPassword: true, passwordDelaySeconds: 0))
+        #expect(ok.value == "timeout_seconds=300" && ok.finding == nil)
+        let slow = evaluateScreenLock(ScreenLockSettings(idleSeconds: 600, askForPassword: true, passwordDelaySeconds: 600))
+        #expect(slow.value == "timeout_seconds=1200" && slow.finding != nil)
+        #expect(evaluateScreenLock(ScreenLockSettings(idleSeconds: 0, askForPassword: true)).value == "disabled")
+        #expect(evaluateScreenLock(ScreenLockSettings(askForPassword: false)).finding != nil)
+    }
+
+    @Test("severity and evidence for neutral keys")
+    func report() {
+        var snap = PostureSnapshot()
+        snap.values = ["disk_encryption": "off", "screen_lock": "unavailable", "auto_updates": "off", "os_updates": "1 pending"]
+        snap.findings = ["disk_encryption": "x", "auto_updates": "y", "os_updates": "z"]
+        let r = makeDevicePostureReport(snapshot: snap, root: false, networkExtension: "not_configured")
+        #expect(r.checks["disk_encryption"]?.severity == "critical")
+        #expect(r.checks["os_updates"]?.severity == "high")
+        #expect(r.checks["auto_updates"]?.severity == "medium")
+        #expect(r.checks["screen_lock"]?.status == "unavailable")
+        #expect(r.checks["screen_lock"]?.evidence.confidence == "low")
+        #expect(r.checks["os_updates"]?.evidence.source == "software_update")
+    }
+}
