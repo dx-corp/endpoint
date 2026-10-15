@@ -3286,12 +3286,7 @@ mod tests {
             assert!(body["os_info"]["os_pretty_name"].is_string());
             assert!(body["os_info"]["cpu_model"].is_string());
             assert!(body["os_info"]["network_interface_details"].is_array());
-            assert_eq!(body["posture"]["schema_version"].as_u64(), Some(2));
-            assert_eq!(
-                body["posture"]["coverage"]["checks_total"].as_u64(),
-                Some(4)
-            );
-            assert!(body["posture"]["checks"]["secure_boot"].is_object());
+            posture_wire_tests::assert_linux_posture(&body["posture"]);
             let response_body = br#"{"pending_update":null}"#;
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -3581,3 +3576,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "sync/posture_wire_tests.rs"]
+mod posture_wire_tests;
