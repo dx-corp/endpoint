@@ -262,6 +262,15 @@ async function validatePlugins(root, files) {
     declaredSkillNames.add(declared);
   }
   requireValue(files.includes("plugins/deixic-code-skills/LICENSE"), "plugin license is missing");
+  const claudeCatalog = JSON.parse(await readFile(join(root, ".claude-plugin", "marketplace.json"), "utf8"));
+  requireValue(claudeCatalog.name === "deixic" && claudeCatalog.plugins?.length === 1
+    && claudeCatalog.plugins[0].name === "deixic" && claudeCatalog.plugins[0].source === "./plugins/deixic", "Claude marketplace is invalid");
+  const claudeManifest = JSON.parse(await readFile(join(root, "plugins", "deixic", ".claude-plugin", "plugin.json"), "utf8"));
+  const claudeServers = JSON.parse(await readFile(join(root, "plugins", "deixic", ".mcp.json"), "utf8")).mcpServers;
+  requireValue(claudeManifest.name === "deixic" && /^\d+\.\d+\.\d+$/.test(claudeManifest.version)
+    && JSON.stringify(Object.keys(claudeServers)) === '["deixic"]' && claudeServers.deixic.type === "http"
+    && claudeServers.deixic.url === "https://app.deixic.com/mcp/workspace" && !claudeServers.deixic.headers, "Claude plugin is invalid");
+  requireValue(files.includes("plugins/deixic/LICENSE"), "Claude plugin license is missing");
   for (const path of files) requireValue(!/(?:prompt-audit|session-history|product-kit)/i.test(path), `private plugin surface: ${path}`);
 }
 
