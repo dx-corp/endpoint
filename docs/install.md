@@ -21,6 +21,9 @@ sudo editor /etc/merlin/merlin.env
 sudo systemctl enable --now merlin
 ```
 
+Packages are published as GitHub Releases of this repository
+(`merlin-v<version>` tags); each release carries the archives, `SHA256SUMS`,
+the attestation, the Sigstore bundles and a `downloads.json` manifest.
 Verify a downloaded Linux archive's attestation and both Sigstore bundles
 before installation. The accepted keyless identity is the exact tagged Mono
 release workflow:
