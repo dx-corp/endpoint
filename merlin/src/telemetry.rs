@@ -99,7 +99,10 @@ pub async fn spawn(
     attach_all(&mut bpf)?;
     let map = bpf.take_map("EVENTS").context("EVENTS map not in object")?;
     let rb = RingBuf::try_from(map)?;
-    let mut afd = AsyncFd::new(rb)?;
+    // SAFETY: rb owns the MapData taken from bpf, including its open map fd.
+    // The task only drains ring entries; it never replaces the map or closes
+    // its fd. AsyncFd therefore deregisters the same live fd before dropping rb.
+    let mut afd = unsafe { AsyncFd::register(rb)? };
     tokio::spawn(async move {
         let _bpf = bpf; // keep programs attached
         let mut throttle = TokenBucket::new(security_rate_limit, Instant::now());
