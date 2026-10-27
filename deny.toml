@@ -5,7 +5,6 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 unmaintained (repository archived), pulled in by serde_yaml_ng 0.10.0 (production). No known vulnerability; no maintained serde_yaml_ng release drops it yet. expires: 2026-10-26" },
 ]
 
 [licenses]

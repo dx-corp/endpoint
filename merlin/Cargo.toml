@@ -11,7 +11,7 @@ aya = { version = "0.13", features = ["async_tokio"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml = { package = "serde_norway", version = "0.9.42" }
 serde_json = "1"
 toml = "0.8"
 sha2 = "0.10"
