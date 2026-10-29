@@ -10,7 +10,7 @@ public struct EndpointIdentitySession: Equatable, Sendable {
 }
 
 public struct NativeIdentityConfiguration: Equatable, Sendable {
-    public static let issuer = URL(string: "https://identity.evalops.dev")!
+    public static let issuer = URL(string: "https://identity.deixic.com")!
     public static let clientID = "merlin-macos"
     public static let redirectURL = URL(string: "http://127.0.0.1:49177/")!
     public static let scopes = ["openid", "profile", "email", "merlin:fleet:read"]
