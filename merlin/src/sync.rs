@@ -22,6 +22,9 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod check_in_wire;
+use check_in_wire::DeviceCheckInRequest;
+
 mod project_discovery;
 use project_discovery::{collect_project_agent_discovery, configured_agent_workspace_roots};
 
@@ -32,9 +35,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::desired_state::{self, AssertionReceipt};
-use crate::linux_posture;
 use crate::rules::{Rules, RulesHandle};
 use crate::spool;
+use crate::{linux_hardening, linux_posture};
 
 const UPLOAD_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const CHECK_IN_INTERVAL: Duration = Duration::from_secs(60);
@@ -604,23 +607,6 @@ pub struct SyncClient {
 }
 
 #[derive(Serialize)]
-struct DeviceCheckInRequest<'a> {
-    host: &'a str,
-    platform: &'static str,
-    agent_version: &'static str,
-    os_version: &'a str,
-    kernel_version: &'a str,
-    sensor_mode: &'a str,
-    current_rules_sha256: &'a str,
-    status: &'static str,
-    capabilities: Vec<&'static str>,
-    health: DeviceHealth,
-    posture: linux_posture::DevicePosture,
-    os_info: DeviceOSInfo,
-    inventory: DeviceInventory,
-}
-
-#[derive(Serialize)]
 struct DeviceHealth {
     drop_rate: f64,
     events_attempted: u64,
@@ -901,6 +887,7 @@ impl SyncClient {
                 write_failures: metrics.write_failures,
             },
             posture: linux_posture::collect(),
+            hardening: linux_hardening::collect(),
             os_info: collect_os_info(),
             inventory: collect_inventory(),
         })
@@ -3287,6 +3274,7 @@ mod tests {
             assert!(body["os_info"]["cpu_model"].is_string());
             assert!(body["os_info"]["network_interface_details"].is_array());
             posture_wire_tests::assert_linux_posture(&body["posture"]);
+            posture_wire_tests::assert_linux_hardening(&body["hardening"]);
             let response_body = br#"{"pending_update":null}"#;
             format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",

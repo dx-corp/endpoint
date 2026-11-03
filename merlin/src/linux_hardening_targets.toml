@@ -1,0 +1,969 @@
+# Target manifest generated from authored dx-linux-* rule applicability and demanded facts.
+# Runtime collection dispatches by kind; rule IDs are coverage metadata only.
+schema_version = 1
+
+[[targets]]
+kind = "audit_watch"
+target = "/etc/passwd"
+fields = ["persistent_permissions", "runtime_permissions"]
+rules = ["dx-linux-audit-rules-usergroup-modification-passwd"]
+
+[[targets]]
+kind = "boot_argument"
+target = "audit"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-grub2-audit-argument"]
+
+[[targets]]
+kind = "boot_argument"
+target = "ipv6.disable"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-grub2-ipv6-disable-argument"]
+
+[[targets]]
+kind = "file"
+target = "/etc/at.allow"
+fields = ["gid", "uid"]
+rules = ["dx-linux-file-groupowner-at-allow", "dx-linux-file-owner-at-allow"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.allow"
+fields = ["uid"]
+rules = ["dx-linux-file-owner-cron-allow"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.d"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-d", "dx-linux-file-owner-cron-d", "dx-linux-file-permissions-cron-d"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.daily"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-daily", "dx-linux-file-owner-cron-daily", "dx-linux-file-permissions-cron-daily"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.hourly"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-hourly", "dx-linux-file-owner-cron-hourly", "dx-linux-file-permissions-cron-hourly"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.monthly"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-monthly", "dx-linux-file-owner-cron-monthly", "dx-linux-file-permissions-cron-monthly"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.weekly"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-weekly", "dx-linux-file-owner-cron-weekly", "dx-linux-file-permissions-cron-weekly"]
+
+[[targets]]
+kind = "file"
+target = "/etc/cron.yearly"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-cron-yearly", "dx-linux-file-owner-cron-yearly", "dx-linux-file-permissions-cron-yearly"]
+
+[[targets]]
+kind = "file"
+target = "/etc/crontab"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-crontab", "dx-linux-file-owner-crontab", "dx-linux-file-permissions-crontab"]
+
+[[targets]]
+kind = "file"
+target = "/etc/group"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-etc-group", "dx-linux-file-owner-etc-group", "dx-linux-file-permissions-etc-group"]
+
+[[targets]]
+kind = "file"
+target = "/etc/group-"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-backup-etc-group", "dx-linux-file-owner-backup-etc-group", "dx-linux-file-permissions-backup-etc-group"]
+
+[[targets]]
+kind = "file"
+target = "/etc/gshadow"
+fields = ["mode", "uid"]
+rules = ["dx-linux-file-owner-etc-gshadow", "dx-linux-file-permissions-etc-gshadow"]
+
+[[targets]]
+kind = "file"
+target = "/etc/gshadow-"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-backup-etc-gshadow", "dx-linux-file-owner-backup-etc-gshadow", "dx-linux-file-permissions-backup-etc-gshadow"]
+
+[[targets]]
+kind = "file"
+target = "/etc/issue.net"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-etc-issue-net", "dx-linux-file-owner-etc-issue-net", "dx-linux-file-permissions-etc-issue-net"]
+
+[[targets]]
+kind = "file"
+target = "/etc/motd"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-etc-motd", "dx-linux-file-owner-etc-motd", "dx-linux-file-permissions-etc-motd"]
+
+[[targets]]
+kind = "file"
+target = "/etc/passwd"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-etc-passwd", "dx-linux-file-owner-etc-passwd", "dx-linux-file-permissions-etc-passwd"]
+
+[[targets]]
+kind = "file"
+target = "/etc/passwd-"
+fields = ["gid", "mode", "uid"]
+rules = ["dx-linux-file-groupowner-backup-etc-passwd", "dx-linux-file-owner-backup-etc-passwd", "dx-linux-file-permissions-backup-etc-passwd"]
+
+[[targets]]
+kind = "file"
+target = "/etc/shadow"
+fields = ["mode", "uid"]
+rules = ["dx-linux-file-owner-etc-shadow", "dx-linux-file-permissions-etc-shadow"]
+
+[[targets]]
+kind = "file"
+target = "/etc/shadow-"
+fields = ["mode", "uid"]
+rules = ["dx-linux-file-owner-backup-etc-shadow", "dx-linux-file-permissions-backup-etc-shadow"]
+
+[[targets]]
+kind = "kernel_module"
+target = "bluetooth"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-bluetooth-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "cramfs"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-cramfs-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "dccp"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-dccp-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "freevxfs"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-freevxfs-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "hfs"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-hfs-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "hfsplus"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-hfsplus-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "jffs2"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-jffs2-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "rds"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-rds-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "sctp"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-sctp-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "squashfs"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-squashfs-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "tipc"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-tipc-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "udf"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-udf-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "usb-storage"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-usb-storage-disabled"]
+
+[[targets]]
+kind = "kernel_module"
+target = "vfat"
+fields = ["blacklist_state", "effective_install_command", "load_state"]
+rules = ["dx-linux-kernel-module-vfat-disabled"]
+
+[[targets]]
+kind = "mount"
+target = "/dev/shm"
+fields = ["persistent_options", "runtime_options"]
+rules = ["dx-linux-mount-option-dev-shm-nodev", "dx-linux-mount-option-dev-shm-noexec", "dx-linux-mount-option-dev-shm-nosuid"]
+
+[[targets]]
+kind = "mount"
+target = "/home"
+fields = ["persistent_options", "runtime_options"]
+rules = ["dx-linux-mount-option-home-nodev", "dx-linux-mount-option-home-nosuid"]
+
+[[targets]]
+kind = "mount"
+target = "/tmp"
+fields = ["persistent_options", "runtime_options"]
+rules = ["dx-linux-mount-option-tmp-nodev", "dx-linux-mount-option-tmp-noexec", "dx-linux-mount-option-tmp-nosuid"]
+
+[[targets]]
+kind = "mount"
+target = "/var/tmp"
+fields = ["persistent_options", "runtime_options"]
+rules = ["dx-linux-mount-option-var-tmp-nodev", "dx-linux-mount-option-var-tmp-noexec", "dx-linux-mount-option-var-tmp-nosuid"]
+
+[[targets]]
+kind = "package"
+target = "389-ds-base"
+fields = ["state"]
+rules = ["dx-linux-package-389-ds-base-removed"]
+
+[[targets]]
+kind = "package"
+target = "MFEhiplsm"
+fields = ["state"]
+rules = ["dx-linux-package-mfehiplsm-installed"]
+
+[[targets]]
+kind = "package"
+target = "aide"
+fields = ["state"]
+rules = ["dx-linux-package-aide-installed"]
+
+[[targets]]
+kind = "package"
+target = "audit"
+fields = ["state"]
+rules = ["dx-linux-package-audit-installed"]
+
+[[targets]]
+kind = "package"
+target = "audit-libs"
+fields = ["state"]
+rules = ["dx-linux-package-audit-libs-installed"]
+
+[[targets]]
+kind = "package"
+target = "avahi"
+fields = ["state"]
+rules = ["dx-linux-package-avahi-removed"]
+
+[[targets]]
+kind = "package"
+target = "avahi-autoipd"
+fields = ["state"]
+rules = ["dx-linux-package-avahi-autoipd-removed"]
+
+[[targets]]
+kind = "package"
+target = "bind"
+fields = ["state"]
+rules = ["dx-linux-package-bind-removed"]
+
+[[targets]]
+kind = "package"
+target = "cups"
+fields = ["state"]
+rules = ["dx-linux-package-cups-removed"]
+
+[[targets]]
+kind = "package"
+target = "dhcp"
+fields = ["state"]
+rules = ["dx-linux-package-dhcp-removed"]
+
+[[targets]]
+kind = "package"
+target = "dhcp-client"
+fields = ["state"]
+rules = ["dx-linux-package-dhcp-client-removed"]
+
+[[targets]]
+kind = "package"
+target = "dovecot"
+fields = ["state"]
+rules = ["dx-linux-package-dovecot-removed"]
+
+[[targets]]
+kind = "package"
+target = "dracut-fips"
+fields = ["state"]
+rules = ["dx-linux-package-dracut-fips-installed"]
+
+[[targets]]
+kind = "package"
+target = "gdm"
+fields = ["state"]
+rules = ["dx-linux-package-gdm-removed"]
+
+[[targets]]
+kind = "package"
+target = "inetutils-telnetd"
+fields = ["state"]
+rules = ["dx-linux-package-inetutils-telnetd-removed"]
+
+[[targets]]
+kind = "package"
+target = "libreswan"
+fields = ["state"]
+rules = ["dx-linux-package-libreswan-installed"]
+
+[[targets]]
+kind = "package"
+target = "logrotate"
+fields = ["state"]
+rules = ["dx-linux-package-logrotate-installed"]
+
+[[targets]]
+kind = "package"
+target = "net-snmp"
+fields = ["state"]
+rules = ["dx-linux-package-net-snmp-removed"]
+
+[[targets]]
+kind = "package"
+target = "nfs-utils"
+fields = ["state"]
+rules = ["dx-linux-package-nfs-utils-removed"]
+
+[[targets]]
+kind = "package"
+target = "ntp"
+fields = ["state"]
+rules = ["dx-linux-package-ntp-installed"]
+
+[[targets]]
+kind = "package"
+target = "openldap-clients"
+fields = ["state"]
+rules = ["dx-linux-package-openldap-clients-removed"]
+
+[[targets]]
+kind = "package"
+target = "openldap-servers"
+fields = ["state"]
+rules = ["dx-linux-package-openldap-servers-removed"]
+
+[[targets]]
+kind = "package"
+target = "openssh-server"
+fields = ["state"]
+rules = ["dx-linux-package-openssh-server-installed"]
+
+[[targets]]
+kind = "package"
+target = "pam_apparmor"
+fields = ["state"]
+rules = ["dx-linux-package-pam-apparmor-installed"]
+
+[[targets]]
+kind = "package"
+target = "psacct"
+fields = ["state"]
+rules = ["dx-linux-package-psacct-installed"]
+
+[[targets]]
+kind = "package"
+target = "quagga"
+fields = ["state"]
+rules = ["dx-linux-package-quagga-removed"]
+
+[[targets]]
+kind = "package"
+target = "rpcbind"
+fields = ["state"]
+rules = ["dx-linux-package-rpcbind-removed"]
+
+[[targets]]
+kind = "package"
+target = "rsh"
+fields = ["state"]
+rules = ["dx-linux-package-rsh-removed"]
+
+[[targets]]
+kind = "package"
+target = "rsh-server"
+fields = ["state"]
+rules = ["dx-linux-package-rsh-server-removed"]
+
+[[targets]]
+kind = "package"
+target = "rsyslog"
+fields = ["state"]
+rules = ["dx-linux-package-rsyslog-installed"]
+
+[[targets]]
+kind = "package"
+target = "samba"
+fields = ["state"]
+rules = ["dx-linux-package-samba-removed"]
+
+[[targets]]
+kind = "package"
+target = "screen"
+fields = ["state"]
+rules = ["dx-linux-package-screen-installed"]
+
+[[targets]]
+kind = "package"
+target = "sendmail"
+fields = ["state"]
+rules = ["dx-linux-package-sendmail-removed"]
+
+[[targets]]
+kind = "package"
+target = "squid"
+fields = ["state"]
+rules = ["dx-linux-package-squid-removed"]
+
+[[targets]]
+kind = "package"
+target = "sssd"
+fields = ["state"]
+rules = ["dx-linux-package-sssd-installed"]
+
+[[targets]]
+kind = "package"
+target = "strongswan"
+fields = ["state"]
+rules = ["dx-linux-package-strongswan-installed"]
+
+[[targets]]
+kind = "package"
+target = "sudo"
+fields = ["state"]
+rules = ["dx-linux-package-sudo-installed"]
+
+[[targets]]
+kind = "package"
+target = "syslog-ng"
+fields = ["state"]
+rules = ["dx-linux-package-syslogng-installed"]
+
+[[targets]]
+kind = "package"
+target = "talk"
+fields = ["state"]
+rules = ["dx-linux-package-talk-removed"]
+
+[[targets]]
+kind = "package"
+target = "tcp_wrappers"
+fields = ["state"]
+rules = ["dx-linux-package-tcp-wrappers-installed"]
+
+[[targets]]
+kind = "package"
+target = "tcpd"
+fields = ["state"]
+rules = ["dx-linux-package-tcp-wrappers-removed"]
+
+[[targets]]
+kind = "package"
+target = "telnet"
+fields = ["state"]
+rules = ["dx-linux-package-telnet-removed"]
+
+[[targets]]
+kind = "package"
+target = "telnet-server"
+fields = ["state"]
+rules = ["dx-linux-package-telnet-server-removed"]
+
+[[targets]]
+kind = "package"
+target = "telnetd"
+fields = ["state"]
+rules = ["dx-linux-package-telnetd-removed"]
+
+[[targets]]
+kind = "package"
+target = "telnetd-ssl"
+fields = ["state"]
+rules = ["dx-linux-package-telnetd-ssl-removed"]
+
+[[targets]]
+kind = "package"
+target = "tmux"
+fields = ["state"]
+rules = ["dx-linux-package-tmux-installed"]
+
+[[targets]]
+kind = "package"
+target = "vsftpd"
+fields = ["state"]
+rules = ["dx-linux-package-vsftpd-removed"]
+
+[[targets]]
+kind = "package"
+target = "xinetd"
+fields = ["state"]
+rules = ["dx-linux-package-xinetd-removed"]
+
+[[targets]]
+kind = "package"
+target = "xorg-x11-server-common"
+fields = ["state"]
+rules = ["dx-linux-package-xorg-x11-server-common-removed"]
+
+[[targets]]
+kind = "package"
+target = "ypbind"
+fields = ["state"]
+rules = ["dx-linux-package-ypbind-removed"]
+
+[[targets]]
+kind = "package"
+target = "ypserv"
+fields = ["state"]
+rules = ["dx-linux-package-ypserv-removed"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "AllowTcpForwarding"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-tcp-forwarding"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "Banner"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-enable-warning-banner"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "GSSAPIAuthentication"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-gssapi-auth"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "HostbasedAuthentication"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-disable-host-auth"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "IgnoreRhosts"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-rhosts"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "IgnoreUserKnownHosts"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-user-known-hosts"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "KerberosAuthentication"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-kerb-auth"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "LogLevel"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-set-loglevel-verbose"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "PermitEmptyPasswords"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-empty-passwords"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "PermitRootLogin"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-root-login"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "PermitUserEnvironment"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-do-not-permit-user-env"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "PrintLastLog"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-print-last-log"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "StrictModes"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-enable-strictmodes"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "UsePAM"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-enable-pam"]
+
+[[targets]]
+kind = "sshd_setting"
+target = "X11Forwarding"
+fields = ["context", "effective_value"]
+rules = ["dx-linux-sshd-disable-x11-forwarding"]
+
+[[targets]]
+kind = "sudo_setting"
+target = "use_pty"
+fields = ["context", "effective_state"]
+rules = ["dx-linux-sudo-add-use-pty"]
+
+[[targets]]
+kind = "sysctl"
+target = "fs.suid_dumpable"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-fs-suid-dumpable"]
+
+[[targets]]
+kind = "sysctl"
+target = "kernel.randomize_va_space"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-kernel-randomize-va-space"]
+
+[[targets]]
+kind = "sysctl"
+target = "net.ipv4.conf.all.send_redirects"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-net-ipv4-conf-all-send-redirects"]
+
+[[targets]]
+kind = "sysctl"
+target = "net.ipv4.conf.default.send_redirects"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-net-ipv4-conf-default-send-redirects"]
+
+[[targets]]
+kind = "sysctl"
+target = "net.ipv4.ip_forward"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-net-ipv4-ip-forward"]
+
+[[targets]]
+kind = "sysctl"
+target = "net.ipv6.conf.all.disable_ipv6"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-net-ipv6-conf-all-disable-ipv6"]
+
+[[targets]]
+kind = "sysctl"
+target = "net.ipv6.conf.default.disable_ipv6"
+fields = ["persistent_value", "runtime_value"]
+rules = ["dx-linux-sysctl-net-ipv6-conf-default-disable-ipv6"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "abrtd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-abrtd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "acpid.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-acpid-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "apparmor.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-apparmor-configured"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "atd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-atd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "auditd.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-auditd-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "autofs.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-autofs-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "avahi-daemon.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-avahi-daemon-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "bluetooth.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-bluetooth-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "certmonger.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-certmonger-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "cpupower.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-cpupower-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "cron.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-cron-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "crond.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-crond-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "cups.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-cups-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "dhcpd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-dhcpd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "dovecot.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-dovecot-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "mdmonitor.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-mdmonitor-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "nails.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-nails-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "named.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-named-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "netconsole.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-netconsole-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "nfs-server.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-nfs-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "ntp.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-ntp-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "ntpd.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-ntpd-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "ntpdate.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-ntpdate-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "oddjobd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-oddjobd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "portreserve.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-portreserve-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "psacct.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-psacct-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "qpidd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-qpidd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "quota_nld.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-quota-nld-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rdisc.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rdisc-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rhnsd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rhnsd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rhsmcertd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rhsmcertd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rpcbind.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rpcbind-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rsh.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rsh-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rsyncd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-rsyncd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "rsyslog.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-rsyslog-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "saslauthd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-saslauthd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "smb.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-smb-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "snmpd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-snmpd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "squid.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-squid-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "sshd.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-sshd-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "sssd.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-sssd-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "syslog-ng.service"
+fields = ["active_state", "unit_file_state"]
+rules = ["dx-linux-service-syslogng-enabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "sysstat.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-sysstat-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "vsftpd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-vsftpd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "xinetd.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-xinetd-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "ypbind.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-ypbind-disabled"]
+
+[[targets]]
+kind = "systemd_unit"
+target = "zebra.service"
+fields = ["active_state", "socket_active_state", "socket_unit_file_state", "unit_file_state"]
+rules = ["dx-linux-service-zebra-disabled"]
