@@ -237,31 +237,67 @@ async function validateExamples(root, files) {
 async function validatePlugins(root, files) {
   const catalog = JSON.parse(await readFile(join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
   exactKeys(catalog, ["name", "interface", "plugins"], "marketplace");
-  requireValue(catalog.name === "deixic" && catalog.interface?.displayName === "Deixic" && catalog.plugins?.length === 1, "invalid marketplace identity");
-  const entry = catalog.plugins[0];
-  exactKeys(entry, ["name", "source", "policy", "category"], "marketplace plugin");
-  requireValue(entry.name === "deixic-code-skills" && entry.source?.source === "local"
-    && entry.source?.path === "./plugins/deixic-code-skills", "marketplace source is invalid");
-  requireValue(entry.policy?.installation === "AVAILABLE" && entry.policy?.authentication === "ON_INSTALL"
-    && Object.keys(entry.policy).length === 2 && entry.category === "Developer Tools", "marketplace policy is invalid");
-  const pluginRoot = join(root, "plugins", "deixic-code-skills");
-  const manifest = JSON.parse(await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
-  requireValue(manifest.name === "deixic-code-skills" && /^\d+\.\d+\.\d+$/.test(manifest.version)
-    && manifest.skills === "./skills/" && manifest.license === "BUSL-1.1", "plugin manifest is invalid");
-  requireValue(Array.isArray(manifest.interface?.defaultPrompt) && manifest.interface.defaultPrompt.length <= 3
-    && manifest.interface.defaultPrompt.every(item => typeof item === "string" && item.length <= 128), "plugin starter prompts are invalid");
-  const skillDirectories = (await readdir(join(pluginRoot, "skills"), { withFileTypes: true }))
-    .filter(entryValue => entryValue.isDirectory()).map(entryValue => entryValue.name).sort();
-  requireValue(JSON.stringify(skillDirectories) === JSON.stringify(SKILLS), "plugin skill allowlist changed");
-  const declaredSkillNames = new Set();
-  for (const skill of SKILLS) {
-    const text = await readFile(join(pluginRoot, "skills", skill, "SKILL.md"), "utf8");
-    const declared = text.match(/^name:\s*([a-z][a-z0-9-]*)\s*$/m)?.[1];
-    requireValue(text.startsWith("---\n") && declared && !declaredSkillNames.has(declared)
-      && /^description:\s*\S/m.test(text), `invalid skill metadata: ${skill}`);
-    declaredSkillNames.add(declared);
+  requireValue(catalog.name === "deixic" && catalog.interface?.displayName === "Deixic"
+    && Array.isArray(catalog.plugins) && catalog.plugins.length > 0, "invalid marketplace identity");
+  const pluginNames = new Set();
+  for (const entry of catalog.plugins) {
+    exactKeys(entry, ["name", "source", "policy", "category"], "marketplace plugin");
+    requireValue(typeof entry.name === "string" && /^[a-z][a-z0-9-]*$/.test(entry.name)
+      && !pluginNames.has(entry.name), "invalid or duplicate marketplace plugin name");
+    pluginNames.add(entry.name);
+    exactKeys(entry.source, ["source", "path"], "marketplace source");
+    requireValue(entry.source.source === "local" && entry.source.path === `./plugins/${entry.name}`,
+      "marketplace source is invalid");
+    requireValue(entry.policy?.installation === "AVAILABLE" && entry.policy?.authentication === "ON_INSTALL"
+      && Object.keys(entry.policy).length === 2 && typeof entry.category === "string" && entry.category.length > 0,
+      "marketplace policy is invalid");
+    const pluginRoot = join(root, "plugins", entry.name);
+    const manifest = JSON.parse(await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"));
+    requireValue(manifest.name === entry.name && /^\d+\.\d+\.\d+$/.test(manifest.version)
+      && manifest.skills === "./skills/" && typeof manifest.license === "string" && manifest.license.length > 0,
+      "plugin manifest is invalid");
+    requireValue(Array.isArray(manifest.interface?.defaultPrompt) && manifest.interface.defaultPrompt.length <= 3
+      && manifest.interface.defaultPrompt.every(item => typeof item === "string" && item.length <= 128),
+      "plugin starter prompts are invalid");
+    const skillDirectories = (await readdir(join(pluginRoot, "skills"), { withFileTypes: true }))
+      .filter(value => value.isDirectory()).map(value => value.name).sort();
+    requireValue(skillDirectories.length > 0, "plugin has no skills");
+    if (entry.name === "deixic-code-skills") {
+      requireValue(entry.category === "Developer Tools" && manifest.license === "BUSL-1.1", "code plugin metadata changed");
+      requireValue(JSON.stringify(skillDirectories) === JSON.stringify(SKILLS), "plugin skill allowlist changed");
+    } else {
+      const native = JSON.parse(await readFile(join(pluginRoot, ".plugin", "plugin.json"), "utf8"));
+      exactKeys(native, ["name", "version", "description", "skills"], "native skill-only manifest");
+      requireValue(native.name === manifest.name && native.version === manifest.version
+        && native.skills === "./skills/" && typeof native.description === "string" && native.description.length > 0,
+        "native plugin manifest is invalid");
+      const topLevel = await readdir(pluginRoot);
+      requireValue(topLevel.every(path => ["LICENSE", ".plugin", ".codex-plugin", "skills"].includes(path)),
+        "executable or undeclared plugin surface at package root");
+      const prefix = `plugins/${entry.name}/`;
+      for (const path of files.filter(value => value.startsWith(prefix))) {
+        const suffix = path.slice(prefix.length);
+        requireValue(suffix === "LICENSE" || suffix === ".plugin/plugin.json" || suffix === ".codex-plugin/plugin.json"
+          || suffix.startsWith("skills/"), `executable or undeclared plugin surface: ${path}`);
+      }
+      const metadataKeys = new Set(["name", "version", "description", "author", "homepage", "repository", "license", "keywords", "skills", "interface"]);
+      requireValue(Object.keys(manifest).every(key => metadataKeys.has(key)), "executable or unknown plugin declaration");
+    }
+    const declaredSkillNames = new Set();
+    for (const skill of skillDirectories) {
+      const text = await readFile(join(pluginRoot, "skills", skill, "SKILL.md"), "utf8");
+      const declared = text.match(/^name:\s*([a-z][a-z0-9-]*)\s*$/m)?.[1];
+      requireValue(text.startsWith("---\n") && declared && !declaredSkillNames.has(declared)
+        && /^description:\s*\S/m.test(text), `invalid skill metadata: ${skill}`);
+      declaredSkillNames.add(declared);
+    }
+    requireValue(files.includes(`plugins/${entry.name}/LICENSE`), "plugin license is missing");
   }
-  requireValue(files.includes("plugins/deixic-code-skills/LICENSE"), "plugin license is missing");
+  requireValue(pluginNames.has("deixic-code-skills"), "existing code plugin is missing");
+  const pluginDirectories = (await readdir(join(root, "plugins"), { withFileTypes: true }))
+    .filter(value => value.isDirectory()).map(value => value.name).sort();
+  requireValue(JSON.stringify(pluginDirectories) === JSON.stringify([...pluginNames, "deixic"].sort()),
+    "uncataloged plugin directory");
   const claudeCatalog = JSON.parse(await readFile(join(root, ".claude-plugin", "marketplace.json"), "utf8"));
   requireValue(claudeCatalog.name === "deixic" && claudeCatalog.plugins?.length === 1
     && claudeCatalog.plugins[0].name === "deixic" && claudeCatalog.plugins[0].source === "./plugins/deixic", "Claude marketplace is invalid");
