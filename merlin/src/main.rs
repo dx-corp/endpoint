@@ -13,6 +13,7 @@ mod dnsmon;
 mod fanotify_mon;
 mod fileless;
 mod filemon;
+mod linux_hardening;
 mod linux_posture;
 mod netifmon;
 mod persistence_mon;
@@ -134,6 +135,8 @@ enum Cmd {
     GenHash { path: PathBuf },
     /// One-shot posture report: AF_PACKET holders and container-socket peers.
     Posture,
+    /// Print bounded, read-only Linux hardening facts as JSON.
+    Hardening,
 }
 
 fn default_ebpf_candidates() -> Vec<PathBuf> {
@@ -163,6 +166,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Posture => posture::run(),
+        Cmd::Hardening => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&linux_hardening::collect())?
+            );
+            Ok(())
+        }
         Cmd::GenHash { path } => {
             let hash = fanotify_mon::sha256_path(&path)?;
             println!("{hash}  {}", path.display());
