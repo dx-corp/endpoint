@@ -319,13 +319,7 @@ fn grub_saved_nextboot_and_kernel_branches_resolve_without_grubby() {
         ),
         Some("1".into())
     );
-    assert_eq!(
-        boot_value(
-            &grub_arguments(cfg, "# GRUB Environment Block\nnext_entry=other\n").unwrap(),
-            "audit"
-        ),
-        Some("0".into())
-    );
+    assert!(grub_arguments(cfg, "# GRUB Environment Block\nnext_entry=other\n").is_none());
     assert!(grub_arguments(cfg, "# GRUB Environment Block\ninitrdfail=1\n").is_none());
     assert!(
         grub_arguments(
@@ -418,15 +412,12 @@ fn audit_applicable_abis_come_from_running_kernel_configuration() {
 }
 
 #[test]
-fn one_shot_boot_selects_the_actual_conventional_grub_entry() {
-    let cfg = "set default=\"0\"\nmenuentry 'Good' --id good {\nlinux /vmlinuz audit=1 ipv6.disable=1\n}\nmenuentry 'Bad' --id bad {\nlinux /vmlinuz-old audit=0 ipv6.disable=0\n}\n";
-    assert_eq!(
-        boot_value(
-            &grub_arguments(cfg, "# GRUB Environment Block\nnext_entry=bad\n").unwrap(),
-            "audit"
-        ),
-        Some("0".into())
-    );
+fn unused_or_dynamic_one_shot_environment_never_overrides_static_default() {
+    let cfg = "set default=\"0\"\nmenuentry 'Bad' --id bad {\nlinux /vmlinuz audit=0\n}\nmenuentry 'Good' --id good {\nlinux /vmlinuz-old audit=1\n}\n";
+    assert!(grub_arguments(cfg, "# GRUB Environment Block\nnext_entry=good\n").is_none());
+    let conditional =
+        format!("if [ -n \"${{next_entry}}\" ]; then\nset default=\"${{next_entry}}\"\nfi\n{cfg}");
+    assert!(grub_arguments(&conditional, "# GRUB Environment Block\nnext_entry=good\n").is_none());
 }
 
 #[test]
@@ -495,4 +486,151 @@ fn bls_default_selection_is_explicitly_unsupported_not_a_default_guess() {
         )
         .is_none()
     );
+}
+
+#[test]
+fn dynamic_grub_menus_cannot_shift_a_numeric_selection_into_a_false_pass() {
+    for (open, close) in [
+        ("if [ 1 = 0 ]; then", "fi"),
+        ("for item in absent; do", "done"),
+        ("while false; do", "done"),
+        ("function optional_menu {", "}"),
+        ("true; if [ 1 = 0 ]; then", "fi"),
+        ("if [ 1 = 0 ]; then menuentry 'Inline' {", "fi"),
+    ] {
+        let cfg = format!(
+            "set default=\"1\"\n{open}\nmenuentry 'Absent' --id absent {{\nlinux /old audit=0\n}}\n{close}\nmenuentry 'Good' --id good {{\nlinux /current audit=1\n}}\nmenuentry 'Bad' --id bad {{\nlinux /other audit=0\n}}\n"
+        );
+        assert!(
+            grub_arguments(&cfg, "# GRUB Environment Block\n").is_none(),
+            "{open}"
+        );
+        let direct = cfg.replace("set default=\"1\"", "set default=\"absent\"");
+        assert!(grub_arguments(&direct, "# GRUB Environment Block\n").is_none());
+    }
+}
+
+#[test]
+fn static_grub_selection_preceding_optional_firmware_menu_remains_supported() {
+    let cfg = "function load_video {\nif true; then\ninsmod video\nfi\n}\nset default=\"0\"\nmenuentry 'Linux' --id linux {\nlinux /vmlinuz audit=1 ipv6.disable=1\n}\nif [ true ]; then\nmenuentry 'Firmware' {\nfwsetup\n}\nfi\n";
+    assert_eq!(
+        boot_value(
+            &grub_arguments(cfg, "# GRUB Environment Block\n").unwrap(),
+            "audit"
+        ),
+        Some("1".into())
+    );
+}
+
+#[test]
+fn selected_grub_entry_rejects_control_flow_and_embedded_kernel_commands() {
+    for command in [
+        "if true; then linux /other audit=0; fi",
+        "if true; then\nlinux /other audit=0\nfi",
+        "for item in x; do linuxefi /other audit=0; done",
+        "while true; do linux16 /other audit=0; done",
+        "function alternate { linux /other audit=0; }",
+        "true; linux /other audit=0",
+    ] {
+        let cfg = format!(
+            "set default=\"0\"\nmenuentry 'Linux' {{\nlinux /vmlinuz audit=1\n{command}\n}}\n"
+        );
+        assert!(
+            grub_arguments(&cfg, "# GRUB Environment Block\n").is_none(),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn selected_grub_entry_never_executes_unresolved_functions() {
+    for (definition, invocation) in [
+        (
+            "function alternate {\nif true; then linux /other audit=0; fi\n}\n",
+            "alternate",
+        ),
+        (
+            "function linux {\necho no-kernel\n}\n",
+            "linux /vmlinuz audit=1",
+        ),
+    ] {
+        let cfg = format!(
+            "{definition}set default=\"0\"\nmenuentry 'Linux' {{\nlinux /vmlinuz audit=1\n{invocation}\n}}\n"
+        );
+        assert!(grub_arguments(&cfg, "# GRUB Environment Block\n").is_none());
+    }
+}
+
+#[test]
+fn grub_default_requires_unconditional_assignment_and_no_later_mutation() {
+    let menus = "menuentry 'Good' {\nlinux /vmlinuz audit=1\n}\nmenuentry 'Bad' {\nlinux /other audit=0\n}\n";
+    for cfg in [
+        format!("function unused {{\nset default=\"0\"\n}}\n{menus}"),
+        format!("if false; then\nset default=\"0\"\nfi\n{menus}"),
+        format!("set default=\"0\"\n{menus}true; set default=1\n"),
+        format!("set default=\"0\"\n{menus}unset default\n"),
+        format!("set default=\"0\"\n{menus}load_env\n"),
+    ] {
+        assert!(
+            grub_arguments(&cfg, "# GRUB Environment Block\n").is_none(),
+            "{cfg}"
+        );
+    }
+}
+
+#[test]
+fn grub_static_profile_never_treats_other_options_as_menu_ids() {
+    let cfg = "set default=\"good\"\nmenuentry 'Bad' {\nlinux /vmlinuz audit=0\n}\nmenuentry 'Other' --users good {\nlinux /other audit=1\n}\n";
+    assert!(grub_arguments(cfg, "# GRUB Environment Block\n").is_none());
+    for option in [
+        "--id good --unsupported nope",
+        "--id good --id good",
+        "--id good $extra",
+    ] {
+        assert!(
+            grub_arguments(
+                &cfg.replace("--users good", option),
+                "# GRUB Environment Block\n"
+            )
+            .is_none()
+        );
+    }
+    let explicit = cfg.replace("--users good", "--id=good");
+    assert_eq!(
+        boot_value(
+            &grub_arguments(&explicit, "# GRUB Environment Block\n").unwrap(),
+            "audit"
+        ),
+        Some("1".into())
+    );
+    for suffix in [
+        "set 'default'=0",
+        "search --set=default uuid",
+        "load_env -f /other/env",
+    ] {
+        assert!(
+            grub_arguments(
+                &format!("{explicit}{suffix}\n"),
+                "# GRUB Environment Block\n"
+            )
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn grub_never_assumes_redirected_custom_loader_paths_are_absent() {
+    let entry = "set default=\"0\"\nmenuentry 'Good' {\nlinux /vmlinuz audit=1\n}\n";
+    for loader in [
+        "set prefix=/other\nsource $prefix/custom.cfg",
+        "set config_directory=/other\nsource ${config_directory}/custom.cfg",
+        "if true; then s'ource' /other/custom.cfg; fi",
+        "configfile /other/grub.cfg",
+    ] {
+        let cfg = format!("{entry}{loader}\n");
+        assert!(
+            grub_arguments(&cfg, "# GRUB Environment Block\n").is_none(),
+            "{loader}"
+        );
+    }
 }
