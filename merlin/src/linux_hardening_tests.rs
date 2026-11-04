@@ -634,3 +634,24 @@ fn grub_never_assumes_redirected_custom_loader_paths_are_absent() {
         );
     }
 }
+
+#[test]
+fn grub_empty_selection_never_matches_an_absent_menu_id() {
+    let cfg = "set default=\"\"\nmenuentry 'Bad' --id bad {\nlinux /vmlinuz audit=0\n}\nmenuentry 'Good' {\nlinux /other audit=1\n}\n";
+    assert!(grub_arguments(cfg, "# GRUB Environment Block\n").is_none());
+}
+
+#[test]
+fn grub_blank_default_and_blank_title_never_prove_selection() {
+    for selection in ["", " ", "\t"] {
+        for title in ["Good", "", " ", "\t"] {
+            let cfg = format!(
+                "set default=\"{selection}\"\nmenuentry 'Bad' --id bad {{\nlinux /vmlinuz audit=0\n}}\nmenuentry '{title}' {{\nlinux /other audit=1\n}}\n"
+            );
+            assert!(
+                grub_arguments(&cfg, "# GRUB Environment Block\n").is_none(),
+                "selection={selection:?} title={title:?}"
+            );
+        }
+    }
+}

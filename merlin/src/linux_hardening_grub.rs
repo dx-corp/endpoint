@@ -173,6 +173,9 @@ pub(super) fn grub_arguments(cfg: &str, env: &str) -> Option<String> {
     // A nonempty one-shot environment value alone cannot prove that this cfg
     // applies it. Dynamic one-shot selection is outside the static profile.
     let selection = defaults.iter().next()?.clone();
+    if selection.trim().is_empty() {
+        return None;
+    }
     let selected_numeric = selection
         .split('>')
         .map(str::parse::<usize>)
@@ -280,7 +283,7 @@ pub(super) fn grub_arguments(cfg: &str, env: &str) -> Option<String> {
                 let matches = selected_numeric
                     .as_ref()
                     .map(|p| *p == path)
-                    .unwrap_or(selection == title || selection == id);
+                    .unwrap_or(selection == title || !id.is_empty() && selection == id);
                 if matches {
                     if !selected.is_empty() || commands.is_empty() {
                         return None;
