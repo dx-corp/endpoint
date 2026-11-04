@@ -121,7 +121,7 @@ fn unix_diag_dump() -> Result<Vec<UnixDiagEntry>> {
     if rc < 0 {
         return Err(io::Error::last_os_error()).context("binding NETLINK_SOCK_DIAG");
     }
-    let mut req = vec![0u8; 16 + 24];
+    let mut req = [0u8; 16 + 24];
     req[0..4].copy_from_slice(&(40u32.to_ne_bytes())); // len
     req[4..6].copy_from_slice(&SOCK_DIAG_BY_FAMILY.to_ne_bytes());
     req[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_DUMP).to_ne_bytes());

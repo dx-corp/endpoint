@@ -337,13 +337,7 @@ impl Attribution {
 }
 
 fn open_socket() -> Result<i32> {
-    let fd = unsafe {
-        libc::socket(
-            libc::AF_PACKET,
-            libc::SOCK_RAW,
-            (ETH_P_ALL as u16).to_be() as i32,
-        )
-    };
+    let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, ETH_P_ALL.to_be() as i32) };
     if fd < 0 {
         return Err(io::Error::last_os_error())
             .context("opening AF_PACKET socket (needs CAP_NET_RAW)");
@@ -355,10 +349,10 @@ fn open_socket() -> Result<i32> {
 pub fn spawn(tx: Sender<Value>) -> Result<thread::JoinHandle<()>> {
     let fd = open_socket()?;
     log::info!("dns: capturing port-53 traffic via AF_PACKET");
-    Ok(thread::Builder::new()
+    thread::Builder::new()
         .name("dns".into())
         .spawn(move || capture_loop(fd, tx))
-        .context("spawning dns thread")?)
+        .context("spawning dns thread")
 }
 
 fn capture_loop(fd: i32, tx: Sender<Value>) {

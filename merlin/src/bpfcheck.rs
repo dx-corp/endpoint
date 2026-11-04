@@ -299,14 +299,6 @@ pub fn spawn(tx: Sender<Value>) -> thread::JoinHandle<()> {
 mod tests {
     use super::*;
 
-    fn obj(name: &str, kind: &str) -> BpfObject {
-        BpfObject {
-            id: 0,
-            name: name.into(),
-            kind: kind.into(),
-        }
-    }
-
     fn obj_id(id: u64, name: &str, kind: &str) -> BpfObject {
         BpfObject {
             id,

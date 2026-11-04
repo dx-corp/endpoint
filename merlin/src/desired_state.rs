@@ -255,6 +255,7 @@ fn production_configuration_context() -> ConfigurationExecutorContext<'static> {
 }
 
 impl DesiredState {
+    #[cfg(test)]
     pub fn parse(source: &str) -> Result<Self> {
         let document: Self = serde_yaml::from_str(source).context("decoding desired_state.v1")?;
         document.validate()?;
@@ -299,7 +300,7 @@ impl DesiredState {
             if let Some(value) = &assertion.system_package {
                 anyhow::ensure!(valid_package(&value.name), "invalid package name");
                 anyhow::ensure!(
-                    value.version.as_deref().map_or(true, valid_package_version),
+                    value.version.as_deref().is_none_or(valid_package_version),
                     "invalid package version"
                 );
                 anyhow::ensure!(
@@ -320,7 +321,7 @@ impl DesiredState {
                     "invalid managed file path"
                 );
                 anyhow::ensure!(
-                    value.mode.as_deref().map_or(true, valid_file_mode),
+                    value.mode.as_deref().is_none_or(valid_file_mode),
                     "invalid managed file mode"
                 );
                 match value.state {
@@ -540,7 +541,7 @@ fn operation_satisfied(operation: &NativeOperation) -> Result<bool> {
             Ok(observed["present"].as_bool() == Some(true)
                 && version
                     .as_ref()
-                    .map_or(true, |wanted| observed["version"].as_str() == Some(wanted)))
+                    .is_none_or(|wanted| observed["version"].as_str() == Some(wanted)))
         }
         (NativeOperation::AptEnsureAbsent { .. }, observed) => {
             Ok(observed["present"].as_bool() == Some(false))

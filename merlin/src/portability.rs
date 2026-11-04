@@ -14,13 +14,14 @@ use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SyscallAbi {
-    pub id: u32,
     pub name: &'static str,
+    #[cfg(test)]
     pub syscalls: &'static [(&'static str, u32)],
 }
 
-// Linux x86_64 syscall ABI. Keep this table beside the eBPF filter so the
-// loader and collector can be reviewed as one contract.
+// Test fixture for the Linux x86_64 syscall ABI. These numbers keep the
+// architecture-specific checks independent of the test host.
+#[cfg(test)]
 const X86_64_SYSCALLS: &[(&str, u32)] = &[
     ("mmap", 9),
     ("mprotect", 10),
@@ -56,9 +57,9 @@ const X86_64_SYSCALLS: &[(&str, u32)] = &[
     ("clone3", 435),
 ];
 
-// Linux arm64 uses the asm-generic syscall numbering. This is intentionally
-// explicit rather than inferred from the host libc, because the value is
-// copied into the detached eBPF object at runtime.
+// Linux arm64 uses the asm-generic syscall numbering. The test fixture is
+// explicit so these checks do not depend on the test host architecture.
+#[cfg(test)]
 const AARCH64_SYSCALLS: &[(&str, u32)] = &[
     ("pivot_root", 41),
     ("mount", 40),
@@ -95,13 +96,13 @@ const AARCH64_SYSCALLS: &[(&str, u32)] = &[
 ];
 
 static X86_64: SyscallAbi = SyscallAbi {
-    id: 1,
     name: "x86_64",
+    #[cfg(test)]
     syscalls: X86_64_SYSCALLS,
 };
 static AARCH64: SyscallAbi = SyscallAbi {
-    id: 2,
     name: "aarch64",
+    #[cfg(test)]
     syscalls: AARCH64_SYSCALLS,
 };
 
@@ -117,6 +118,7 @@ pub fn host_abi() -> Option<&'static SyscallAbi> {
     }
 }
 
+#[cfg(test)]
 pub fn syscall_name(abi_id: u32, nr: u32) -> &'static str {
     let abi = match abi_id {
         1 => &X86_64,
@@ -173,6 +175,10 @@ impl PortabilityReport {
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "Literal tracepoint specifications retain kernel field names and offsets."
+)]
 const LAYOUTS: &[(&str, &str, &[(&str, usize)])] = &[
     ("sched", "sched_process_exec", &[("filename", 8)]),
     (
