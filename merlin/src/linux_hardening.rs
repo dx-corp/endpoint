@@ -62,7 +62,8 @@ pub fn collect() -> HardeningSnapshot {
     let started = Instant::now();
     let collected_at = rfc3339_now();
     let mut host = Host::new(started + COLLECTION_TIMEOUT);
-    let observations = manifest()
+    let kubernetes = kubernetes::collect(started + Duration::from_secs(10));
+    let mut observations: Vec<Value> = manifest()
         .map(|m| {
             m.targets
                 .into_iter()
@@ -84,6 +85,7 @@ pub fn collect() -> HardeningSnapshot {
                 .collect()
         })
         .unwrap_or_default();
+    observations.extend(kubernetes);
     HardeningSnapshot {
         schema_version: 1,
         collected_at,
@@ -550,7 +552,7 @@ fn open_nofollow(path: &Path, stat_only: bool) -> Option<File> {
         dir = unsafe { File::from_raw_fd(fd) };
     }
     let meta = dir.metadata().ok()?;
-    if meta.file_type().is_symlink() || (!meta.is_file() && !(stat_only && meta.is_dir())) {
+    if meta.file_type().is_symlink() || !(meta.is_file() || stat_only && meta.is_dir()) {
         return None;
     }
     Some(dir)
@@ -1760,3 +1762,6 @@ use grub::resolved_grub_arguments;
 #[cfg(test)]
 #[path = "linux_hardening_tests.rs"]
 mod tests;
+
+#[path = "linux_hardening_kubernetes.rs"]
+mod kubernetes;

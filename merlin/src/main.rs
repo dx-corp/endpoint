@@ -45,6 +45,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Clap parses this command once at daemon startup."
+)]
 enum Cmd {
     /// Load the eBPF collector, start the fanotify enforcement monitor and
     /// stream events to the JSONL spool.
@@ -307,6 +311,10 @@ async fn main() -> Result<()> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Daemon startup receives independently configured CLI options."
+)]
 async fn run(
     rules_paths: Vec<PathBuf>,
     spool_path: PathBuf,

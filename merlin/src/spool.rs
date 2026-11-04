@@ -66,12 +66,6 @@ pub fn metrics_snapshot() -> MetricsSnapshot {
     }
 }
 
-/// Publish the monotonic lower-bound counter read from the eBPF per-CPU
-/// stats map. Missing/unsupported maps leave the value at zero.
-pub fn set_kernel_events_dropped(value: u64) {
-    KERNEL_EVENTS_DROPPED.store(value, Ordering::Relaxed);
-}
-
 /// Runtime health metadata shared by all Linux providers.
 #[derive(Debug, Clone)]
 pub struct HealthConfig {
@@ -123,10 +117,8 @@ fn signals_for(object: &Map<String, Value>) -> Vec<&'static str> {
         }
         "memfd" => signals.push("memfd_create"),
         "file" => signals.push("persistence_change"),
-        "socket" => {
-            if object.get("state").and_then(Value::as_str) == Some("listen") {
-                signals.push("network_listener");
-            }
+        "socket" if object.get("state").and_then(Value::as_str) == Some("listen") => {
+            signals.push("network_listener");
         }
         "security" => {
             if object.get("w_x_transition").and_then(Value::as_bool) == Some(true) {
@@ -620,15 +612,14 @@ mod tests {
         });
         decorate_event(&mut event);
         assert_eq!(event["schema_version"], 1);
-        assert_eq!(
-            event["event_id"]
+        assert!(
+            !event["event_id"]
                 .as_str()
                 .unwrap()
                 .split(':')
                 .next()
                 .unwrap()
-                .is_empty(),
-            false
+                .is_empty()
         );
         assert_eq!(event["process_key"].as_str().unwrap().split(':').count(), 3);
         assert_eq!(

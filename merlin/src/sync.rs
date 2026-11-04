@@ -556,7 +556,7 @@ fn is_false(value: &bool) -> bool {
 /// try base64, otherwise use the raw string bytes (same rule as the server).
 pub fn parse_key(s: &str) -> Vec<u8> {
     let s = s.trim();
-    if s.len() >= 32 && s.len() % 2 == 0 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if s.len() >= 32 && s.len().is_multiple_of(2) && s.bytes().all(|b| b.is_ascii_hexdigit()) {
         if let Ok(bytes) = (0..s.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
@@ -1214,13 +1214,13 @@ fn root_disk_bytes() -> (u64, u64) {
     }
     let stats = unsafe { stats.assume_init() };
     let block_size = if stats.f_frsize > 0 {
-        stats.f_frsize as u64
+        stats.f_frsize
     } else {
-        stats.f_bsize as u64
+        stats.f_bsize
     };
     (
-        (stats.f_blocks as u64).saturating_mul(block_size),
-        (stats.f_bavail as u64).saturating_mul(block_size),
+        stats.f_blocks.saturating_mul(block_size),
+        stats.f_bavail.saturating_mul(block_size),
     )
 }
 
@@ -1617,7 +1617,7 @@ fn collect_processes() -> Vec<DeviceProcess> {
         })
         .take(512)
         .collect::<Vec<_>>();
-    processes.sort_by(|left, right| left.pid.cmp(&right.pid));
+    processes.sort_by_key(|left| left.pid);
     processes
 }
 
@@ -1981,27 +1981,24 @@ fn collect_agent_discovery_from(
                     file_name
                         .strip_suffix(".js")
                         .or_else(|| file_name.strip_suffix(".ts"))
-                } else if extension.is_empty()
-                    && kind == "skill"
-                    && kind_on_disk.is_dir()
-                    && directory
-                        .join(&file_name)
-                        .join("SKILL.md")
-                        .symlink_metadata()
-                        .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+                } else if kind_on_disk.is_dir()
+                    && (extension == "plugin"
+                        || (extension.is_empty()
+                            && match kind {
+                                "skill" => Some("SKILL.md"),
+                                "extension" => Some("gemini-extension.json"),
+                                _ => None,
+                            }
+                            .is_some_and(|manifest| {
+                                directory
+                                    .join(&file_name)
+                                    .join(manifest)
+                                    .symlink_metadata()
+                                    .is_ok_and(|meta| {
+                                        meta.is_file() && !meta.file_type().is_symlink()
+                                    })
+                            })))
                 {
-                    Some(file_name.as_str())
-                } else if extension.is_empty()
-                    && kind == "extension"
-                    && kind_on_disk.is_dir()
-                    && directory
-                        .join(&file_name)
-                        .join("gemini-extension.json")
-                        .symlink_metadata()
-                        .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
-                {
-                    Some(file_name.as_str())
-                } else if extension == "plugin" && kind_on_disk.is_dir() {
                     Some(file_name.as_str())
                 } else {
                     None
@@ -2306,11 +2303,11 @@ fn codex_enabled_plugin_names(body: &str) -> Vec<String> {
         .and_then(toml::Value::as_table)
         .into_iter()
         .flat_map(|plugins| plugins.iter())
-        .filter_map(|(name, config)| {
-            (safe_agent_asset_name(name)
-                && config.get("enabled").and_then(toml::Value::as_bool) == Some(true))
-            .then(|| name.clone())
+        .filter(|&(name, config)| {
+            safe_agent_asset_name(name)
+                && config.get("enabled").and_then(toml::Value::as_bool) == Some(true)
         })
+        .map(|(name, _)| name.clone())
         .take(128)
         .collect()
 }
@@ -2507,10 +2504,10 @@ pub fn spawn(client: SyncClient) -> Result<std::thread::JoinHandle<()>> {
         client.cfg.base_url,
         client.host
     );
-    Ok(std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("sync".into())
         .spawn(move || run_loop(client))
-        .context("spawning sync thread")?)
+        .context("spawning sync thread")
 }
 
 #[cfg(test)]
@@ -2609,7 +2606,8 @@ mod tests {
             "[mcp_servers.managed]\nurl = 'https://secret.example'\n",
         )
         .unwrap();
-        let (clis, servers, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
+        let (clis, servers, assets) =
+            collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
         assert_eq!(
             clis,
             vec![
@@ -2774,7 +2772,7 @@ mod tests {
             "[plugins.\"audit@marketplace\"]\nenabled = true\nsecret = 'private'\n[plugins.\"off@marketplace\"]\nenabled = false\n[plugins.\"unset@marketplace\"]\nfoo = true\n[plugins.\"https://private.example/path\"]\nenabled = true\n",
         )
         .unwrap();
-        let (_, _, assets) = collect_agent_discovery_from(&[home.clone()], &[]);
+        let (_, _, assets) = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
         for (client, kind, name) in [
             ("cursor", "agent", "reviewer"),
             ("cursor", "plugin", "agent-format"),
@@ -2936,7 +2934,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !collect_project_agent_discovery(&[root.clone()])
+            !collect_project_agent_discovery(std::slice::from_ref(&root))
                 .0
                 .iter()
                 .any(|item| item.name == "docs")
@@ -2951,7 +2949,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("linked-project")).unwrap();
         std::os::unix::fs::symlink(&project, root.join("linked-team")).unwrap();
         assert!(
-            !collect_project_agent_discovery(&[root.clone()])
+            !collect_project_agent_discovery(std::slice::from_ref(&root))
                 .0
                 .iter()
                 .any(|item| item.name == "outside")
@@ -2994,7 +2992,7 @@ mod tests {
             ),
             33
         );
-        let (servers, _) = collect_project_agent_discovery(&[root.clone()]);
+        let (servers, _) = collect_project_agent_discovery(std::slice::from_ref(&root));
         assert!(servers.iter().any(|item| item.name == "within-cap"));
         assert!(!servers.iter().any(|item| item.name == "past-cap"));
         assert!(!servers.iter().any(|item| item.name == "past-depth"));
@@ -3203,7 +3201,7 @@ mod tests {
     #[test]
     fn upload_acks_and_deletes_after_2xx() {
         let dir = tmpdir("ack");
-        let base = mock_server(&|headers: Vec<u8>, _| {
+        let base = mock_server(|headers: Vec<u8>, _| {
             let headers = String::from_utf8_lossy(&headers);
             assert!(headers.starts_with("POST /v1/devices/dev_0123456789abcdef01234567/events "));
             let has_auth = headers.lines().any(|line| {
@@ -3233,7 +3231,7 @@ mod tests {
     #[test]
     fn upload_failure_keeps_segment() {
         let dir = tmpdir("fail");
-        let base = mock_server(&|_, _| ok_response("500 Internal Server Error"));
+        let base = mock_server(|_, _| ok_response("500 Internal Server Error"));
         let client = test_client(&base, &dir);
         let seg = write_segment(
             &dir,

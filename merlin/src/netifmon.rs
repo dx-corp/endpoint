@@ -236,10 +236,10 @@ fn open_socket() -> Result<i32> {
 pub fn spawn(tx: Sender<Value>) -> Result<thread::JoinHandle<()>> {
     let fd = open_socket()?;
     log::info!("netif: watching link/addr/route changes via NETLINK_ROUTE");
-    Ok(thread::Builder::new()
+    thread::Builder::new()
         .name("netif".into())
         .spawn(move || run_loop(fd, tx))
-        .context("spawning netif thread")?)
+        .context("spawning netif thread")
 }
 
 fn emit(tx: &Sender<Value>, op: &str, mut event: Value) {
@@ -344,7 +344,7 @@ mod tests {
         let mut a = (len as u16).to_ne_bytes().to_vec();
         a.extend_from_slice(&ty.to_ne_bytes());
         a.extend_from_slice(data);
-        while a.len() % 4 != 0 {
+        while !a.len().is_multiple_of(4) {
             a.push(0);
         }
         a

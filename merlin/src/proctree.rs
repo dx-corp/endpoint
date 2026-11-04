@@ -71,6 +71,7 @@ impl ProcTable {
     /// Return the last validated start time even after the process has
     /// exited. This keeps exit evidence correlated without trusting a
     /// recycled pid or racing a disappearing /proc entry.
+    #[cfg(test)]
     pub fn start_time(&mut self, pid: u32) -> Option<u64> {
         self.map
             .get(&pid)
@@ -81,9 +82,9 @@ impl ProcTable {
     /// Resolve one pid, falling back to a live /proc read on cache miss
     /// (e.g. a process that started before the sweep finished).
     fn resolve(&mut self, pid: u32) -> Option<&ProcInfo> {
-        if !self.map.contains_key(&pid) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.map.entry(pid) {
             if let Some(info) = observe(pid) {
-                self.map.insert(pid, info);
+                e.insert(info);
             }
         }
         self.map.get(&pid)

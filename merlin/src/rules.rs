@@ -342,6 +342,7 @@ impl Rules {
         Ok(rules)
     }
 
+    #[cfg(test)]
     pub fn load(path: &Path) -> Result<Self> {
         Self::load_with_source(path).map(|(rules, _)| rules)
     }

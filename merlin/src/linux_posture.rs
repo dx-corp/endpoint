@@ -538,7 +538,7 @@ fn root_device_from_mountinfo(mountinfo: &str) -> Option<String> {
             let device = fields.nth(2)?;
             (fields.nth(1)? == "/" && is_major_minor(device)).then(|| device.to_string())
         })
-        .last()
+        .next_back()
 }
 
 enum FirewallProbe {
@@ -705,6 +705,10 @@ fn iptables_input_active(rules: &str) -> bool {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The result constructor takes one value per posture and evidence field."
+)]
 fn evidence_check(
     status: &'static str,
     value: &'static str,

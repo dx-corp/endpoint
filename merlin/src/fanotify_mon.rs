@@ -175,10 +175,10 @@ pub fn spawn(
 ) -> Result<std::thread::JoinHandle<()>> {
     let fd = init_and_mark("/")?;
     log::info!("fanotify: watching / for FAN_OPEN_EXEC_PERM");
-    Ok(std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("fanotify".into())
         .spawn(move || run_loop(fd, rules, tx, policy, alert))
-        .context("spawning fanotify thread")?)
+        .context("spawning fanotify thread")
 }
 
 fn run_loop(
