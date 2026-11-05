@@ -52,6 +52,4 @@ exec "$BIN" run \
   --spool /var/lib/merlin/merlin-events.jsonl \
   --segment-interval 300 \
   --segment-bytes 8388608 \
-  --snapshot-interval 60 \
-  --posture-interval 3600 \
   --sync "$MERLIN_SYNC_URL"

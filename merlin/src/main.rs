@@ -469,3 +469,29 @@ async fn run(
     log::info!("shutting down");
     Ok(())
 }
+
+#[cfg(test)]
+mod launcher_tests {
+    use super::*;
+
+    #[test]
+    fn packaged_linux_launcher_arguments_are_accepted_by_the_sensor() {
+        let launcher = include_str!("../../packaging/linux/merlin-launcher.sh");
+        let mut args = vec!["merlin", "run"];
+        for line in launcher
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("--"))
+        {
+            let mut fields = line.split_whitespace();
+            args.push(fields.next().expect("launcher flag"));
+            args.push(
+                fields
+                    .next()
+                    .expect("launcher flag value")
+                    .trim_matches('"'),
+            );
+        }
+        Cli::try_parse_from(args).expect("the packaged service must start with the shipped CLI");
+    }
+}
