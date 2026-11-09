@@ -66,7 +66,7 @@ struct CollectionManifest: Encodable, Sendable {
 
     /// Bumped with the Linux port's `MANIFEST_VERSION` when a collector is
     /// added, removed or changes what it records.
-    static let version = 1
+    static let version = 2
 
     static let collectors: [ManifestCollector] = [
         ManifestCollector(
@@ -123,7 +123,7 @@ struct CollectionManifest: Encodable, Sendable {
             capabilities: [], retention: .whileEnrolled),
         ManifestCollector(
             id: "process_events", group: .securityEvents, title: "Program starts and exits",
-            what: "When a program starts or ends: program name, executable path, code signature identity, parent programs, and the rules it matched. The command line is read on this Mac to evaluate rules and is included only when a rule matched.",
+            what: "When a program starts or ends: program name, executable path, code signature identity, parent programs, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events.",
             why: "Detecting and investigating attacks (endpoint detection).",
             records: ["exec", "fork", "exit"], capabilities: ["segment_upload"], retention: .telemetryWindow),
         ManifestCollector(
@@ -156,8 +156,8 @@ struct CollectionManifest: Encodable, Sendable {
 
     static let neverCollected: [ManifestNever] = [
         ManifestNever(
-            claim: "Command lines and arguments of programs you run, unless a security rule matched that program",
-            proof: "SpoolEvent.recordedCmdline (ManifestTests.commandLineOnlyWithAMatch); inventory processes carry no command line"),
+            claim: "Command lines and arguments in recorded process events",
+            proof: "SpoolEvent.encode omits cmdline (EventEncodingTests.commandLinesStayLocal); inventory processes carry no command line"),
         ManifestNever(
             claim: "Contents of your files, documents or messages",
             proof: "file events carry path, op, label and program only; no provider opens file bodies"),
@@ -165,7 +165,7 @@ struct CollectionManifest: Encodable, Sendable {
             claim: "MCP server commands, arguments, URLs, environment variables, skill or instruction bodies",
             proof: "MCP discovery records client, name, source and transport only and never executes a CLI"),
         ManifestNever(
-            claim: "Passwords, password hashes, tokens or keys",
+            claim: "Password and password-hash fields from account records",
             proof: "accounts are name, uid, admin, shell; posture evidence is a hash of what was read"),
         ManifestNever(
             claim: "Keystrokes, screen contents, camera or microphone",
@@ -234,14 +234,5 @@ struct CollectionManifest: Encodable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return String(decoding: try encoder.encode(self), as: UTF8.self)
-    }
-}
-
-extension SpoolEvent {
-    /// The `cmdline` an exec event carries: the process's command line when a
-    /// rule matched it (the evidence an investigator needs), nil otherwise.
-    /// Matching itself always sees the full command line, on this Mac.
-    static func recordedCmdline(_ cmdline: String?, matchedRules: [String]) -> String? {
-        matchedRules.isEmpty ? nil : cmdline
     }
 }

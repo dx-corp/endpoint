@@ -234,7 +234,8 @@ struct SpoolEvent: Encodable, Sendable {
             try opt(uid, .uid)
             try opt(comm, .comm)
             try opt(exe, .exe)
-            try opt(cmdline, .cmdline)
+            // Commands are local matching inputs, never persisted payloads.
+            try c.encodeNil(forKey: .cmdline)
             try opt(sha256, .sha256)
             try opt(cdhash, .cdhash)
             try opt(ancestors, .ancestors)

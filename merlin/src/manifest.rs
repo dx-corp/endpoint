@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 /// Bumped when a collector is added, removed or changes what it records.
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// Where the server keeps a collector's output.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,7 +256,7 @@ pub const COLLECTORS: &[Collector] = &[
         id: "process_events",
         group: Group::SecurityEvents,
         title: "Program starts, scripts and exits",
-        what: "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read on this computer to evaluate rules and is included only when a rule matched. Scripts record the interpreter and script path.",
+        what: "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events. Scripts record the interpreter and script path.",
         why: "Detecting and investigating attacks (endpoint detection).",
         records: &["exec", "script", "fork", "exit", "task_exit"],
         capabilities: &["segment_upload"],
@@ -323,8 +323,8 @@ pub const COLLECTORS: &[Collector] = &[
 
 pub const NEVER_COLLECTED: &[Never] = &[
     Never {
-        claim: "Command lines and arguments of programs you run, unless a security rule matched that program",
-        proof: "telemetry::recorded_cmdline (test the_command_line_leaves_the_device_only_with_a_matched_rule); inventory DeviceProcess has no cmdline or args field",
+        claim: "Command lines and arguments in recorded process events",
+        proof: "spool::write_value omits cmdline (test serialized_exec_omits_commands_even_when_a_rule_matched); inventory DeviceProcess has no cmdline or args field",
     },
     Never {
         claim: "Contents of your files, documents or messages",
@@ -335,7 +335,7 @@ pub const NEVER_COLLECTED: &[Never] = &[
         proof: "DeviceMCPServer is client, name, source, transport; DeviceAgentAsset is client, kind, name, source; collect_agent_discovery never executes a CLI or reads configuration values",
     },
     Never {
-        claim: "Passwords, password hashes, tokens or keys",
+        claim: "Password and password-hash fields from account records",
         proof: "DeviceUser is name, uid, admin, shell, source; posture evidence is a hash of what was read, with redactions declared",
     },
     Never {
@@ -580,16 +580,6 @@ mod tests {
 
     #[test]
     fn the_never_claims_are_backed_by_the_code_they_name() {
-        // Command lines: only with a match (the helper and its test exist).
-        let telemetry = SOURCES
-            .iter()
-            .find(|(n, _)| *n == "telemetry.rs")
-            .unwrap()
-            .1;
-        assert!(telemetry.contains("fn recorded_cmdline("));
-        assert!(
-            telemetry.contains("fn the_command_line_leaves_the_device_only_with_a_matched_rule()")
-        );
         // Inventory processes carry no command line.
         let process = struct_fields(SYNC, "DeviceProcess");
         assert_eq!(process, ["pid", "name", "executable", "user", "state"]);
