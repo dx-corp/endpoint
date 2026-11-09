@@ -68,7 +68,7 @@ struct SyncConfig: Sendable {
 	}
 }
 
-private let merlinAgentVersion = "0.1.0"
+let merlinAgentVersion = "0.1.0"
 private let policyEnvelopeDomain = Data("merlin-policy-envelope-v1\0".utf8)
 private let maxPolicyEnvelopeBytes = 2 << 20
 
