@@ -24,6 +24,16 @@ use crate::fileless::{ExeClass, classify_exe, is_deleted_executable_path};
 use crate::proctree::{ProcInfo, ProcTable};
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::spool;
+/// The `cmdline` an exec event carries: the process's command line when a
+/// rule matched it (the evidence an investigator needs), null otherwise.
+/// Matching itself always sees the full command line, on the device.
+fn recorded_cmdline(matched_rules: &[String], cmdline: Option<&str>) -> Value {
+    match cmdline {
+        Some(cmdline) if !matched_rules.is_empty() => Value::String(cmdline.to_owned()),
+        _ => Value::Null,
+    }
+}
+
 /// Exec events whose pid could not be translated into the daemon's pid
 /// namespace (the host runs the daemon in a container without the host's
 /// pid namespace, as dev-desktop's LXC does). The journal gets one line,
@@ -428,7 +438,11 @@ fn handle_exec(
         "comm": comm,
         "filename": filename,
         "exe": exe,
-        "cmdline": cmdline,
+        // The command line is read for rule matching on this computer only;
+        // it leaves the device with the event solely when a rule matched, so
+        // an investigator sees why a rule fired and nothing else carries
+        // every argument of every program a person ran.
+        "cmdline": recorded_cmdline(&logged, cmdline.as_deref()),
         "cwd": cwd,
         "cgroup": cgroup,
         "container_id": container_id,
@@ -1034,6 +1048,20 @@ fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_command_line_leaves_the_device_only_with_a_matched_rule() {
+        let line = Some("/usr/bin/tool --token=secret");
+        assert_eq!(super::recorded_cmdline(&[], line), serde_json::Value::Null);
+        assert_eq!(
+            super::recorded_cmdline(&["rule".to_owned()], None),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            super::recorded_cmdline(&["rule".to_owned()], line),
+            serde_json::Value::String("/usr/bin/tool --token=secret".to_owned())
+        );
+    }
+
     #[test]
     fn a_pid_namespace_translation_failure_warns_once_and_is_counted() {
         use std::sync::atomic::Ordering;
