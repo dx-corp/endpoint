@@ -17,7 +17,7 @@ struct Merlin: ParsableCommand {
         commandName: "merlin-macos",
         abstract: "Deixic Endpoint: endpoint telemetry and policy enforcement for macOS",
         subcommands: [RunCommand.self, CheckCommand.self, PostureCommand.self, GenHashCommand.self,
-                      MCPHookCommand.self]
+                      MCPHookCommand.self, ManifestCommand.self]
     )
 }
 
@@ -405,6 +405,25 @@ struct PostureCommand: ParsableCommand {
 
     func run() throws {
         Foundation.exit(runPosture(json: json, verbose: verbose, expectedSysexTeams: expectedSysexTeams))
+    }
+}
+
+struct ManifestCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "manifest",
+        abstract: "Print what this agent collects, never collects, keeps locally and how long the server keeps it."
+    )
+
+    @Flag(help: "Emit the manifest as one JSON object.")
+    var json = false
+
+    func run() throws {
+        let manifest = CollectionManifest.current()
+        if json {
+            print(try manifest.renderJSON())
+        } else {
+            print(manifest.renderText(), terminator: "")
+        }
     }
 }
 

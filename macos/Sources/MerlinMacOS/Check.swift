@@ -86,6 +86,7 @@ func runCheck(json: Bool = false) -> Int32 {
             "ready": anyProvider,
             "platform": "macos",
             "capabilities": capabilities,
+            "manifest_version": CollectionManifest.version,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
            let output = String(data: data, encoding: .utf8) {
