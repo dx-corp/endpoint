@@ -15,6 +15,7 @@ mod fileless;
 mod filemon;
 mod linux_hardening;
 mod linux_posture;
+mod manifest;
 mod netifmon;
 mod persistence_mon;
 mod portability;
@@ -141,6 +142,14 @@ enum Cmd {
     Posture,
     /// Print bounded, read-only Linux hardening facts as JSON.
     Hardening,
+    /// Print what this agent collects, never collects, keeps locally and for
+    /// how long the server keeps it: the collection manifest the
+    /// transparency page renders from.
+    Manifest {
+        /// Emit the manifest as one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn default_ebpf_candidates() -> Vec<PathBuf> {
@@ -169,6 +178,14 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Manifest { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&manifest::manifest())?);
+            } else {
+                print!("{}", manifest::render_text());
+            }
+            Ok(())
+        }
         Cmd::Posture => posture::run(),
         Cmd::Hardening => {
             println!(

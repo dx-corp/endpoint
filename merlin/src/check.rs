@@ -203,7 +203,12 @@ fn finish(json: bool, ready: bool, kernel: &str, checks: Vec<serde_json::Value>)
     if json {
         println!(
             "{}",
-            serde_json::json!({"ready": ready, "kernel": kernel, "capabilities": checks})
+            serde_json::json!({
+                "ready": ready,
+                "kernel": kernel,
+                "capabilities": checks,
+                "manifest_version": crate::manifest::MANIFEST_VERSION
+            })
         );
     } else {
         println!("READY: {}", if ready { "yes" } else { "no" });
