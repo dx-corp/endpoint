@@ -15,6 +15,7 @@ mod fileless;
 mod filemon;
 mod linux_hardening;
 mod linux_posture;
+mod local_state;
 mod manifest;
 mod netifmon;
 mod persistence_mon;
@@ -27,6 +28,7 @@ mod spool;
 mod sync;
 mod taskstats;
 mod telemetry;
+mod tui;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -41,8 +43,9 @@ use clap::{Parser, Subcommand};
     about = "Deixic Endpoint: endpoint telemetry and policy enforcement for Linux"
 )]
 struct Cli {
+    /// Without a command, `sudo merlin` opens the local screen (`screen`).
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -150,6 +153,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Open the local screen: what Deixic sees on this computer, from this
+    /// build's collection manifest. Reads nothing remote; collects nothing.
+    Screen,
 }
 
 fn default_ebpf_candidates() -> Vec<PathBuf> {
@@ -177,7 +183,8 @@ fn resolve_ebpf_path(arg: Option<PathBuf>) -> Result<PathBuf> {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
-    match cli.cmd {
+    match cli.cmd.unwrap_or(Cmd::Screen) {
+        Cmd::Screen => tui::run(),
         Cmd::Manifest { json } => {
             if json {
                 println!("{}", serde_json::to_string_pretty(&manifest::manifest())?);
