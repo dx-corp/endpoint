@@ -46,6 +46,25 @@ struct EventEncodingTests {
         #expect(ancestors?.first?["comm"] as? String == "launchd")
     }
 
+    @Test("serialized exec omits command lines even after a rule match")
+    func commandLinesStayLocal() throws {
+        for command in [
+            "tool --token=synthetic_secret",
+            "curl -H Authorization: Bearer synthetic_secret",
+            "curl -u alice:synthetic_password",
+            "tool --password alpha beta",
+        ] {
+            let event = SpoolEvent(kind: .exec, pid: 42, exe: "/usr/bin/tool",
+                                   cmdline: command, matchedRules: ["credential-rule"])
+            let encoded = try JSONEncoder().encode(event)
+            let object = try encodeToDict(event)
+            #expect(object["cmdline"] is NSNull)
+            #expect(object["matched_rules"] as? [String] == ["credential-rule"])
+            #expect(object["exe"] as? String == "/usr/bin/tool")
+            #expect(!String(decoding: encoded, as: UTF8.self).contains(command))
+        }
+    }
+
     @Test("exit event key set, exit_status formula")
     func exitEvent() throws {
         let e = SpoolEvent(kind: .exit, pid: 5, uid: 0, comm: "id", exitCode: 256, exitStatus: 1)

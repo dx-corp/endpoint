@@ -275,11 +275,11 @@ struct Engine: Sendable {
         if exe.contains(" (deleted)") {
             execSignals.append("deleted_executable")
         }
-        // The command line was read for matching; it leaves this Mac only with
-        // the alert it triggered (one claim for both ports; see Manifest.swift).
+        // The command line is a local matching input. The event encoder
+        // omits it for every exec, including matched security events.
         spool.write(SpoolEvent(
             kind: .exec, pid: pid, ppid: ppid, uid: uid, comm: comm, exe: exe,
-            cmdline: SpoolEvent.recordedCmdline(cmdline, matchedRules: logged),
+            cmdline: nil,
             sha256: sha256, cdhash: cdhash ?? signing?.cdhash,
             matchedRules: logged, ancestors: chain,
             pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec,

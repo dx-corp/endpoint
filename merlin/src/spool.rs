@@ -240,6 +240,12 @@ fn decorate_event(event: &mut Value) {
     let Some(object) = event.as_object_mut() else {
         return;
     };
+    // Commands stay local for rule matching. Arbitrary argv can contain
+    // credentials in headers, positional arguments or quoted values; a
+    // credential-name denylist cannot make this field safe to persist.
+    if object.contains_key("cmdline") {
+        object.insert("cmdline".into(), Value::Null);
+    }
     object.insert("schema_version".into(), Value::from(1u64));
     object.insert("boot_id".into(), Value::from(boot_id()));
     object.insert("spooled_ts".into(), Value::from(now_ts()));
@@ -757,6 +763,41 @@ mod tests {
         });
         decorate_event(&mut event);
         assert!(event["process_key"].is_null());
+    }
+
+    #[test]
+    fn serialized_exec_omits_commands_even_when_a_rule_matched() {
+        let live = tmp("private-exec");
+        let mut spool = LiveSpool::open(live.clone(), SegmentConfig::default()).unwrap();
+        let commands = [
+            "tool --token=synthetic_secret",
+            "curl -H Authorization: Bearer synthetic_secret",
+            "curl -u alice:synthetic_password",
+            "tool --password alpha beta",
+        ];
+        for line in commands {
+            write_value(
+                &mut spool,
+                serde_json::json!({
+                    "kind": "exec", "exe": "/usr/bin/tool", "pid": 42,
+                    "cmdline": line, "matched_rules": ["credential-rule"]
+                }),
+                at(1000),
+            );
+        }
+        let text = fs::read_to_string(&live).unwrap();
+        assert_eq!(text.lines().count(), commands.len());
+        for line in text.lines() {
+            let event: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(event["cmdline"], Value::Null);
+            assert_eq!(
+                event["matched_rules"],
+                serde_json::json!(["credential-rule"])
+            );
+            assert_eq!(event["exe"], "/usr/bin/tool");
+        }
+        assert!(!text.contains("synthetic_secret") && !text.contains("synthetic_password"));
+        cleanup(&live);
     }
 
     #[test]

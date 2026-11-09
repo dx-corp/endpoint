@@ -45,13 +45,6 @@ struct ManifestTests {
         #expect(rustNever == CollectionManifest.neverCollected.count)
     }
 
-    @Test("command line leaves the device only with a matched rule")
-    func commandLineOnlyWithAMatch() {
-        #expect(SpoolEvent.recordedCmdline("zsh -c 'curl -H token'", matchedRules: []) == nil)
-        #expect(SpoolEvent.recordedCmdline(nil, matchedRules: ["rule"]) == nil)
-        #expect(SpoolEvent.recordedCmdline("zsh -c id", matchedRules: ["rule"]) == "zsh -c id")
-    }
-
     @Test("active collectors follow the announced capabilities")
     func activeCollectorsFollowCapabilities() {
         let every = CollectionManifest.collectors.map(\.id)

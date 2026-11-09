@@ -69,12 +69,12 @@ struct KqueueProviderTests {
         defer { try? FileManager.default.removeItem(atPath: spool) }
         let provider = try makeProvider(rulesYAML: """
         name: log-all-sleep
-        match: {path_basename: sleep}
+        match_all: {path_basename: sleep, cmdline_contains: "0.313"}
         action: log
         """, spoolPath: spool)
         defer { provider.stop() }
 
-        // Distinctive duration doubles as a unique marker in the cmdline.
+        // The command line is matched locally but omitted from the event.
         let marker = "0.313"
         let pid = forkExec("/bin/sleep", [marker])
 
@@ -84,7 +84,7 @@ struct KqueueProviderTests {
                 && ($0["exe"] as? String)?.hasSuffix("/sleep") == true
         }
         #expect(exec != nil, "no NOTE_EXEC-derived exec event for /bin/sleep child within timeout")
-        #expect((exec?["cmdline"] as? String)?.contains(marker) == true)
+        #expect(exec?["cmdline"] is NSNull)
         #expect(exec?["uid"] as? Int == Int(getuid()))
         #expect(exec?["matched_rules"] as? [String] == ["log-all-sleep"])
 
