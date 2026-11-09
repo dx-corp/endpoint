@@ -14,6 +14,11 @@ pub(super) struct DeviceCheckInRequest<'a> {
     pub(super) current_rules_sha256: &'a str,
     pub(super) status: &'static str,
     pub(super) capabilities: Vec<&'static str>,
+    /// `crate::manifest::MANIFEST_VERSION`: which collection manifest the
+    /// server may show for this device.
+    pub(super) manifest_version: u32,
+    /// Manifest collector ids this agent runs (`manifest::active_collector_ids`).
+    pub(super) active_collectors: Vec<&'static str>,
     pub(super) health: DeviceHealth,
     pub(super) posture: linux_posture::DevicePosture,
     pub(super) hardening: linux_hardening::HardeningSnapshot,

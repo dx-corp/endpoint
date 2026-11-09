@@ -1043,6 +1043,22 @@ impl SyncClient {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
+        let capabilities: Vec<&'static str> = [
+            "segment_upload",
+            "rules_sync",
+            "system_inventory",
+            "file_integrity",
+            "security_configuration_assessment",
+            "rootcheck",
+            "container_inventory",
+            "cloud_inventory",
+            "posture_reporting",
+            "linux_boot_trust_posture",
+        ]
+        .into_iter()
+        .chain(desired_state::CAPABILITIES.iter().copied())
+        .collect();
+        let active_collectors = crate::manifest::active_collector_ids(&capabilities);
         let request_body = serde_json::to_vec(&DeviceCheckInRequest {
             host: &self.host,
             platform: "linux",
@@ -1052,21 +1068,9 @@ impl SyncClient {
             sensor_mode: &self.cfg.sensor_mode,
             current_rules_sha256: &self.current_sha,
             status: "healthy",
-            capabilities: [
-                "segment_upload",
-                "rules_sync",
-                "system_inventory",
-                "file_integrity",
-                "security_configuration_assessment",
-                "rootcheck",
-                "container_inventory",
-                "cloud_inventory",
-                "posture_reporting",
-                "linux_boot_trust_posture",
-            ]
-            .into_iter()
-            .chain(desired_state::CAPABILITIES.iter().copied())
-            .collect(),
+            capabilities,
+            manifest_version: crate::manifest::MANIFEST_VERSION,
+            active_collectors,
             health: DeviceHealth {
                 drop_rate,
                 events_attempted: metrics.events_attempted,

@@ -69,6 +69,29 @@ struct SyncConfig: Sendable {
 }
 
 let merlinAgentVersion = "0.1.0"
+
+/// What this build announces at check-in; the manifest derives the active collectors from it.
+let checkInCapabilities: [String] = [
+    "segment_upload",
+    "rules_sync",
+    "policy_cmdline_regex",
+    "policy_network",
+    "policy_signing",
+    "policy_suspend",
+    "endpoint_security_optional",
+    "kqueue_fallback",
+    "openbsm_legacy",
+    "persistence_metadata",
+    "bounded_spool",
+    "os_inventory",
+    "system_inventory",
+    "file_integrity",
+    "security_configuration_assessment",
+    "rootcheck",
+    "posture_reporting",
+    "macos_security_posture",
+    "network_extension_optional",
+]
 private let policyEnvelopeDomain = Data("merlin-policy-envelope-v1\0".utf8)
 private let maxPolicyEnvelopeBytes = 2 << 20
 
@@ -79,6 +102,10 @@ private struct DeviceCheckInRequest: Encodable, Sendable {
     let currentRulesSHA256: String
     let status: String
     let capabilities: [String]
+    /// `CollectionManifest.version`: which manifest the server may show for this Mac.
+    let manifestVersion: Int
+    /// Manifest collector ids this build runs (`CollectionManifest.activeCollectorIds`).
+    let activeCollectors: [String]
     let osInfo: DeviceOSInfo
     let inventory: DeviceInventory
     let posture: DevicePostureReport
@@ -90,6 +117,8 @@ private struct DeviceCheckInRequest: Encodable, Sendable {
         case currentRulesSHA256 = "current_rules_sha256"
         case status
         case capabilities
+        case manifestVersion = "manifest_version"
+        case activeCollectors = "active_collectors"
         case osInfo = "os_info"
         case inventory
         case posture
@@ -545,27 +574,9 @@ final class SyncClient: @unchecked Sendable {
             agentVersion: merlinAgentVersion,
             currentRulesSHA256: currentRulesHashSnapshot(),
             status: "healthy",
-            capabilities: [
-                "segment_upload",
-                "rules_sync",
-                "policy_cmdline_regex",
-                "policy_network",
-                "policy_signing",
-                "policy_suspend",
-                "endpoint_security_optional",
-                "kqueue_fallback",
-                "openbsm_legacy",
-                "persistence_metadata",
-                "bounded_spool",
-                "os_inventory",
-                "system_inventory",
-                "file_integrity",
-                "security_configuration_assessment",
-                "rootcheck",
-                "posture_reporting",
-                "macos_security_posture",
-                "network_extension_optional",
-            ],
+            capabilities: checkInCapabilities,
+            manifestVersion: CollectionManifest.version,
+            activeCollectors: CollectionManifest.activeCollectorIds(capabilities: checkInCapabilities),
             osInfo: collectDeviceOSInfo(),
             inventory: collectDeviceInventory(),
             posture: currentPostureReport()
