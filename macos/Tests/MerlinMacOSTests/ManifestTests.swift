@@ -52,6 +52,17 @@ struct ManifestTests {
         #expect(SpoolEvent.recordedCmdline("zsh -c id", matchedRules: ["rule"]) == "zsh -c id")
     }
 
+    @Test("active collectors follow the announced capabilities")
+    func activeCollectorsFollowCapabilities() {
+        let every = CollectionManifest.collectors.map(\.id)
+        #expect(CollectionManifest.activeCollectorIds(capabilities: checkInCapabilities) == every,
+                "this build announces every collector it declares")
+        #expect(CollectionManifest.activeCollectorIds(capabilities: []) == ["ai_tools"])
+        let events = CollectionManifest.activeCollectorIds(capabilities: ["segment_upload"])
+        #expect(events.contains("process_events") && events.contains("health"))
+        #expect(!events.contains("software") && !events.contains("posture_checks"))
+    }
+
     @Test("renders text and JSON with the public shape")
     func renders() throws {
         let manifest = CollectionManifest.current()

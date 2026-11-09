@@ -102,7 +102,9 @@ struct CollectionManifest: Encodable, Sendable {
             what: "Protocol, port and state of listening sockets; container ids, names, images, states and runtimes; cloud provider, instance id and region when the machine runs in a cloud.",
             why: "Exposure and asset inventory controls.",
             records: ["inventory.listening_ports", "inventory.containers", "inventory.cloud_provider", "inventory.cloud_instance_id", "inventory.cloud_region"],
-            capabilities: ["container_inventory", "cloud_inventory"], retention: .whileEnrolled),
+            // The Mac ships these inside the inventory section and announces no
+            // separate container or cloud capability.
+            capabilities: ["system_inventory"], retention: .whileEnrolled),
         ManifestCollector(
             id: "running_programs", group: .inventory, title: "Running programs",
             what: "For each process: id, program name, executable path, owning user id and state. Not the command line or arguments.",
@@ -186,6 +188,18 @@ struct CollectionManifest: Encodable, Sendable {
     ]
 
     static let journal = "launchd keeps the daemon's standard output and error in /Library/Logs/Merlin/merlin.log: starts, provider attach, upload results, enforcement actions by rule name. Per-event details stay in the spool."
+
+    /// The collectors this build runs, derived from the capabilities it
+    /// announces at check-in: a collector that lists no capability is always
+    /// on (discovery that needs no sensor); the others are on when any
+    /// capability they name is announced. Same rule as the Linux port's
+    /// `manifest::active_collector_ids`.
+    static func activeCollectorIds(capabilities: [String]) -> [String] {
+        let announced = Set(capabilities)
+        return collectors
+            .filter { $0.capabilities.isEmpty || $0.capabilities.contains(where: announced.contains) }
+            .map(\.id)
+    }
 
     static func current() -> CollectionManifest {
         CollectionManifest(

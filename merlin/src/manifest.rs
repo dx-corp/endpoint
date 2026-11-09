@@ -376,6 +376,24 @@ pub fn manifest() -> Manifest {
     }
 }
 
+/// The collectors this agent runs, derived from the capabilities it announces
+/// at check-in: a collector whose manifest lists no capability is always on
+/// (discovery that needs no sensor); the others are on when any capability
+/// they name is announced. The health section says whether the sensors behind
+/// them attached.
+pub fn active_collector_ids(capabilities: &[&str]) -> Vec<&'static str> {
+    COLLECTORS
+        .iter()
+        .filter(|c| {
+            c.capabilities.is_empty()
+                || c.capabilities
+                    .iter()
+                    .any(|capability| capabilities.contains(capability))
+        })
+        .map(|c| c.id)
+        .collect()
+}
+
 /// Plain text for a terminal: one line per collector, then the never list.
 pub fn render_text() -> String {
     let m = manifest();
@@ -523,7 +541,9 @@ mod tests {
 
     #[test]
     fn every_check_in_capability_belongs_to_a_collector() {
-        let start = SYNC.find("capabilities: [").expect("check-in capabilities");
+        let start = SYNC
+            .find("capabilities: Vec<&'static str> = [")
+            .expect("check-in capabilities");
         let body = &SYNC[start..];
         let end = body.find(']').expect("capabilities end");
         let announced: Vec<&str> = body[..end].split('"').skip(1).step_by(2).collect();
@@ -540,6 +560,22 @@ mod tests {
         }
         // desired_state capabilities announce the enforcement executors.
         assert!(declared.contains("rules_sync"));
+    }
+
+    #[test]
+    fn active_collectors_follow_the_announced_capabilities() {
+        let all: Vec<&str> = COLLECTORS
+            .iter()
+            .flat_map(|c| c.capabilities.iter().copied())
+            .collect();
+        let every: Vec<&str> = COLLECTORS.iter().map(|c| c.id).collect();
+        assert_eq!(active_collector_ids(&all), every);
+        // Nothing announced: only the discovery that needs no sensor.
+        assert_eq!(active_collector_ids(&[]), vec!["ai_tools"]);
+        // A segment uploader without inventory runs the event collectors only.
+        let events = active_collector_ids(&["segment_upload"]);
+        assert!(events.contains(&"process_events") && events.contains(&"health"));
+        assert!(!events.contains(&"software") && !events.contains(&"posture_checks"));
     }
 
     #[test]

@@ -896,6 +896,21 @@ fn check_in_sends_device_identity_and_accepts_empty_queue() {
         assert!(body["os_info"]["os_pretty_name"].is_string());
         assert!(body["os_info"]["cpu_model"].is_string());
         assert!(body["os_info"]["network_interface_details"].is_array());
+        assert_eq!(
+            body["manifest_version"].as_u64(),
+            Some(u64::from(crate::manifest::MANIFEST_VERSION))
+        );
+        let active: Vec<&str> = body["active_collectors"]
+            .as_array()
+            .expect("active_collectors")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let every: Vec<&str> = crate::manifest::COLLECTORS.iter().map(|c| c.id).collect();
+        assert_eq!(
+            active, every,
+            "the Linux agent runs every collector it declares"
+        );
         posture_wire_tests::assert_linux_posture(&body["posture"]);
         posture_wire_tests::assert_linux_hardening(&body["hardening"]);
         let response_body = br#"{"pending_update":null}"#;
