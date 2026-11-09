@@ -29,9 +29,61 @@ use crate::spool;
 /// Matching itself always sees the full command line, on the device.
 fn recorded_cmdline(matched_rules: &[String], cmdline: Option<&str>) -> Value {
     match cmdline {
-        Some(cmdline) if !matched_rules.is_empty() => Value::String(cmdline.to_owned()),
+        Some(cmdline) if !matched_rules.is_empty() => Value::String(redact_credentials(cmdline)),
         _ => Value::Null,
     }
+}
+
+/// Argument names that carry a credential: the same markers as
+/// `platform-redaction`'s `CREDENTIAL_KEY_MARKERS` (that crate cannot link
+/// into this standalone eBPF workspace).
+const CREDENTIAL_MARKERS: &[&str] = &[
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "authheader",
+    "credential",
+    "accesskey",
+    "accessurl",
+    "apikey",
+    "bearer",
+    "cookie",
+    "privatekey",
+    "signature",
+];
+
+fn names_credential(name: &str) -> bool {
+    let name: String = name
+        .trim_start_matches('-')
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    !name.is_empty() && CREDENTIAL_MARKERS.iter().any(|m| name.contains(m))
+}
+
+/// The command line with every credential value replaced: `--token=v`,
+/// `PASSWORD=v` and the argument after a bare `--token` become `[redacted]`.
+fn redact_credentials(cmdline: &str) -> String {
+    let mut out = Vec::new();
+    let mut redact_next = false;
+    for arg in cmdline.split(' ') {
+        if redact_next && !arg.is_empty() {
+            out.push("[redacted]".to_owned());
+            redact_next = false;
+            continue;
+        }
+        match arg.split_once('=') {
+            Some((name, _)) if names_credential(name) => out.push(format!("{name}=[redacted]")),
+            None if arg.starts_with('-') && names_credential(arg) => {
+                out.push(arg.to_owned());
+                redact_next = true;
+            }
+            _ => out.push(arg.to_owned()),
+        }
+    }
+    out.join(" ")
 }
 
 /// Exec events whose pid could not be translated into the daemon's pid
@@ -1058,8 +1110,30 @@ mod tests {
         );
         assert_eq!(
             super::recorded_cmdline(&["rule".to_owned()], line),
-            serde_json::Value::String("/usr/bin/tool --token=secret".to_owned())
+            serde_json::Value::String("/usr/bin/tool --token=[redacted]".to_owned())
         );
+    }
+
+    #[test]
+    fn a_recorded_command_line_never_carries_a_credential() {
+        for (line, want) in [
+            (
+                "curl -H x --api-key abc https://h",
+                "curl -H x --api-key [redacted] https://h",
+            ),
+            (
+                "env DB_PASSWORD=hunter2 run",
+                "env DB_PASSWORD=[redacted] run",
+            ),
+            (
+                "tool --client-secret=s3 --verbose",
+                "tool --client-secret=[redacted] --verbose",
+            ),
+            ("ssh -i key.pem host", "ssh -i key.pem host"),
+            ("make tokens=4", "make tokens=[redacted]"),
+        ] {
+            assert_eq!(super::redact_credentials(line), want, "{line}");
+        }
     }
 
     #[test]
