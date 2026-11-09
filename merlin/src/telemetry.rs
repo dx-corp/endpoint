@@ -24,6 +24,19 @@ use crate::fileless::{ExeClass, classify_exe, is_deleted_executable_path};
 use crate::proctree::{ProcInfo, ProcTable};
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::spool;
+/// Exec events whose pid could not be translated into the daemon's pid
+/// namespace (the host runs the daemon in a container without the host's
+/// pid namespace, as dev-desktop's LXC does). The journal gets one line,
+/// not one per exec; the count is kept for the health event, which the spool
+/// module owns and will read it once that module's in-flight change lands.
+static PID_NAMESPACE_TRANSLATION_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Count a failed translation; true the first time only, so the caller logs
+/// once.
+fn note_pid_namespace_translation_failed() -> bool {
+    PID_NAMESPACE_TRANSLATION_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0
+}
 
 /// Load and attach every program in the object. Used by `run` and `check`
 /// (check drops the Ebpf right after, detaching everything).
@@ -255,10 +268,10 @@ fn handle_exec(
             matches!(&class, ExeClass::Normal(path) if is_deleted_executable_path(path));
         let exe_missing = matches!(class, ExeClass::MissingAlive);
         if let ExeClass::Fileless(path) = &class {
-            log::warn!("FILELESS EXEC pid={pid} comm={comm} exe={path}");
+            log::debug!("FILELESS EXEC pid={pid} comm={comm} exe={path}");
         }
         if exe_missing {
-            log::warn!("exe readlink ENOENT on live process pid={pid} comm={comm} (suspicious)");
+            log::debug!("exe readlink ENOENT on live process pid={pid} comm={comm} (suspicious)");
         }
 
         let cmdline = proc_cmdline(pid);
@@ -321,9 +334,11 @@ fn handle_exec(
             script,
         )
     } else {
-        log::warn!(
-            "exec event pid namespace translation failed; recording telemetry without enrichment"
-        );
+        if note_pid_namespace_translation_failed() {
+            log::warn!(
+                "exec event pid namespace translation failed (a container without the host pid namespace, as in LXC); recording telemetry without enrichment and not repeating this warning"
+            );
+        }
         (
             None,
             false,
@@ -434,7 +449,7 @@ fn handle_exec(
     spool::try_send(tx, event);
 
     if let Some((script_path, script_hash)) = script {
-        log::info!("script exec pid={pid:?} interpreter={comm} script={script_path}");
+        log::debug!("script exec pid={pid:?} interpreter={comm} script={script_path}");
         spool::try_send(
             tx,
             serde_json::json!({
@@ -568,7 +583,7 @@ fn handle_iouring(ev: IouringEvent, tx: &Sender<Value>) {
     let pid = (ev.pid_ns_valid != 0).then_some(ev.pid);
     let comm = cstr(&ev.comm);
     if !KNOWN_IOURING_USERS.contains(&comm.as_str()) {
-        log::warn!("io_uring_setup by unexpected process pid={pid:?} comm={comm}");
+        log::debug!("io_uring_setup by unexpected process pid={pid:?} comm={comm}");
     }
     spool::try_send(
         tx,
@@ -625,7 +640,7 @@ fn handle_cred(ev: CredEvent, tx: &Sender<Value>, alert: &Option<crate::alert::A
     let target = (ev.target_uid != u32::MAX).then_some(ev.target_uid);
     let to_root = target == Some(0) && ev.uid != 0;
     if to_root {
-        log::warn!(
+        log::debug!(
             "credential change to root pid={:?} comm={} uid={} via {}",
             pid,
             cstr(&ev.comm),
@@ -688,7 +703,7 @@ fn handle_connect(ev: ConnectEvent, rules: &Rules, tx: &Sender<Value>) {
     let daddr = std::net::Ipv4Addr::from(ev.daddr.to_le_bytes());
     let doh = is_doh_suspect(&daddr.to_string(), ev.dport, &rules.doh_resolvers);
     if doh {
-        log::info!(
+        log::debug!(
             "DoH-suspect connect {} -> {}:{} comm={}",
             saddr,
             daddr,
@@ -718,7 +733,7 @@ fn handle_memfd(ev: MemfdEvent, tx: &Sender<Value>) {
     let name = cstr(&ev.name);
     let comm = cstr(&ev.comm);
     let pid = (ev.pid_ns_valid != 0).then_some(ev.pid);
-    log::info!(
+    log::debug!(
         "memfd_create pid={:?} comm={} name={:?} flags=0x{:x}",
         pid,
         comm,
@@ -757,7 +772,7 @@ fn handle_security(ev: SecurityEvent, tx: &Sender<Value>, throttle: &mut TokenBu
     let syscall = syscall_name(ev.syscall_nr);
     let w_x = matches!(ev.syscall_nr, 9 | 10) && (ev.args[2] & 0x6) == 0x6;
     if w_x {
-        log::warn!(
+        log::debug!(
             "W+X memory transition pid={:?} syscall={} comm={}",
             pid,
             syscall,
@@ -807,7 +822,7 @@ fn handle_socket(ev: SocketEvent, rules: &Rules, tx: &Sender<Value>) {
     };
     let doh = kind == "connect" && is_doh_suspect(&daddr, ev.dport, &rules.doh_resolvers);
     if doh {
-        log::info!(
+        log::debug!(
             "DoH-suspect connect {saddr} -> {daddr}:{} comm={}",
             ev.dport,
             cstr(&ev.comm)
@@ -1019,6 +1034,21 @@ fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pid_namespace_translation_failure_warns_once_and_is_counted() {
+        use std::sync::atomic::Ordering;
+        let before = super::PID_NAMESPACE_TRANSLATION_FAILURES.load(Ordering::Relaxed);
+        let first = super::note_pid_namespace_translation_failed();
+        let second = super::note_pid_namespace_translation_failed();
+        assert_eq!(
+            super::PID_NAMESPACE_TRANSLATION_FAILURES.load(Ordering::Relaxed),
+            before + 2
+        );
+        // Only the very first failure of the process asks to be logged.
+        assert!(!second);
+        assert_eq!(first, before == 0);
+    }
+
     use super::*;
 
     #[test]
