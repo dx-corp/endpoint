@@ -76,11 +76,99 @@ pub struct HealthConfig {
     pub queue_capacity: usize,
 }
 
-/// Monotonic process-local sequence for correlating events from the lossy
-/// producers. It is evidence ordering, not a claim that no kernel events
-/// were dropped; the documented fail-open/backpressure behavior remains.
+/// Sequences reserved per write of the reservation file. A restart skips at
+/// most this many numbers; it never reuses one.
+const SEQUENCE_BLOCK: u64 = 100_000;
+/// Highest sequence the reservation file allows this process to hand out.
+static SEQUENCE_RESERVED: AtomicU64 = AtomicU64::new(u64::MAX);
+static SEQUENCE_FILE: OnceLock<std::path::PathBuf> = OnceLock::new();
+static SEQUENCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Monotonic sequence for correlating events from the lossy producers. It is
+/// evidence ordering, not a claim that no kernel events were dropped; the
+/// documented fail-open/backpressure behavior remains. Within one boot it
+/// keeps increasing across sensor restarts (see [`resume_sequence`]): the sync
+/// service refuses a (boot, source) stream whose sequence goes backwards, so a
+/// restart that began again at 1 would lose all telemetry until the next reboot.
 pub fn next_sequence() -> u64 {
-    EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    if seq > SEQUENCE_RESERVED.load(Ordering::Acquire) {
+        reserve_through(seq);
+    }
+    seq
+}
+
+/// Resume this boot's sequence from `<spool dir>/.merlin-seq` and reserve the
+/// next block. Call once before any producer starts. A different boot (a
+/// reboot) starts again at 1. Without a writable spool directory the sequence
+/// stays process-local, as before.
+pub fn resume_sequence(spool_dir: &Path) {
+    let path = spool_dir.join(".merlin-seq");
+    let reserved = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| parse_sequence_reservation(&text, boot_id()));
+    let now_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let start = resume_start(reserved, now_millis);
+    EVENT_SEQUENCE.store(start, Ordering::Release);
+    if SEQUENCE_FILE.set(path).is_ok() {
+        reserve_through(start);
+    }
+}
+
+/// Where this boot's sequence resumes: past the recorded reservation, and
+/// never below the current time in milliseconds. The time floor covers a
+/// sensor that ran in this boot without a reservation file (an older build, or
+/// a lost file): a counter that began at 1 never reaches 10^12 events.
+fn resume_start(reserved: Option<u64>, now_millis: u64) -> u64 {
+    reserved
+        .map_or(1, |high| high.saturating_add(1))
+        .max(now_millis)
+        .max(1)
+}
+
+/// `<boot id> <highest reserved>` for this boot, else None.
+fn parse_sequence_reservation(text: &str, boot: &str) -> Option<u64> {
+    let (recorded_boot, reserved) = text.trim().split_once(' ')?;
+    (recorded_boot == boot)
+        .then(|| reserved.parse().ok())
+        .flatten()
+}
+
+/// Persist a reservation covering `seq` before it is handed out of the block.
+fn reserve_through(seq: u64) {
+    let Some(path) = SEQUENCE_FILE.get() else {
+        SEQUENCE_RESERVED.store(u64::MAX, Ordering::Release);
+        return;
+    };
+    let _guard = SEQUENCE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if seq <= SEQUENCE_RESERVED.load(Ordering::Acquire)
+        && SEQUENCE_RESERVED.load(Ordering::Acquire) != u64::MAX
+    {
+        return;
+    }
+    let high = seq.saturating_add(SEQUENCE_BLOCK);
+    let tmp = path.with_extension("tmp");
+    let written = std::fs::write(&tmp, format!("{} {high}\n", boot_id()))
+        .and_then(|()| std::fs::File::open(&tmp).and_then(|f| f.sync_all()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    match written {
+        Ok(()) => SEQUENCE_RESERVED.store(high, Ordering::Release),
+        Err(error) => {
+            // Fail open: keep counting; a later restart may then reuse
+            // numbers, which the server refuses as a replay (visible), rather
+            // than dropping events here.
+            log::warn!(
+                "spool: could not record sequence reservation {}: {error}",
+                path.display()
+            );
+            SEQUENCE_RESERVED.store(u64::MAX, Ordering::Release);
+        }
+    }
 }
 
 fn boot_id() -> &'static str {
@@ -576,6 +664,37 @@ fn gunzip(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_resumed_sequence_is_past_the_reservation_and_the_clock() {
+        assert_eq!(
+            super::resume_start(None, 1_794_208_011_000),
+            1_794_208_011_000
+        );
+        assert_eq!(
+            super::resume_start(Some(1_794_208_011_500), 1_794_208_011_000),
+            1_794_208_011_501
+        );
+        assert_eq!(super::resume_start(Some(5), 0), 6);
+        assert_eq!(super::resume_start(None, 0), 1);
+    }
+
+    #[test]
+    fn a_sequence_reservation_resumes_only_within_the_same_boot() {
+        assert_eq!(
+            super::parse_sequence_reservation("boot-a 200000\n", "boot-a"),
+            Some(200000)
+        );
+        assert_eq!(
+            super::parse_sequence_reservation("boot-a 200000\n", "boot-b"),
+            None
+        );
+        assert_eq!(super::parse_sequence_reservation("garbage", "boot-a"), None);
+        assert_eq!(
+            super::parse_sequence_reservation("boot-a notanumber", "boot-a"),
+            None
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

@@ -752,6 +752,9 @@ fn a_retryable_status_keeps_the_segment_and_stops_the_pass() {
         "503 Service Unavailable",
         "429 Too Many Requests",
         "408 Request Timeout",
+        "401 Unauthorized",
+        "403 Forbidden",
+        "404 Not Found",
     ] {
         let dir = tmpdir("retry");
         let base = mock_server(move |_, _| ok_response(status));
@@ -1182,4 +1185,78 @@ fn rules_rejected_on_bad_signature_and_bad_yaml() {
     assert!(!client2.sync_rules(&sha256_hex(garbage.as_bytes())).unwrap());
     assert!(client2.handle.get().rules.is_empty());
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_enrollment_time_starts_the_spool_when_recorded_and_never_in_the_future() {
+    assert_eq!(enrollment_start(Some("1000"), 5000), 1000);
+    assert_eq!(enrollment_start(Some(" 1000\n"), 5000), 1000);
+    assert_eq!(enrollment_start(None, 5000), 5000);
+    assert_eq!(enrollment_start(Some("not-a-time"), 5000), 5000);
+    assert_eq!(
+        enrollment_start(Some("9999"), 5000),
+        5000,
+        "a future time is ignored"
+    );
+}
+
+#[test]
+fn only_statuses_that_read_and_refused_the_bytes_are_permanent() {
+    for status in [400, 413, 415, 422] {
+        assert!(permanent_rejection(status), "{status}");
+    }
+    for status in [401, 403, 404, 408, 409, 429, 500, 502, 503] {
+        assert!(!permanent_rejection(status), "{status}");
+    }
+}
+
+#[test]
+fn a_replayed_segment_is_quarantined_but_other_conflicts_keep_the_data() {
+    let dir = tmpdir("replay");
+    let base = mock_server(|headers: Vec<u8>, _| {
+        let headers = String::from_utf8_lossy(&headers).to_string();
+        let body = if headers.contains("20260802-010203") {
+            r#"{"error":"telemetry sequence replay"}"#
+        } else {
+            r#"{"error":"device re-enrollment required before telemetry upload"}"#
+        };
+        format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    });
+    let client = test_client(&base, &dir);
+    let replayed = write_segment(
+        &dir,
+        "merlin-events.20260802-010203.jsonl.gz",
+        "{\"kind\":\"exec\"}\n",
+    );
+    let kept = write_segment(
+        &dir,
+        "merlin-events.20260802-020304.jsonl.gz",
+        "{\"kind\":\"exec\"}\n",
+    );
+    assert!(
+        client.upload_pending().is_err(),
+        "re-enrollment required backs off"
+    );
+    assert!(!replayed.exists());
+    assert!(
+        dir.join("quarantine/replay/merlin-events.20260802-010203.jsonl.gz")
+            .exists()
+    );
+    assert!(kept.exists(), "a non-replay conflict keeps the segment");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_the_replay_body_counts_as_a_replay() {
+    assert!(is_sequence_replay(
+        r#"{"error":"telemetry sequence replay"}"#
+    ));
+    assert!(!is_sequence_replay(
+        r#"{"error":"device re-enrollment required before telemetry upload"}"#
+    ));
+    assert!(!is_sequence_replay("telemetry sequence replay"));
+    assert!(!is_sequence_replay(""));
 }

@@ -54,8 +54,19 @@ const MIN_SEGMENT_AGE: Duration = Duration::from_secs(2);
 /// device that cannot upload never fills its disk (dev-desktop held 22 GB).
 /// Overridden by MERLIN_SPOOL_MAX_BYTES.
 const DEFAULT_SPOOL_MAX_BYTES: u64 = 2 << 30;
-/// Rejected or pre-enrollment segments kept for inspection, newest first.
+/// Rejected or pre-enrollment segments kept for inspection, oldest dropped
+/// first past either bound.
 const MAX_QUARANTINED_SEGMENTS: usize = 64;
+const MAX_QUARANTINED_BYTES: u64 = 256 << 20;
+
+/// A status no retry of the same bytes can change: the server read the
+/// segment and refused it (malformed, too large, wrong type, unprocessable).
+/// Everything else, including auth failures (401/403, e.g. a revoked token),
+/// not found, rate limits and 5xx, keeps the segment for the backoff loop:
+/// quarantining on those would throw away data a later attempt could send.
+pub(crate) fn permanent_rejection(status: u16) -> bool {
+    matches!(status, 400 | 413 | 415 | 422)
+}
 /// Records which device identity this spool belongs to and since when.
 const DEVICE_MARKER: &str = ".merlin-device";
 
@@ -616,6 +627,9 @@ pub struct SyncClient {
     /// earlier were recorded before enrollment and are never uploaded.
     not_before: Option<i64>,
     spool_max_bytes: u64,
+    /// Whether the last check-in succeeded (logs the first success and each
+    /// recovery once).
+    checked_in: bool,
 }
 
 #[derive(Serialize)]
@@ -683,6 +697,7 @@ impl SyncClient {
                 .and_then(|v| v.trim().parse().ok())
                 .filter(|v| *v > 0)
                 .unwrap_or(DEFAULT_SPOOL_MAX_BYTES),
+            checked_in: false,
         }
         .with_device_marker()
     }
@@ -707,10 +722,16 @@ impl SyncClient {
                 .flatten()
         });
         let since = recorded.unwrap_or_else(|| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            // Enrollment writes MERLIN_ENROLLED_AT next to the credential, so
+            // a sensor that first runs later still uploads what it recorded
+            // after enrolling. Without it, the identity starts now.
+            let now = enrollment_start(
+                std::env::var("MERLIN_ENROLLED_AT").ok().as_deref(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+            );
             if let Err(error) = fs::write(&marker, format!("{device_id} {now}\n")) {
                 log::warn!(
                     "sync: could not record device marker {}: {error}",
@@ -739,11 +760,23 @@ impl SyncClient {
             return;
         }
         if let Ok(entries) = fs::read_dir(&target) {
-            let mut kept: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            let mut kept: Vec<(PathBuf, u64)> = entries
+                .flatten()
+                .map(|e| {
+                    let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                    (e.path(), len)
+                })
+                .collect();
             kept.sort();
-            let excess = kept.len().saturating_sub(MAX_QUARANTINED_SEGMENTS);
-            for old in kept.into_iter().take(excess) {
+            let mut bytes: u64 = kept.iter().map(|(_, len)| len).sum();
+            let mut count = kept.len();
+            for (old, len) in kept {
+                if count <= MAX_QUARANTINED_SEGMENTS && bytes <= MAX_QUARANTINED_BYTES {
+                    break;
+                }
                 let _ = fs::remove_file(old);
+                count -= 1;
+                bytes = bytes.saturating_sub(len);
             }
         }
     }
@@ -846,12 +879,27 @@ impl SyncClient {
             let response = self
                 .agent
                 .post(&url)
+                .config()
+                .http_status_as_error(false)
+                .build()
                 .header("X-Merlin-Segment", &name)
                 .header("Authorization", &authorization)
                 .send(&body);
-            let status = match response {
-                Ok(resp) => resp.status().as_u16(),
-                Err(ureq::Error::StatusCode(code)) => code,
+            let (status, error_text) = match response {
+                Ok(mut resp) => {
+                    let status = resp.status().as_u16();
+                    let text = if status == 409 {
+                        resp.body_mut()
+                            .with_config()
+                            .limit(4096)
+                            .read_to_string()
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    (status, text)
+                }
+                Err(ureq::Error::StatusCode(code)) => (code, String::new()),
                 Err(e) => return Err(e).context("sync: upload transport error"),
             };
             match status {
@@ -871,10 +919,20 @@ impl SyncClient {
                 }
                 // Permanent refusal: set it aside and keep going, so one bad
                 // segment never blocks everything recorded after it.
-                400..=499 if status != 408 && status != 429 => {
+                status if permanent_rejection(status) => {
                     Self::quarantine(dir, &name, &path, "rejected");
                     log::warn!(
                         "sync: server permanently rejected {name} ({status}); quarantined, continuing"
+                    );
+                }
+                // The server already holds newer events for these streams, so
+                // these bytes can never be accepted (dev-desktop, 2026-11-09:
+                // segments restored after newer ones uploaded). Other 409s,
+                // such as re-enrollment required, keep the data.
+                409 if is_sequence_replay(&error_text) => {
+                    Self::quarantine(dir, &name, &path, "replay");
+                    log::warn!(
+                        "sync: server already holds newer events than {name}; quarantined as replay, continuing"
                     );
                 }
                 // Retryable: stop this pass and back off; the segment stays.
@@ -2609,9 +2667,24 @@ pub fn run_loop(mut client: SyncClient) {
             }
             if last_check_in.elapsed() >= CHECK_IN_INTERVAL {
                 last_check_in = Instant::now();
-                if let Err(e) = client.check_in() {
-                    log::warn!("sync: device check-in failed: {e:#}");
-                    failed = true;
+                match client.check_in() {
+                    Ok(()) => {
+                        // One line a person can look for, on the first
+                        // success and again after any failure.
+                        if !client.checked_in {
+                            log::info!(
+                                "sync: checked in as {} to {}",
+                                client.cfg.device_id.as_deref().unwrap_or(&client.host),
+                                client.cfg.base_url
+                            );
+                            client.checked_in = true;
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("sync: device check-in failed: {e:#}");
+                        client.checked_in = false;
+                        failed = true;
+                    }
                 }
             }
             if failed {
@@ -2641,6 +2714,24 @@ pub fn spawn(client: SyncClient) -> Result<std::thread::JoinHandle<()>> {
         .name("sync".into())
         .spawn(move || run_loop(client))
         .context("spawning sync thread")
+}
+
+/// Whether a 409 body is the sync server's "telemetry sequence replay"
+/// refusal (`{"error":"telemetry sequence replay"}`).
+fn is_sequence_replay(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+        .is_some_and(|e| e == "telemetry sequence replay")
+}
+
+/// When this spool's device identity began: the enrollment time the enroll
+/// script recorded, else now. Never later than now.
+fn enrollment_start(enrolled_at: Option<&str>, now: i64) -> i64 {
+    enrolled_at
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|v| *v > 0 && *v <= now)
+        .unwrap_or(now)
 }
 
 /// The local wall-clock time a segment's name records

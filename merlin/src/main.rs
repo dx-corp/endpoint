@@ -226,6 +226,9 @@ async fn main() -> Result<()> {
                 interval_secs: segment_interval,
                 max_bytes: segment_bytes,
             };
+            // Before any producer runs: keep this boot's event sequence
+            // increasing across sensor restarts.
+            spool::resume_sequence(spool.parent().unwrap_or(std::path::Path::new(".")));
             let device_id = device_id
                 .or_else(|| std::env::var("MERLIN_DEVICE_ID").ok())
                 .map(|value| value.trim().to_string())
