@@ -4,9 +4,6 @@
 //! a sensor is running, and what waits in the spool with the sensor's last
 //! health event. It reads files only, opens none through a symlink, and says
 //! why when it cannot read something instead of guessing.
-// The Overview page of the screen (`tui.rs`) is the reader; until it lands
-// only the tests call this.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
@@ -32,6 +29,23 @@ impl Paths {
             spool_live: "/var/lib/merlin/merlin-events.jsonl".into(),
             proc_root: "/proc".into(),
         }
+    }
+}
+
+/// Everything the Overview page shows, read at one instant.
+pub struct Local {
+    pub enrollment: Enrollment,
+    pub mode: Mode,
+    pub running: Option<bool>,
+    pub spool: Spool,
+}
+
+pub fn read(paths: &Paths) -> Local {
+    Local {
+        enrollment: read_enrollment(&paths.env_file),
+        mode: read_mode(&paths.rules_file),
+        running: sensor_running(&paths.proc_root),
+        spool: read_spool(&paths.spool_live),
     }
 }
 
