@@ -155,19 +155,19 @@ struct SyncTests {
         try FileManager.default.createDirectory(atPath: home + "/.composer/skills/review", withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: home + "/Applications/Cursor.app", withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: home + "/Applications/Codex.app", withDestinationPath: home + "/Applications/Cursor.app")
-        try "[mcp_servers.github]\nurl = 'https://secret.example'\n[mcp_servers.\"/Users/private/work\"]\ncommand = 'secret'\n".write(toFile: home + "/.codex/config.toml", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"docs":{"command":"secret"},"https://private.example/mcp":{"url":"secret"},"C:\\Users\\private":{"command":"secret"}}}"#.write(toFile: home + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try "[mcp_servers.github]\nurl = 'https://mcp.example/secret?token=secret'\n[mcp_servers.\"/Users/private/work\"]\ncommand = 'secret'\n".write(toFile: home + "/.codex/config.toml", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"docs":{"command":"node","args":["secret"]},"https://private.example/mcp":{"url":"secret"},"C:\\Users\\private":{"command":"node","args":["secret"]}}}"#.write(toFile: home + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
         try "secret instructions".write(toFile: home + "/.agents/skills/review/SKILL.md", atomically: true, encoding: .utf8)
         try #"{"mcpServers":{"search":{"env":{"TOKEN":"secret"}}}}"#.write(toFile: home + "/.gemini/extensions/workspace/gemini-extension.json", atomically: true, encoding: .utf8)
         try "ignored".write(toFile: home + "/.gemini/extensions/not-extension/SKILL.md", atomically: true, encoding: .utf8)
         try "secret prompt".write(toFile: home + "/.claude/agents/reviewer.md", atomically: true, encoding: .utf8)
         try #"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false}}"#.write(toFile: home + "/.claude/settings.json", atomically: true, encoding: .utf8)
-        try #"{"amp.mcpServers":{"db":{"command":"secret"}}}"#.write(toFile: home + "/.config/amp/settings.json", atomically: true, encoding: .utf8)
+        try #"{"amp.mcpServers":{"db":{"command":"node","args":["secret"]}}}"#.write(toFile: home + "/.config/amp/settings.json", atomically: true, encoding: .utf8)
         try "secret plugin".write(toFile: home + "/.config/opencode/plugins/trace.ts", atomically: true, encoding: .utf8)
         try "secret plugin".write(toFile: home + "/.maestro/plugins/audit/.plugin/plugin.json", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"pluginsearch":{"command":"secret"}}}"#.write(toFile: home + "/.maestro/plugins/audit/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"pluginsearch":{"command":"node","args":["secret"]}}}"#.write(toFile: home + "/.maestro/plugins/audit/mcp.json", atomically: true, encoding: .utf8)
         try "secret skill".write(toFile: home + "/.composer/skills/review/SKILL.md", atomically: true, encoding: .utf8)
-        try "[mcp_servers.managed]\nurl = 'https://secret.example'\n".write(toFile: home + "/.maestro/config.toml", atomically: true, encoding: .utf8)
+        try "[mcp_servers.managed]\nurl = 'https://mcp.example/secret?token=secret'\n".write(toFile: home + "/.maestro/config.toml", atomically: true, encoding: .utf8)
         let cli = home + "/.local/bin/codex"
         try "#!/bin/sh\n".write(toFile: cli, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli)
@@ -257,6 +257,77 @@ struct SyncTests {
         #expect(!plugins.contains { $0.name == "plugin-32" })
     }
 
+    @Test("a config is read up to its own limit and a larger one is reported not scanned")
+    func configReadLimit() throws {
+        let home = NSTemporaryDirectory() + "merlin-config-limit-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home + "/.cursor", withIntermediateDirectories: true)
+        func padded(_ server: String, _ size: Int) -> String {
+            let head = #"{"mcpServers":{"\#(server)":{"command":"npx"}},"pad":""#
+            return head + String(repeating: "x", count: size - head.utf8.count - 2) + #""}"#
+        }
+        let claudeLimit = try #require(macUserAgentConfigReadLimits[".claude.json"])
+        #expect(claudeLimit > macAgentConfigReadLimit)
+        // Over the default limit, within its own: read.
+        try padded("deixic", macAgentConfigReadLimit + 1024).write(toFile: home + "/.claude.json", atomically: true, encoding: .utf8)
+        // No limit of its own and over the default: reported, not read.
+        try padded("cursor-big", macAgentConfigReadLimit + 1).write(toFile: home + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        var found = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(found.servers.contains { $0.name == "deixic" && $0.source == ".claude.json" })
+        #expect(!found.servers.contains { $0.name == "cursor-big" })
+        #expect(found.coverage == [.tooLarge(".cursor/mcp.json")])
+
+        try padded("deixic", claudeLimit + 1).write(toFile: home + "/.claude.json", atomically: true, encoding: .utf8)
+        found = collectMacAgentDiscovery(homes: [home, home], systemBins: [])
+        #expect(!found.servers.contains { $0.name == "deixic" })
+        #expect(!found.assets.contains { $0.source == ".claude.json" })
+        #expect(found.coverage.count == Set(found.coverage.map(\.source)).count)
+        #expect(Set(found.coverage.map(\.source)) == [".cursor/mcp.json", ".claude.json"])
+        let wire = String(decoding: try JSONEncoder().encode(found.coverage), as: UTF8.self)
+        #expect(wire.contains(#""reason":"too_large""#) && !wire.contains("location") && !wire.contains(home))
+    }
+
+    @Test("a full asset list still reports Claude Code plugin cache MCP servers")
+    func pluginCacheServersPastTheAssetCap() throws {
+        let home = NSTemporaryDirectory() + "merlin-cache-full-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        // More skills than the asset cap, read before the plugin cache.
+        for index in 0..<140 {
+            let skill = home + String(format: "/.claude/skills/s%03d", index)
+            try FileManager.default.createDirectory(atPath: skill, withIntermediateDirectories: true)
+            try "x".write(toFile: skill + "/SKILL.md", atomically: true, encoding: .utf8)
+        }
+        let version = home + "/.claude/plugins/cache/official/slack/1.0.0"
+        try FileManager.default.createDirectory(atPath: version, withIntermediateDirectories: true)
+        try #"{"mcpServers":{"slack":{"type":"http","url":"https://mcp.slack.com/mcp?token=private-secret"}}}"#.write(toFile: version + "/.mcp.json", atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(atPath: home + "/.gemini/extensions/notes", withIntermediateDirectories: true)
+        try #"{"mcpServers":{"notes":{"command":"npx","args":["-y","notes-mcp","--key","private-secret"]}}}"#.write(toFile: home + "/.gemini/extensions/notes/gemini-extension.json", atomically: true, encoding: .utf8)
+        let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(discovered.assets.count <= 128)
+        #expect(discovered.servers.contains { $0.name == "slack" && $0.source == ".claude/plugins/cache/*/.mcp.json" })
+        #expect(discovered.servers.contains { $0.name == "notes" && $0.source == ".gemini/extensions/*/gemini-extension.json" })
+        #expect(!String(decoding: try JSONEncoder().encode(discovered.servers), as: UTF8.self).contains("private-secret"))
+    }
+
+    @Test("a CLI linked from a bin directory counts, as on Linux; a link to a non-executable does not")
+    func linkedCLI() throws {
+        let home = NSTemporaryDirectory() + "merlin-linked-cli-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let versions = home + "/.local/share/claude/versions"
+        try FileManager.default.createDirectory(atPath: versions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home + "/.local/bin", withIntermediateDirectories: true)
+        try "#!/bin/sh\n".write(toFile: versions + "/2.1.0", atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: versions + "/2.1.0")
+        try "notes".write(toFile: versions + "/notes", atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: versions + "/notes")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.local/bin/claude", withDestinationPath: versions + "/2.1.0")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.local/bin/codex", withDestinationPath: versions + "/notes")
+        try FileManager.default.createSymbolicLink(atPath: home + "/.local/bin/gemini", withDestinationPath: versions)
+        let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(discovered.clis.map(\.name) == ["claude"])
+        #expect(!String(decoding: try JSONEncoder().encode(discovered.clis), as: UTF8.self).contains("versions"))
+    }
+
     @Test("project discovery reports fixed labels and ignores linked configs")
     func projectAgentDiscovery() throws {
         let root = NSTemporaryDirectory() + "merlin-project-discovery-\(UUID().uuidString)"
@@ -269,9 +340,9 @@ struct SyncTests {
         try FileManager.default.createDirectory(atPath: project + "/.maestro/plugins/audit", withIntermediateDirectories: true)
         try #"{"mcpServers":{"pluginsearch":{"url":"https://private.example/mcp"}}}"#.write(toFile: project + "/.maestro/plugins/audit/mcp.json", atomically: true, encoding: .utf8)
         try #"{"enabledPlugins":{"audit@marketplace":true,"off@marketplace":false},"secret":"private-secret"}"#.write(toFile: project + "/.claude/settings.json", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"docs":{"command":"private-secret"}}}"#.write(toFile: project + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"docs":{"command":"node","args":["private-secret"]}}}"#.write(toFile: project + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
         try #"{"mcp":{"code-search":{"url":"https://private.example/mcp"}},"secret":"private-secret"}"#.write(toFile: project + "/.opencode/opencode.json", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"agent-search":{"command":"private-secret"}}}"#.write(toFile: project + "/.agents/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"agent-search":{"command":"node","args":["private-secret"]}}}"#.write(toFile: project + "/.agents/mcp.json", atomically: true, encoding: .utf8)
         try "private-secret".write(toFile: project + "/.claude/skills/review/SKILL.md", atomically: true, encoding: .utf8)
         let discovered = collectMacProjectAgentDiscovery(roots: [root])
         #expect(discovered.servers.contains { $0.name == "docs" && $0.source == "project/.cursor/mcp.json" && $0.transport == "stdio" })
@@ -301,9 +372,9 @@ struct SyncTests {
         for directory in [nested + "/.cursor", deeper + "/.cursor", outside + "/.cursor"] {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         }
-        try #"{"mcpServers":{"nested":{"command":"private-command"}}}"#.write(toFile: nested + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"too-deep":{"command":"private-command"}}}"#.write(toFile: deeper + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
-        try #"{"mcpServers":{"linked":{"command":"private-command"}}}"#.write(toFile: outside + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"nested":{"command":"node","args":["private-command"]}}}"#.write(toFile: nested + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"too-deep":{"command":"node","args":["private-command"]}}}"#.write(toFile: deeper + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
+        try #"{"mcpServers":{"linked":{"command":"node","args":["private-command"]}}}"#.write(toFile: outside + "/.cursor/mcp.json", atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(atPath: root + "/linked", withDestinationPath: outside)
         try FileManager.default.createSymbolicLink(atPath: root + "/team/linked", withDestinationPath: outside)
 

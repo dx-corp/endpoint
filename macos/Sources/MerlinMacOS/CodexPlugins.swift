@@ -16,8 +16,8 @@ func codexEnabledPluginNames(_ data: Data) -> [String] {
 
 /// Walks a TOML 1.0 document and records the full key path of every value
 /// assignment outside arrays of tables. Only boolean true is retained as a
-/// value; strings, numbers, dates, and arrays are skipped. The Windows
-/// collector's `windows/codex_plugins.go` implements the same rules.
+/// value; strings, numbers, dates, and arrays are skipped. The Linux and
+/// Windows agent applies the same rules in `merlin/src/ai_discovery.rs`.
 private struct TOMLLeafScanner {
     struct Leaf { let path: [String]; let isTrue: Bool }
     struct Invalid: Error {}

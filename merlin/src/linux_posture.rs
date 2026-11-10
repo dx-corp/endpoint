@@ -13,11 +13,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use sha2::{Digest, Sha256};
+pub use crate::posture_report::DevicePosture;
+use crate::posture_report::{Collector, PostureCheck, evidence, summarize, unavailable_check};
 
+#[path = "linux_posture_ai.rs"]
+mod ai;
 #[path = "linux_posture_host.rs"]
 mod host;
+#[path = "linux_posture_models.rs"]
+mod models;
 
 const MAX_EFI_VARIABLE_BYTES: u64 = 64;
 const MAX_TEXT_EVIDENCE_BYTES: u64 = 4 << 10;
@@ -27,65 +31,6 @@ const MAX_FIREWALL_OUTPUT_BYTES: u64 = 1 << 20;
 const FIREWALL_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_DM_STACK_DEPTH: usize = 8;
 const MAX_DM_SLAVES: usize = 16;
-
-#[derive(Serialize, Debug, PartialEq)]
-pub struct DevicePosture {
-    schema_version: u8,
-    collected_at: String,
-    overall: &'static str,
-    risk_score: u8,
-    checks: BTreeMap<&'static str, PostureCheck>,
-    findings: Vec<PostureFinding>,
-    coverage: PostureCoverage,
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-struct PostureCheck {
-    status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<Cow<'static, str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    severity: Option<&'static str>,
-    detail: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    evidence: Option<PostureEvidence>,
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-struct PostureEvidence {
-    source: &'static str,
-    privilege: &'static str,
-    confidence: &'static str,
-    observed_at: String,
-    evidence_hash: String,
-    redactions: [&'static str; 1],
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-struct PostureFinding {
-    id: &'static str,
-    check: &'static str,
-    severity: &'static str,
-    detail: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    evidence_hash: Option<String>,
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-struct PostureCoverage {
-    provider: &'static str,
-    root: bool,
-    checks_total: u8,
-    checks_available: u8,
-    checks_unavailable: u8,
-    checks_requires_root: u8,
-    network_extension: &'static str,
-    checks_with_evidence: u8,
-    redacted_fields: u8,
-    collection_duration_ms: u64,
-    max_age_seconds: u16,
-    capabilities: [&'static str; 5],
-}
 
 struct EvidencePaths {
     secure_boot_variables: PathBuf,
@@ -97,6 +42,8 @@ struct EvidencePaths {
     nft_binaries: Vec<PathBuf>,
     iptables_binaries: Vec<PathBuf>,
     host: host::HostPaths,
+    ai_agents: ai::AgentPaths,
+    models: models::ModelPaths,
 }
 
 impl EvidencePaths {
@@ -115,6 +62,8 @@ impl EvidencePaths {
                 .map(PathBuf::from)
                 .to_vec(),
             host: host::HostPaths::system(),
+            ai_agents: ai::AgentPaths::system(),
+            models: models::ModelPaths::new(crate::sync::agent_homes()),
         }
     }
 }
@@ -158,81 +107,27 @@ fn collect_from(paths: &EvidencePaths) -> DevicePosture {
     );
     checks.insert("firewall", firewall_check(paths, &observed_at, privilege));
     host::collect(&paths.host, &observed_at, privilege, &mut checks);
+    ai::collect(&paths.ai_agents, &observed_at, privilege, &mut checks);
+    models::collect(&paths.models, &observed_at, privilege, &mut checks);
 
-    let mut findings = Vec::new();
-    let mut risk_score = 0u8;
-    for (name, check) in &checks {
-        if check.status != "finding" {
-            continue;
-        }
-        let check_name = *name;
-        risk_score = risk_score.saturating_add(risk_weight(check_name));
-        findings.push(PostureFinding {
-            id: check_name,
-            check: check_name,
-            severity: check.severity.unwrap_or("medium"),
-            detail: check.detail,
-            evidence_hash: check
-                .evidence
-                .as_ref()
-                .map(|evidence| evidence.evidence_hash.clone()),
-        });
-    }
-
-    let checks_requires_root = checks
-        .values()
-        .filter(|check| check.status == "requires_root")
-        .count() as u8;
-    let checks_unavailable = checks
-        .values()
-        .filter(|check| check.status == "unavailable")
-        .count() as u8;
-    let checks_available = checks.len() as u8 - checks_unavailable - checks_requires_root;
-    let checks_with_evidence = checks
-        .values()
-        .filter(|check| check.evidence.is_some())
-        .count() as u8;
-    let has_high_finding = findings
-        .iter()
-        .any(|finding| matches!(finding.severity, "high" | "critical"));
-    let overall = if checks_available == 0 {
-        "unknown"
-    } else if has_high_finding {
-        "at_risk"
-    } else if !findings.is_empty() || checks_available < checks.len() as u8 {
-        "degraded"
-    } else {
-        "secure"
-    };
-
-    DevicePosture {
-        schema_version: 2,
-        collected_at: observed_at,
-        overall,
-        risk_score: risk_score.min(100),
-        findings,
-        coverage: PostureCoverage {
+    summarize(
+        checks,
+        observed_at,
+        Collector {
             provider: "merlin-linux-boot-trust",
             root: privilege == "root",
-            checks_total: checks.len() as u8,
-            checks_available,
-            checks_unavailable,
-            checks_requires_root,
-            network_extension: "not_applicable",
-            checks_with_evidence,
-            redacted_fields: checks_with_evidence,
-            collection_duration_ms: started.elapsed().as_millis().min(120_000) as u64,
             max_age_seconds: 300,
-            capabilities: [
+            capabilities: vec![
                 "secure_boot",
                 "tpm2",
                 "measured_boot",
                 "disk_encryption",
                 "firewall",
             ],
+            started,
         },
-        checks,
-    }
+        risk_weight,
+    )
 }
 
 fn secure_boot_check(
@@ -724,24 +619,13 @@ fn evidence_check(
         value: Some(Cow::Borrowed(value)),
         severity,
         detail,
-        evidence: Some(PostureEvidence {
+        evidence: Some(evidence(
             source,
             privilege,
-            confidence: "kernel_reported",
-            observed_at: observed_at.to_string(),
-            evidence_hash: sha256_hex(raw),
-            redactions: ["raw_evidence"],
-        }),
-    }
-}
-
-fn unavailable_check(status: &'static str, detail: &'static str) -> PostureCheck {
-    PostureCheck {
-        status,
-        value: None,
-        severity: None,
-        detail,
-        evidence: None,
+            "kernel_reported",
+            observed_at,
+            raw,
+        )),
     }
 }
 
@@ -782,13 +666,6 @@ fn normalized_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_ascii_lowercase()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 fn unix_timestamp() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -808,7 +685,8 @@ fn risk_weight(check: &str) -> u8 {
         "endpoint_protection" => 15,
         "remote_access" => 10,
         "auto_updates" => 5,
-        _ => 0,
+        models::CHECK => 10,
+        other => ai::risk_weight(other),
     }
 }
 
@@ -846,6 +724,11 @@ mod tests {
                 application_dirs: vec![root.join("applications")],
                 graphical_markers: vec![root.join("X11-unix")],
             },
+            ai_agents: ai::AgentPaths {
+                homes: vec![root.join("home")],
+                root: root.join("system"),
+            },
+            models: models::ModelPaths::new(vec![root.join("home")]),
         };
         fs::create_dir_all(root.join("bin")).unwrap();
         (root, paths)

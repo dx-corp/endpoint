@@ -4,38 +4,97 @@
 //! buffer; a fanotify monitor provides synchronous exec blocking; a YAML
 //! rules engine drives log/kill/block actions; everything lands in an
 //! append-only JSONL spool.
+//!
+//! The Linux agent is Linux-only (`cfg(target_os = "linux")`); the crate also
+//! builds for Windows, where `windows_cli` and `windows_discovery` run.
 
+#[cfg(target_os = "linux")]
+mod agent_session;
+#[cfg(any(target_os = "linux", windows))]
+mod ai_discovery;
+#[cfg(target_os = "linux")]
 mod alert;
+#[cfg(target_os = "linux")]
 mod bpfcheck;
+#[cfg(target_os = "linux")]
 mod check;
+#[cfg(target_os = "linux")]
 mod desired_state;
+#[cfg(target_os = "linux")]
 mod dnsmon;
+#[cfg(target_os = "linux")]
 mod fanotify_mon;
+#[cfg(target_os = "linux")]
 mod fileless;
+#[cfg(target_os = "linux")]
 mod filemon;
+#[cfg(target_os = "linux")]
 mod linux_hardening;
+#[cfg(target_os = "linux")]
 mod linux_posture;
+#[cfg(target_os = "linux")]
 mod local_state;
+// Windows reads only the AI locations table so far; the rest of the manifest
+// serves the Linux agent's `manifest` command, screen and check-in.
+#[cfg(any(target_os = "linux", windows))]
+#[cfg_attr(
+    windows,
+    allow(
+        dead_code,
+        reason = "Windows uses only ai_locations until its check-in moves"
+    )
+)]
 mod manifest;
+#[cfg(target_os = "linux")]
 mod netifmon;
+#[cfg(target_os = "linux")]
 mod persistence_mon;
+#[cfg(target_os = "linux")]
 mod portability;
+#[cfg(target_os = "linux")]
 mod posture;
+#[cfg(any(target_os = "linux", windows))]
+mod posture_report;
+#[cfg(target_os = "linux")]
 mod proctree;
+#[cfg(target_os = "linux")]
 mod rules;
+#[cfg(target_os = "linux")]
 mod scripts;
+#[cfg(target_os = "linux")]
 mod spool;
+#[cfg(target_os = "linux")]
 mod sync;
+#[cfg(target_os = "linux")]
 mod taskstats;
+#[cfg(target_os = "linux")]
 mod telemetry;
+#[cfg(target_os = "linux")]
 mod tui;
+#[cfg(any(windows, test))]
+mod windows_checkin;
+#[cfg(windows)]
+mod windows_cli;
+#[cfg(any(windows, test))]
+mod windows_discovery;
+#[cfg(windows)]
+mod windows_host;
+#[cfg(any(windows, test))]
+mod windows_posture;
+#[cfg(any(windows, test))]
+mod windows_wsl;
 
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
+#[cfg(target_os = "linux")]
 use clap::{Parser, Subcommand};
 
+#[cfg(target_os = "linux")]
 #[derive(Parser)]
 #[command(
     name = "merlin",
@@ -48,6 +107,7 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Subcommand)]
 #[expect(
     clippy::large_enum_variant,
@@ -171,6 +231,7 @@ enum Cmd {
     },
 }
 
+#[cfg(target_os = "linux")]
 fn default_ebpf_candidates() -> Vec<PathBuf> {
     vec![
         PathBuf::from("./merlin-ebpf.o"),
@@ -179,6 +240,7 @@ fn default_ebpf_candidates() -> Vec<PathBuf> {
     ]
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_ebpf_path(arg: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = arg {
         return Ok(p);
@@ -192,6 +254,19 @@ fn resolve_ebpf_path(arg: Option<PathBuf>) -> Result<PathBuf> {
         .context("no eBPF object found; pass --ebpf or set MERLIN_EBPF_PATH")
 }
 
+/// The Windows collector: check-in, AI-tool discovery, posture and the
+/// process snapshot (`windows_cli`).
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> {
+    windows_cli::main()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("this merlin build has no collector for this platform")
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -354,6 +429,7 @@ async fn main() -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[expect(
     clippy::too_many_arguments,
     reason = "Daemon startup receives independently configured CLI options."
@@ -475,7 +551,7 @@ async fn run(
     };
 
     // DNS telemetry (AF_PACKET, port 53 both directions).
-    dnsmon::spawn(rules.clone(), tx.clone())?;
+    dnsmon::spawn(rules.clone(), Arc::clone(&table), tx.clone())?;
 
     // Network/task/BPF telemetry threads are fail-open: a startup failure
     // is telemetry loss, never a daemon outage.
@@ -513,7 +589,7 @@ async fn run(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod launcher_tests {
     use super::*;
 

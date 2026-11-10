@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! `merlin scan-ai-locations` reads only inside the root it is given.
 //!
 //! chroot needs root. The test runs the binary directly as root, or as root
@@ -5,9 +7,31 @@
 //! and passes when neither is available.
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+fn merlin_binary() -> PathBuf {
+    let binary = option_env!("CARGO_BIN_EXE_merlin")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // Clippy can check integration tests without Cargo's binary path.
+            // Cargo test places the binary beside the deps directory.
+            std::env::current_exe()
+                .expect("test executable path")
+                .parent()
+                .expect("test deps directory")
+                .parent()
+                .expect("Cargo profile directory")
+                .join(format!("merlin{}", std::env::consts::EXE_SUFFIX))
+        });
+    assert!(
+        binary.is_file(),
+        "missing Merlin binary: {}",
+        binary.display()
+    );
+    binary
+}
 
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("merlin-scan-root-{}-{tag}", std::process::id()));
@@ -17,7 +41,7 @@ fn tmpdir(tag: &str) -> PathBuf {
 }
 
 fn run_scan(root: &Path, location: &str) -> Option<Output> {
-    let binary = env!("CARGO_BIN_EXE_merlin");
+    let binary = merlin_binary();
     let args = [
         "scan-ai-locations",
         "--root",
@@ -58,7 +82,7 @@ fn a_scanned_root_cannot_reach_host_files_through_its_symlinks() {
     fs::create_dir_all(root.join("home/dev/.cursor")).unwrap();
     fs::write(
         root.join("home/dev/.cursor/mcp.json"),
-        r#"{"mcpServers":{"inside":{"command":"private-secret"}}}"#,
+        r#"{"mcpServers":{"inside":{"command":"node","args":["private-secret"]}}}"#,
     )
     .unwrap();
     // On the host, outside the root: a config the container points at with
@@ -67,10 +91,21 @@ fn a_scanned_root_cannot_reach_host_files_through_its_symlinks() {
     fs::create_dir_all(&outside).unwrap();
     fs::write(
         outside.join("settings.json"),
-        r#"{"mcpServers":{"escaped":{"command":"private-secret"}}}"#,
+        r#"{"mcpServers":{"escaped":{"command":"node","args":["private-secret"]}}}"#,
     )
     .unwrap();
     symlink(&outside, root.join("home/dev/.gemini")).unwrap();
+    // A CLI installed in the container, and a link to one only the host has:
+    // the container's own /usr/local/bin is what the scan sees.
+    fs::create_dir_all(root.join("usr/local/bin")).unwrap();
+    let claude = root.join("usr/local/bin/claude");
+    fs::write(&claude, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir_all(base.join("host-only/bin")).unwrap();
+    let aider = base.join("host-only/bin/aider");
+    fs::write(&aider, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&aider, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&aider, root.join("usr/local/bin/aider")).unwrap();
     // `..` past the root also stays inside it.
     symlink(
         "../../../../../../host-only/.gemini",
@@ -98,6 +133,15 @@ fn a_scanned_root_cannot_reach_host_files_through_its_symlinks() {
     assert!(assets.iter().any(|a| a["name"] == "review"
         && a["source"] == ".claude/skills"
         && a["location"] == "container:ghcr.io/acme/dev:1"));
+    let clis = scan["clis"].as_array().unwrap();
+    assert!(
+        clis.iter()
+            .any(|c| c["name"] == "claude" && c["location"] == "container:ghcr.io/acme/dev:1")
+    );
+    assert!(
+        !clis.iter().any(|c| c["name"] == "aider"),
+        "followed a link to a host CLI"
+    );
     assert!(!stdout.contains("escaped"), "read a host file: {stdout}");
     assert!(!stdout.contains("private-secret"));
     assert!(!stdout.contains(base.to_str().unwrap()), "printed a path");
@@ -108,7 +152,7 @@ fn a_scanned_root_cannot_reach_host_files_through_its_symlinks() {
 fn a_location_that_is_not_a_container_or_wsl_name_is_refused() {
     let root = tmpdir("refused");
     for location in ["host", "container:/etc", "wsl:/mnt/c", "anything"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_merlin"))
+        let output = Command::new(merlin_binary())
             .args([
                 "scan-ai-locations",
                 "--root",

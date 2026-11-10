@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["merlin", "merlin-common"]
+members = ["merlin", "merlin-common", "windows/wsl-plugin"]
 
 [profile.release]
 debug = true

@@ -205,6 +205,7 @@ pub(super) fn collect_project_agent_discovery(
                     kind: "config".into(),
                     name: "project".into(),
                     source: source.clone(),
+                    ..Default::default()
                 });
                 if !location.plugins_key.is_empty() {
                     for name in json_enabled_plugin_names(&body, location.plugins_key) {
@@ -214,20 +215,15 @@ pub(super) fn collect_project_agent_discovery(
                             kind: "plugin".into(),
                             name,
                             source: source.clone(),
+                            ..Default::default()
                         });
                     }
                 }
-                for (name, transport) in config_mcp_entries(location, &body)
+                for entry in config_mcp_entries(location, &body)
                     .into_iter()
-                    .filter(|(name, _)| safe_agent_asset_name(name))
+                    .filter(|entry| safe_agent_asset_name(&entry.name))
                 {
-                    servers.insert(DeviceMCPServer {
-                        location: String::new(),
-                        client: location.client.into(),
-                        name,
-                        source: source.clone(),
-                        transport,
-                    });
+                    servers.insert(entry.server(location.client, source.clone()));
                 }
             }
             for location in
@@ -273,6 +269,7 @@ pub(super) fn collect_project_agent_discovery(
                         kind: location.kind.into(),
                         name: name.into(),
                         source: location.label(),
+                        ..Default::default()
                     });
                     for config in location.mcp_files {
                         if plugin_config_reads >= 32 {
@@ -285,15 +282,10 @@ pub(super) fn collect_project_agent_discovery(
                         else {
                             continue;
                         };
-                        for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
-                            if safe_agent_asset_name(&server) {
-                                servers.insert(DeviceMCPServer {
-                                    location: String::new(),
-                                    client: location.client.into(),
-                                    name: server,
-                                    source: format!("{}/*/{config}", location.label()),
-                                    transport,
-                                });
+                        for entry in json_mcp_entries(&body, location.mcp_keys) {
+                            if safe_agent_asset_name(&entry.name) {
+                                let source = format!("{}/*/{config}", location.label());
+                                servers.insert(entry.server(location.client, source));
                             }
                         }
                     }

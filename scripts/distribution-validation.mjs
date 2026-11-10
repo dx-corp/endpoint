@@ -110,15 +110,25 @@ export async function validateProvenance(name, root) {
   return provenance;
 }
 
+export function validateEndpointWorkspace(metadata) {
+  const expected = new Set(["merlin", "merlin-common", "deixic-wsl-plugin"]);
+  const names = metadata.packages.map(pkg => pkg.name);
+  requireValue(
+    metadata.workspace_members.length === expected.size && names.length === expected.size
+      && new Set(names).size === expected.size && names.every(name => expected.has(name)),
+    "endpoint Cargo workspace closure changed",
+  );
+}
+
 async function validateEndpoint(root, files) {
   for (const required of ["Cargo.toml", "Cargo.lock", "merlin/Cargo.toml", "merlin-common/Cargo.toml",
     "merlin-ebpf/Cargo.toml", "packaging/linux/test-packaging.sh", "rules/block-demo.yaml",
-    "packs/sigma-linux.yaml", "macos/Package.swift"]) {
+    "packs/sigma-linux.yaml", "macos/Package.swift", "collection-manifest.toml", "windows/wsl-plugin/Cargo.toml"]) {
     requireValue(files.includes(required), `endpoint is missing ${required}`);
   }
   for (const path of files) requireValue(!/^(?:server|admin-ui|tools)(?:\/|$)|^Dockerfile$|^macos\/docs\//.test(path), `endpoint contains an internal surface: ${path}`);
   const metadata = JSON.parse(run("cargo", ["metadata", "--no-deps", "--locked", "--format-version", "1"], root));
-  requireValue(metadata.workspace_members.length === 2 && metadata.packages.every(pkg => ["merlin", "merlin-common"].includes(pkg.name)), "endpoint Cargo workspace closure changed");
+  validateEndpointWorkspace(metadata);
   const ebpf = await readFile(join(root, "merlin-ebpf", "Cargo.toml"), "utf8");
   requireValue(/merlin-common\s*=\s*\{\s*path\s*=\s*"\.\.\/merlin-common"\s*\}/.test(ebpf), "endpoint eBPF path closure changed");
   run("cargo", ["test", "--locked", "-p", "merlin-common"], root);

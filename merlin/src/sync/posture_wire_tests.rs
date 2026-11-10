@@ -15,10 +15,15 @@ pub(super) fn assert_linux_posture(posture: &serde_json::Value) {
     ] {
         assert!(checks.get(name).is_some_and(serde_json::Value::is_object));
     }
-    // A graphical session adds the password-manager check; headless hosts omit it.
+    // A graphical session adds the password-manager check; headless hosts omit
+    // it. AI agent checks appear only for clients whose settings files exist.
+    let ai_agent_checks = checks
+        .keys()
+        .filter(|name| name.starts_with("ai_agent_approval_"))
+        .count() as u64;
     assert_eq!(
         posture["coverage"]["checks_total"].as_u64(),
-        Some(10 + u64::from(checks.contains_key("password_manager")))
+        Some(10 + u64::from(checks.contains_key("password_manager")) + ai_agent_checks)
     );
     assert!(
         checks

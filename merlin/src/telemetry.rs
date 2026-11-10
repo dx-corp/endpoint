@@ -20,6 +20,7 @@ use serde_json::Value;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::Sender;
 
+use crate::agent_session;
 use crate::fileless::{ExeClass, classify_exe, is_deleted_executable_path};
 use crate::proctree::{ProcInfo, ProcTable};
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
@@ -208,10 +209,10 @@ fn handle_event(
         KIND_EXEC => handle_exec(unsafe { event.payload.exec }, rules, tx, table, alert),
         KIND_FORK => handle_fork(unsafe { event.payload.fork }, tx, table),
         KIND_EXIT => handle_exit(unsafe { event.payload.exit }, tx, table),
-        KIND_CONNECT => handle_connect(unsafe { event.payload.connect }, rules, tx),
+        KIND_CONNECT => handle_connect(unsafe { event.payload.connect }, rules, tx, table),
         KIND_MEMFD => handle_memfd(unsafe { event.payload.memfd }, tx),
         KIND_SECURITY => handle_security(unsafe { event.payload.security }, tx, throttle),
-        KIND_SOCKET => handle_socket(unsafe { event.payload.socket }, rules, tx),
+        KIND_SOCKET => handle_socket(unsafe { event.payload.socket }, rules, tx, table),
         KIND_CRED => handle_cred(unsafe { event.payload.cred }, tx, alert),
         KIND_IOURING => handle_iouring(unsafe { event.payload.iouring }, tx),
         KIND_IOURING_OP => handle_iouring_op(unsafe { event.payload.iouring_op }, tx),
@@ -222,6 +223,30 @@ fn handle_event(
 fn cstr(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn script_event(
+    pid: Option<u32>,
+    uid: Option<u32>,
+    comm: &str,
+    interpreter: Option<&str>,
+    script: &str,
+    script_sha256: Option<&str>,
+    ancestors: &[Value],
+) -> Value {
+    serde_json::json!({
+        "ts": spool::now_ts(),
+        "source": "linux-ebpf",
+        "source_seq": spool::next_sequence(),
+        "kind": "script",
+        "pid": pid,
+        "uid": uid,
+        "comm": comm,
+        "interpreter": interpreter,
+        "script": script,
+        "script_sha256": script_sha256,
+        "ancestors": ancestors,
+    })
 }
 
 fn handle_exec(
@@ -418,6 +443,8 @@ fn handle_exec(
         }
     }
 
+    // After the upsert above, so an agent's own exec is its session.
+    let agent = agent_session::agent_for(table, pid);
     let mut event = serde_json::json!({
         "ts": spool::now_ts(),
         "source": "linux-ebpf",
@@ -448,26 +475,24 @@ fn handle_exec(
     if exe_missing {
         event["exe_missing"] = Value::Bool(true);
     }
+    agent_session::stamp(&mut event, agent);
     spool::try_send(tx, event);
 
     if let Some((script_path, script_hash)) = script {
         log::debug!("script exec pid={pid:?} interpreter={comm} script={script_path}");
-        spool::try_send(
-            tx,
-            serde_json::json!({
-                "ts": spool::now_ts(),
-                "source": "linux-ebpf",
-                "source_seq": spool::next_sequence(),
-                "kind": "script",
-                "pid": pid,
-                "uid": uid,
-                "comm": comm,
-                "interpreter": exe,
-                "script": script_path,
-                "script_sha256": script_hash,
-                "ancestors": ancestors,
-            }),
-        );
+        spool::try_send(tx, {
+            let mut event = script_event(
+                pid,
+                uid,
+                &comm,
+                exe.as_deref(),
+                &script_path,
+                script_hash.as_deref(),
+                &ancestors,
+            );
+            agent_session::stamp(&mut event, agent);
+            event
+        });
     }
 
     if !killed.is_empty() {
@@ -509,11 +534,18 @@ fn handle_fork(ev: ForkEvent, tx: &Sender<Value>, table: &Arc<Mutex<ProcTable>>)
     } else {
         None
     };
-    if let (Some(start_time), Some(info)) = (child_start, crate::proctree::observe(ev.child_pid)) {
-        table
-            .lock()
-            .unwrap()
-            .upsert(ev.child_pid, ProcInfo { start_time, ..info });
+    {
+        let mut t = table.lock().unwrap();
+        // The fork reports the parent's current name: an agent that renamed
+        // itself after exec (node's process.title) is recognized from here.
+        if let Some(parent) = parent_pid {
+            t.note_comm(parent, &cstr(&ev.parent_comm));
+        }
+        if let (Some(start_time), Some(info)) =
+            (child_start, crate::proctree::observe(ev.child_pid))
+        {
+            t.upsert(ev.child_pid, ProcInfo { start_time, ..info });
+        }
     }
     spool::try_send(
         tx,
@@ -700,7 +732,12 @@ pub fn is_doh_suspect(daddr: &str, dport: u16, extra: &[String]) -> bool {
     BUILTIN_DOH_RESOLVERS.contains(&daddr) || extra.iter().any(|r| r == daddr)
 }
 
-fn handle_connect(ev: ConnectEvent, rules: &Rules, tx: &Sender<Value>) {
+fn handle_connect(
+    ev: ConnectEvent,
+    rules: &Rules,
+    tx: &Sender<Value>,
+    table: &Arc<Mutex<ProcTable>>,
+) {
     let saddr = std::net::Ipv4Addr::from(ev.saddr.to_le_bytes());
     let daddr = std::net::Ipv4Addr::from(ev.daddr.to_le_bytes());
     let doh = is_doh_suspect(&daddr.to_string(), ev.dport, &rules.doh_resolvers);
@@ -728,6 +765,8 @@ fn handle_connect(ev: ConnectEvent, rules: &Rules, tx: &Sender<Value>) {
     if doh {
         event["doh_suspect"] = Value::Bool(true);
     }
+    let pid = (ev.pid_ns_valid != 0).then_some(ev.pid);
+    agent_session::stamp(&mut event, agent_session::agent_for(table, pid));
     spool::try_send(tx, event);
 }
 
@@ -804,7 +843,12 @@ fn handle_security(ev: SecurityEvent, tx: &Sender<Value>, throttle: &mut TokenBu
     );
 }
 
-fn handle_socket(ev: SocketEvent, rules: &Rules, tx: &Sender<Value>) {
+fn handle_socket(
+    ev: SocketEvent,
+    rules: &Rules,
+    tx: &Sender<Value>,
+    table: &Arc<Mutex<ProcTable>>,
+) {
     let pid = (ev.pid_ns_valid != 0).then_some(ev.pid);
     let cgroup = pid.and_then(proc_cgroup);
     let container_id = cgroup.as_deref().and_then(container_id_from_cgroup);
@@ -853,6 +897,10 @@ fn handle_socket(ev: SocketEvent, rules: &Rules, tx: &Sender<Value>) {
     });
     if doh {
         event["doh_suspect"] = Value::Bool(true);
+    }
+    // Connections only: other state changes of the socket follow from it.
+    if kind == "connect" {
+        agent_session::stamp(&mut event, agent_session::agent_for(table, pid));
     }
     spool::try_send(tx, event);
 }
@@ -1023,7 +1071,7 @@ pub fn proc_cgroup(pid: u32) -> Option<String> {
 /// Best-effort container identity from a cgroup leaf. We only return a
 /// hexadecimal leaf of a conventional runtime length, avoiding guesses from
 /// arbitrary cgroup names.
-fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
+pub(crate) fn container_id_from_cgroup(cgroup: &str) -> Option<String> {
     cgroup
         .split('/')
         .rev()
@@ -1052,6 +1100,64 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn script_events_serialize_the_sha256_without_a_script_body() {
+        let event = script_event(
+            Some(42),
+            Some(501),
+            "python3",
+            Some("/usr/bin/python3"),
+            "/tmp/job.py",
+            Some("abc123"),
+            &[],
+        );
+        let fields: std::collections::BTreeSet<&str> = event
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "ancestors",
+                "comm",
+                "interpreter",
+                "kind",
+                "pid",
+                "script",
+                "script_sha256",
+                "source",
+                "source_seq",
+                "ts",
+                "uid",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(event["script"], "/tmp/job.py");
+        assert_eq!(event["script_sha256"], "abc123");
+    }
+
+    #[test]
+    fn a_script_an_agent_ran_adds_only_the_agent_and_its_session() {
+        let plain = script_event(None, None, "sh", None, "/tmp/x.sh", None, &[]);
+        let agent = crate::proctree::AgentProcess {
+            client: "codex",
+            pid: 7,
+            start_time: 99,
+        };
+        let mut stamped = script_event(None, None, "sh", None, "/tmp/x.sh", None, &[]);
+        agent_session::stamp(&mut stamped, Some(agent));
+        let keys = |v: &Value| -> std::collections::BTreeSet<String> {
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+        let added: Vec<String> = keys(&stamped).difference(&keys(&plain)).cloned().collect();
+        assert_eq!(added, ["agent", "agent_session"]);
+        assert_eq!(stamped["agent"], "codex");
+        assert_eq!(stamped["agent_session"], spool::process_key(7, 99));
+    }
 
     #[test]
     fn socket_addresses_render_both_families() {

@@ -143,26 +143,62 @@ pub fn read_mode(rules_path: &Path) -> Mode {
     }
 }
 
+const MAX_PROCESS_ENTRIES: usize = 4096;
+const MAX_COMM_BYTES: u64 = 64;
+const MAX_CMDLINE_BYTES: u64 = 64 * 1024;
+
+fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let file = open_no_follow(path)?;
+    let mut body = Vec::new();
+    file.take(limit + 1).read_to_end(&mut body)?;
+    if body.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{} exceeds the read limit", path.display()),
+        ));
+    }
+    Ok(body)
+}
+
+fn merlin_process(process: &Path, read_cmdline: impl FnOnce() -> Option<Vec<u8>>) -> bool {
+    let merlin_executable = read_bounded(&process.join("comm"), MAX_COMM_BYTES)
+        .is_ok_and(|comm| comm == b"merlin" || comm == b"merlin\n")
+        || std::fs::read_link(process.join("exe")).is_ok_and(|exe| {
+            exe.file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("merlin"))
+        });
+    if !merlin_executable {
+        return false;
+    }
+    let Some(cmdline) = read_cmdline() else {
+        return false;
+    };
+    let mut args = cmdline.split(|byte| *byte == 0);
+    let program = args
+        .next()
+        .and_then(|argv0| argv0.rsplit(|b| *b == b'/').next());
+    program == Some(b"merlin") && args.next() == Some(b"run")
+}
+
 /// Whether a `merlin run` process is in the process table; None when the
-/// table cannot be read.
+/// table cannot be read. Only a process whose comm or exe names Merlin has its
+/// bounded command line inspected.
 pub fn sensor_running(proc_root: &Path) -> Option<bool> {
     let me = std::process::id().to_string();
-    let running = std::fs::read_dir(proc_root).ok()?.flatten().any(|entry| {
-        let name = entry.file_name();
-        if name.to_string_lossy() == me
-            || !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit())
-        {
-            return false;
-        }
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            return false;
-        };
-        let mut args = cmdline.split(|byte| *byte == 0);
-        let program = args
-            .next()
-            .and_then(|argv0| argv0.rsplit(|b| *b == b'/').next());
-        program == Some(b"merlin") && args.next() == Some(b"run")
-    });
+    let running = std::fs::read_dir(proc_root)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name != me && name.bytes().all(|b| b.is_ascii_digit())
+        })
+        .take(MAX_PROCESS_ENTRIES)
+        .any(|entry| {
+            merlin_process(&entry.path(), || {
+                read_bounded(&entry.path().join("cmdline"), MAX_CMDLINE_BYTES).ok()
+            })
+        });
     Some(running)
 }
 
@@ -335,27 +371,64 @@ mod tests {
     }
 
     #[test]
-    fn mode_and_sensor_come_from_the_rules_and_the_process_table() {
+    fn sensor_matches_comm_or_exe_before_reading_only_merlin_cmdline() {
         let dir = dir("mode");
         assert!(matches!(
             read_mode(&dir.join("rules.yaml")),
             Mode::Unavailable(_)
         ));
         let proc_root = dir.join("proc");
-        std::fs::create_dir_all(proc_root.join("42")).unwrap();
+        let unrelated = proc_root.join("42");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("comm"), "bash\n").unwrap();
+        std::os::unix::fs::symlink("/usr/bin/bash", unrelated.join("exe")).unwrap();
         std::fs::write(
-            proc_root.join("42/cmdline"),
+            unrelated.join("cmdline"),
+            b"/usr/bin/merlin\0run\0unrelated-secret\0",
+        )
+        .unwrap();
+        assert!(!merlin_process(&unrelated, || {
+            panic!("an unrelated process command line was read")
+        }));
+        assert_eq!(sensor_running(&proc_root), Some(false));
+
+        let by_comm = proc_root.join("43");
+        std::fs::create_dir_all(&by_comm).unwrap();
+        std::fs::write(by_comm.join("comm"), "merlin\n").unwrap();
+        std::fs::write(
+            by_comm.join("cmdline"),
             b"/usr/local/libexec/merlin/merlin\0screen\0",
         )
         .unwrap();
         assert_eq!(sensor_running(&proc_root), Some(false));
-        std::fs::create_dir_all(proc_root.join("43")).unwrap();
         std::fs::write(
-            proc_root.join("43/cmdline"),
+            by_comm.join("cmdline"),
             b"/usr/local/libexec/merlin/merlin\0run\0--rules\0",
         )
         .unwrap();
         assert_eq!(sensor_running(&proc_root), Some(true));
+
+        std::fs::write(by_comm.join("comm"), "renamed\n").unwrap();
+        std::os::unix::fs::symlink("/usr/local/libexec/merlin/merlin", by_comm.join("exe"))
+            .unwrap();
+        assert_eq!(sensor_running(&proc_root), Some(true));
         assert_eq!(sensor_running(&dir.join("no-proc")), None);
+    }
+
+    #[test]
+    fn sensor_rejects_spoofed_argv_and_oversized_matching_cmdline() {
+        let dir = dir("cmdline-bound");
+        let proc_root = dir.join("proc");
+        let process = proc_root.join("43");
+        std::fs::create_dir_all(&process).unwrap();
+        std::fs::write(process.join("comm"), "merlin\n").unwrap();
+        std::fs::write(process.join("cmdline"), b"/bin/bash\0run\0").unwrap();
+        assert_eq!(sensor_running(&proc_root), Some(false));
+
+        let mut oversized = b"/usr/bin/merlin\0run\0".to_vec();
+        oversized.resize(MAX_CMDLINE_BYTES as usize + 1, b'x');
+        std::fs::write(process.join("cmdline"), oversized).unwrap();
+        assert_eq!(sensor_running(&proc_root), Some(false));
+        assert!(read_bounded(&process.join("cmdline"), MAX_CMDLINE_BYTES).is_err());
     }
 }

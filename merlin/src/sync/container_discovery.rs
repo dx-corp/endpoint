@@ -19,8 +19,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AGENT_SYSTEM_BINS, DeviceAgentAsset, DeviceAgentCLI, DeviceContainer, DeviceMCPServer,
-    agent_homes, collect_agent_discovery_from,
+    AGENT_SYSTEM_BINS, DeviceAgentAsset, DeviceAgentCLI, DeviceAiLocationCoverage, DeviceContainer,
+    DeviceMCPServer, MAX_COVERAGE, add_coverage, agent_homes, collect_agent_discovery_from,
+    collect_system_agent_configs,
 };
 
 /// Containers scanned per inventory, in collector order.
@@ -39,6 +40,90 @@ pub(super) struct RootScan {
     pub(super) clis: Vec<DeviceAgentCLI>,
     pub(super) mcp_servers: Vec<DeviceMCPServer>,
     pub(super) agent_assets: Vec<DeviceAgentAsset>,
+    /// Declared files in this root that were not read (too large).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) coverage: Vec<DeviceAiLocationCoverage>,
+}
+
+/// Containers from any runtime, found through their processes: podman
+/// (rootful and rootless), containerd, CRI-O, and Docker without readable
+/// metadata. Each container id in a process's cgroup is one container; its
+/// init process is the lowest pid in it that has its own root. A container
+/// Docker's metadata already listed gains its init pid if it had none.
+pub(super) fn add_running_process_containers(containers: &mut Vec<DeviceContainer>) {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let mut found: std::collections::BTreeMap<String, (u32, &'static str)> =
+        std::collections::BTreeMap::new();
+    for pid in entries
+        .take(1 << 16)
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        let Some((id, runtime)) = crate::telemetry::proc_cgroup(pid)
+            .as_deref()
+            .and_then(container_from_cgroup)
+        else {
+            continue;
+        };
+        if found.get(&id).is_some_and(|(known, _)| *known < pid) || !has_own_root(pid) {
+            continue;
+        }
+        found.insert(id, (pid, runtime));
+    }
+    for (id, (pid, runtime)) in found {
+        if let Some(container) = containers.iter_mut().find(|container| container.id == id) {
+            if container.init_pid == 0 {
+                container.init_pid = pid;
+            }
+        } else if containers.len() < 128 {
+            containers.push(DeviceContainer {
+                id,
+                name: String::new(),
+                image: String::new(),
+                state: "running".into(),
+                runtime: runtime.into(),
+                init_pid: pid,
+            });
+        }
+    }
+}
+
+/// A container id and its runtime from a process's cgroup path, using the
+/// telemetry collector's id rule. Podman's conmon monitor runs outside the
+/// container and is not one.
+pub(super) fn container_from_cgroup(cgroup: &str) -> Option<(String, &'static str)> {
+    let leaf = cgroup
+        .rsplit('/')
+        .find(|part| !part.is_empty() && *part != "container")?;
+    if leaf.starts_with("libpod-conmon-") {
+        return None;
+    }
+    let id = crate::telemetry::container_id_from_cgroup(cgroup)?;
+    let runtime = [
+        ("docker", "docker"),
+        ("libpod", "podman"),
+        ("cri-containerd", "containerd"),
+        ("crio", "cri-o"),
+    ]
+    .iter()
+    .find(|(prefix, _)| {
+        cgroup.contains(&format!("{prefix}-{id}")) || cgroup.contains(&format!("/{prefix}/{id}"))
+    })
+    .map_or("container", |(_, runtime)| runtime);
+    Some((id, runtime))
+}
+
+fn has_own_root(pid: u32) -> bool {
+    match (
+        std::fs::metadata(format!("/proc/{pid}/root")),
+        std::fs::metadata("/"),
+    ) {
+        (Ok(theirs), Ok(ours)) => theirs.dev() != ours.dev() || theirs.ino() != ours.ino(),
+        _ => false,
+    }
 }
 
 /// `container:<image>` with an image reference the server accepts, else
@@ -73,12 +158,9 @@ fn valid_root_location(location: &str) -> bool {
     })
 }
 
-pub(super) fn collect_container_agent_discovery(
-    containers: &[DeviceContainer],
-) -> (Vec<DeviceMCPServer>, Vec<DeviceAgentAsset>) {
+pub(super) fn collect_container_agent_discovery(containers: &[DeviceContainer]) -> RootScan {
     let deadline = Instant::now() + ALL_CONTAINERS_TIMEOUT;
-    let mut servers = Vec::new();
-    let mut assets = Vec::new();
+    let mut found = RootScan::default();
     for container in containers
         .iter()
         .filter(|container| container.init_pid > 1)
@@ -96,13 +178,17 @@ pub(super) fn collect_container_agent_discovery(
         let root = format!("/proc/{pid}/root");
         match scan_root_in_child(Path::new(&root), &container_location(&container.image)) {
             Ok(scan) => {
-                servers.extend(scan.mcp_servers);
-                assets.extend(scan.agent_assets);
+                found.clis.extend(scan.clis);
+                found.mcp_servers.extend(scan.mcp_servers);
+                found.agent_assets.extend(scan.agent_assets);
+                for entry in scan.coverage {
+                    add_coverage(&mut found.coverage, entry);
+                }
             }
             Err(error) => log::debug!("sync: container AI scan skipped: {error:#}"),
         }
     }
-    (servers, assets)
+    found
 }
 
 fn in_container_cgroup(pid: u32, id: &str) -> bool {
@@ -175,14 +261,22 @@ fn scan_root_in_child(root: &Path, location: &str) -> Result<RootScan> {
 }
 
 fn tagged(mut scan: RootScan, location: &str) -> RootScan {
-    scan.clis.truncate(32);
+    scan.clis.truncate(super::MAX_AGENT_CLIS);
     scan.mcp_servers.truncate(MAX_ROOT_FINDINGS);
     scan.agent_assets.truncate(MAX_ROOT_FINDINGS);
+    scan.coverage.truncate(MAX_COVERAGE);
+    for entry in &mut scan.coverage {
+        entry.location = location.to_string();
+    }
+    for cli in &mut scan.clis {
+        cli.location = location.to_string();
+    }
     for server in &mut scan.mcp_servers {
         server.location = location.to_string();
     }
     for asset in &mut scan.agent_assets {
         asset.location = location.to_string();
+        crate::ai_discovery::keep_valid_content_facts(asset);
     }
     scan
 }
@@ -202,16 +296,13 @@ pub(crate) fn scan_ai_locations_in_root(root: &Path, location: &str) -> Result<(
         return Err(std::io::Error::last_os_error()).context("chroot into the scanned root");
     }
     std::env::set_current_dir("/").context("entering the scanned root")?;
-    let (clis, mcp_servers, agent_assets) =
-        collect_agent_discovery_from(&agent_homes(), AGENT_SYSTEM_BINS);
-    let scan = tagged(
-        RootScan {
-            clis,
-            mcp_servers,
-            agent_assets,
-        },
-        location,
-    );
+    let mut scan = collect_agent_discovery_from(&agent_homes(), AGENT_SYSTEM_BINS);
+    let (system_servers, system_assets) = collect_system_agent_configs(Path::new("/"));
+    scan.mcp_servers.extend(system_servers);
+    scan.mcp_servers.truncate(128);
+    scan.agent_assets.extend(system_assets);
+    scan.agent_assets.truncate(128);
+    let scan = tagged(scan, location);
     println!("{}", serde_json::to_string(&scan)?);
     Ok(())
 }
@@ -265,17 +356,30 @@ mod tests {
     #[test]
     fn a_child_result_is_capped_and_carries_only_the_requested_location() {
         let server = DeviceMCPServer {
+            package: String::new(),
+            host: String::new(),
             location: "host".into(),
             client: "claude".into(),
             name: "github".into(),
             source: ".claude.json".into(),
             transport: "stdio".into(),
         };
+        let cli = DeviceAgentCLI {
+            name: "claude".into(),
+            location: "host".into(),
+        };
         let scan = tagged(
             RootScan {
-                clis: Vec::new(),
+                clis: vec![cli],
                 mcp_servers: vec![server; MAX_ROOT_FINDINGS + 1],
                 agent_assets: Vec::new(),
+                coverage: vec![DeviceAiLocationCoverage {
+                    location: String::new(),
+                    source: ".claude.json".into(),
+                    state: "not_scanned".into(),
+                    reason: "too_large".into(),
+                    observed_at: 0,
+                }],
             },
             "container:nginx",
         );
@@ -285,5 +389,59 @@ mod tests {
                 .iter()
                 .all(|s| s.location == "container:nginx")
         );
+        assert!(scan.clis.iter().all(|c| c.location == "container:nginx"));
+        assert!(
+            scan.coverage
+                .iter()
+                .all(|c| c.location == "container:nginx")
+        );
+    }
+
+    #[test]
+    fn containers_of_every_runtime_are_named_from_their_cgroup() {
+        let id = "a".repeat(64);
+        for (cgroup, runtime) in [
+            (format!("/system.slice/docker-{id}.scope"), "docker"),
+            (format!("/docker/{id}"), "docker"),
+            (
+                format!("/machine.slice/libpod-{id}.scope/container"),
+                "podman",
+            ),
+            (
+                format!(
+                    "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-{id}.scope/container"
+                ),
+                "podman",
+            ),
+            (
+                format!(
+                    "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1b2c3d4e_5f60_7182_93a4_b5c6d7e8f901.slice/cri-containerd-{id}.scope"
+                ),
+                "containerd",
+            ),
+            (
+                format!("/kubepods.slice/kubepods-pod1.slice/crio-{id}.scope"),
+                "cri-o",
+            ),
+            (
+                format!("/kubepods/burstable/pod1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901/{id}"),
+                "container",
+            ),
+        ] {
+            assert_eq!(
+                container_from_cgroup(&cgroup),
+                Some((id.clone(), runtime)),
+                "{cgroup}"
+            );
+        }
+        // Podman's monitor runs on the host, and host services are no container.
+        for cgroup in [
+            format!("/machine.slice/libpod-conmon-{id}.scope"),
+            "/system.slice/sshd.service".to_string(),
+            "/user.slice/user-1000.slice/session-3.scope".to_string(),
+            "/".to_string(),
+        ] {
+            assert_eq!(container_from_cgroup(&cgroup), None, "{cgroup}");
+        }
     }
 }

@@ -30,8 +30,26 @@ for arch in $ARCHES; do
 done
 
 printf 'Building Deixic Endpoint for: %s\n' "$ARCHES"
+# A production package carries its release's collection manifest version; the
+# release is the only writer (main carries 0, a development build). The
+# checkout is put back once the collector is compiled, so nothing is committed.
+MANIFEST_SWIFT=$MACOS_DIR/Sources/MerlinMacOS/Manifest.swift
+MANIFEST_TOML=$REPO_DIR/collection-manifest.toml
+if [ "$MODE" = "production" ]; then
+  MANIFEST_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/merlin-manifest.XXXXXX")
+  cp "$MANIFEST_SWIFT" "$MANIFEST_BACKUP/Manifest.swift"
+  cp "$MANIFEST_TOML" "$MANIFEST_BACKUP/collection-manifest.toml"
+  trap 'cp "$MANIFEST_BACKUP/Manifest.swift" "$MANIFEST_SWIFT"; cp "$MANIFEST_BACKUP/collection-manifest.toml" "$MANIFEST_TOML"; rm -rf "$MANIFEST_BACKUP"' EXIT HUP INT TERM
+  "$REPO_DIR/packaging/stamp-manifest-version.sh" "$VERSION" "$REPO_DIR"
+fi
 (cd "$MACOS_DIR" && swift build -c release "$@")
 BIN_DIR=$(cd "$MACOS_DIR" && swift build -c release "$@" --show-bin-path)
+if [ "$MODE" = "production" ]; then
+  cp "$MANIFEST_BACKUP/Manifest.swift" "$MANIFEST_SWIFT"
+  cp "$MANIFEST_BACKUP/collection-manifest.toml" "$MANIFEST_TOML"
+  rm -rf "$MANIFEST_BACKUP"
+  trap - EXIT HUP INT TERM
+fi
 SOURCE_BIN=$BIN_DIR/MerlinMacOS
 [ -x "$SOURCE_BIN" ] || { printf 'built binary not found: %s\n' "$SOURCE_BIN" >&2; exit 70; }
 

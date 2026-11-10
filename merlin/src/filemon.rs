@@ -45,6 +45,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
+use crate::agent_session;
 use crate::proctree::ProcTable;
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::{spool, telemetry};
@@ -531,18 +532,17 @@ fn emit(
         .map(|r| r.name.clone())
         .collect();
 
-    spool::try_send(
-        tx,
-        serde_json::json!({
-            "ts": spool::now_ts(),
-            "kind": "file",
-            "path": path,
-            "op": op,
-            "pid": pid_u32,
-            "comm": comm,
-            "matched_rules": matched,
-        }),
-    );
+    let mut event = serde_json::json!({
+        "ts": spool::now_ts(),
+        "kind": "file",
+        "path": path,
+        "op": op,
+        "pid": pid_u32,
+        "comm": comm,
+        "matched_rules": matched,
+    });
+    agent_session::stamp(&mut event, agent_session::agent_for(table, pid_u32));
+    spool::try_send(tx, event);
 }
 
 #[cfg(test)]

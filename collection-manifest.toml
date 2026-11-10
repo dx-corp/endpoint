@@ -1,0 +1,481 @@
+# The collection manifest of the Deixic Endpoint agent: what it collects, what
+# it never collects, where it keeps things on the computer and how long the
+# server keeps them. This file is the one declaration. The Linux agent compiles
+# it in (merlin/build.rs) and prints it with `merlin manifest`; its tests tie
+# every collector, record and never-claim to the code. The local screen and
+# the transparency page render from it, so what people read is what the agent
+# does.
+
+# Set by the release; pull requests never change it. Main holds 0, a
+# development build; packaging/stamp-manifest-version.sh writes the release's
+# number here and into the macOS Manifest.swift before a release build.
+manifest_version = 0
+
+# The system journal's share; per-event details are debug level and off by default.
+journal = "The system journal (journalctl -u merlin) carries health and errors only: starts, sensor attach, upload results, enforcement actions by rule name. Per-event details are debug level and off by default."
+
+# Inventory record kinds, as the check-in's `inventory` object names them
+# (field names of DeviceInventory in merlin/src/sync.rs; a test checks this).
+inventory_fields = [
+  "collected_at",
+  "package_manager",
+  "cloud_provider",
+  "cloud_instance_id",
+  "cloud_region",
+  "packages",
+  "services",
+  "users",
+  "groups",
+  "listening_ports",
+  "containers",
+  "processes",
+  "fim",
+  "sca",
+  "vulnerabilities",
+  "agent_clis",
+  "mcp_servers",
+  "agent_assets",
+  "ai_location_coverage",
+  "collection_source",
+]
+
+# Every telemetry event kind a Linux monitor writes to the spool (a test
+# checks the sources against this list).
+event_kinds = [
+  "exec",
+  "script",
+  "fork",
+  "exit",
+  "task_exit",
+  "kill",
+  "deny",
+  "connect",
+  "socket",
+  "dns",
+  "netif",
+  "file",
+  "memfd",
+  "iouring",
+  "iouring_op",
+  "cred",
+  "security",
+  "bpfcheck",
+  "health",
+]
+
+# Where the ai_tools collector looks, one row per location. The Linux agent
+# compiles this list in and walks it in this order; the Windows and macOS
+# collectors and the server's accepted source labels are tested against it.
+#
+# client: the AI client the finding belongs to.
+# kind: cli (an executable name looked up in the fixed bin directories),
+#   config, skill, agent, plugin or extension; or model, a local model cache
+#   the posture check model_files_unsafe_pickle reads (Linux only; not AI tool
+#   inventory, and it sends no source label).
+# path: relative to each user's home (scope user) or to each visited project
+#   directory (scope project), or an absolute path on the computer (scope
+#   system). The source label a finding carries is this path, with "project/"
+#   in front for project scope and "system" in front for system scope.
+# format: how the file or directory is read.
+#   executable        a regular executable file with this name; a symlink to
+#                     one counts (only the name is reported)
+#   json              a JSON file; MCP servers are the entries under mcp_keys;
+#                     plugins_key names an object of plugin name -> true
+#   toml              a TOML file; MCP servers are its [mcp_servers.<name>] tables
+#   codex-toml        toml, opened with no symlink anywhere below the home, and
+#                     plugins.<name> tables with enabled = true are plugins
+#   skill-dir         each child directory that holds a regular SKILL.md
+#   md                each regular *.md file, named by its stem
+#   js-ts             each regular *.js or *.ts file, named by its stem
+#   plugin-dir        each child directory; mcp_files inside it are read for
+#                     MCP servers (label <path>/*/<file>)
+#   gemini-extension  each child directory with a regular gemini-extension.json,
+#                     read for MCP servers (label <path>/*/gemini-extension.json)
+#   cursor-agent      md, opened with no symlink anywhere below the home and at
+#                     most 64 KiB
+#   cursor-plugin     each child directory whose plugin.json or
+#                     .cursor-plugin/plugin.json names it, opened with no
+#                     symlink anywhere below the home
+#   claude-plugin-cache Claude Code's plugin cache, <marketplace>/<plugin>/<version>/:
+#                     each plugin directory is a plugin; mcp_files in a version
+#                     are read for MCP servers (label <path>/*/<file>), as is
+#                     an inline mcpServers map in .claude-plugin/plugin.json
+#                     (label <path>/*/.claude-plugin/plugin.json), and each
+#                     skills/<name> with a regular SKILL.md is a skill named
+#                     <plugin>:<name> (label <path>/*/skills); a version marked
+#                     .orphaned_at is skipped; opened with no symlink anywhere
+#                     below the home, at most 256 directories per scan
+#   hf-hub            Hugging Face's hub cache: each <repo>/snapshots/<revision>
+#                     entry, a link of the form ../../blobs/<hex> resolved
+#                     lexically to the repo's blobs directory and opened with no
+#                     symlink anywhere below the home; pickle files are walked
+#                     opcode by opcode, never loaded
+#   model-dir         each pickle file below the directory, opened with no
+#                     symlink anywhere below the home, walked the same way
+#   editor-extensions each child directory named <publisher>.<name>-<version>
+#                     whose <publisher>.<name> is a declared vscode-marketplace
+#                     ai_extensions id, compared without case as the editor
+#                     does, is that extension; no other extension is named
+#   chromium-extensions each profile directory (Default or Profile <n>, at most
+#                     16) is read for Extensions/<id> directories whose id is
+#                     a declared chrome-web-store ai_extensions id; no other
+#                     extension is named
+# scope: user, project or system. A system path is read once per computer
+#   (and once per container root), opened with no symlink anywhere on it;
+#   system rows are json configs and name linux or macos platforms.
+# platforms: where the location applies; all three when absent.
+# max_bytes: a user config row's read limit in bytes, 64 KiB when absent. A
+#   file over its limit is not read; the inventory's ai_location_coverage
+#   lists it (its source label) as not_scanned with reason too_large.
+ai_locations = [
+  { client = "codex", kind = "cli", path = "codex", format = "executable", scope = "user" },
+  { client = "claude", kind = "cli", path = "claude", format = "executable", scope = "user" },
+  { client = "cursor", kind = "cli", path = "cursor", format = "executable", scope = "user" },
+  { client = "gemini", kind = "cli", path = "gemini", format = "executable", scope = "user" },
+  { client = "opencode", kind = "cli", path = "opencode", format = "executable", scope = "user" },
+  { client = "aider", kind = "cli", path = "aider", format = "executable", scope = "user" },
+  { client = "maestro", kind = "cli", path = "maestro", format = "executable", scope = "user" },
+  { client = "amp", kind = "cli", path = "amp", format = "executable", scope = "user" },
+  { client = "goose", kind = "cli", path = "goose", format = "executable", scope = "user" },
+  { client = "qwen", kind = "cli", path = "qwen", format = "executable", scope = "user" },
+  { client = "pi", kind = "cli", path = "pi", format = "executable", scope = "user" },
+
+  { client = "cursor", kind = "agent", path = ".cursor/agents", format = "cursor-agent", scope = "user" },
+  { client = "cursor", kind = "plugin", path = ".cursor/plugins/local", format = "cursor-plugin", scope = "user" },
+  { client = "agents", kind = "skill", path = ".agents/skills", format = "skill-dir", scope = "user" },
+  { client = "codex", kind = "skill", path = ".codex/skills", format = "skill-dir", scope = "user" },
+  { client = "claude", kind = "skill", path = ".claude/skills", format = "skill-dir", scope = "user" },
+  { client = "claude", kind = "agent", path = ".claude/agents", format = "md", scope = "user" },
+  { client = "gemini", kind = "skill", path = ".gemini/skills", format = "skill-dir", scope = "user" },
+  { client = "gemini", kind = "extension", path = ".gemini/extensions", format = "gemini-extension", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "opencode", kind = "skill", path = ".config/opencode/skills", format = "skill-dir", scope = "user" },
+  { client = "opencode", kind = "plugin", path = ".config/opencode/plugins", format = "js-ts", scope = "user" },
+  { client = "opencode", kind = "agent", path = ".config/opencode/agents", format = "md", scope = "user" },
+  { client = "amp", kind = "skill", path = ".config/amp/skills", format = "skill-dir", scope = "user" },
+  { client = "qwen", kind = "skill", path = ".qwen/skills", format = "skill-dir", scope = "user" },
+  { client = "pi", kind = "skill", path = ".pi/agent/skills", format = "skill-dir", scope = "user" },
+  { client = "pi", kind = "extension", path = ".pi/agent/extensions", format = "js-ts", scope = "user" },
+  { client = "maestro", kind = "skill", path = ".composer/skills", format = "skill-dir", scope = "user" },
+  { client = "maestro", kind = "plugin", path = ".maestro/plugins", format = "plugin-dir", scope = "user", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "maestro", kind = "plugin", path = ".composer/plugins", format = "plugin-dir", scope = "user", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "claude", kind = "plugin", path = ".claude/plugins/cache", format = "claude-plugin-cache", scope = "user", platforms = ["linux", "macos"], mcp_keys = ["mcpServers", "servers"], mcp_files = [".mcp.json"] },
+  { client = "vscode", kind = "extension", path = ".vscode/extensions", format = "editor-extensions", scope = "user" },
+  { client = "chrome", kind = "extension", path = ".config/google-chrome", format = "chromium-extensions", scope = "user", platforms = ["linux"] },
+  { client = "chrome", kind = "extension", path = "Library/Application Support/Google/Chrome", format = "chromium-extensions", scope = "user", platforms = ["macos"] },
+  { client = "chrome", kind = "extension", path = "AppData/Local/Google/Chrome/User Data", format = "chromium-extensions", scope = "user", platforms = ["windows"] },
+
+  { client = "claude", kind = "config", path = ".config/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = "Library/Application Support/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = "AppData/Roaming/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = ".claude.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"], max_bytes = 4194304 },
+  { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "gemini", kind = "config", path = ".gemini/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = ".config/Code/User/mcp.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = "Library/Application Support/Code/User/mcp.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = "AppData/Roaming/Code/User/mcp.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "codex-toml", scope = "user" },
+  { client = "opencode", kind = "config", path = ".config/opencode/opencode.json", format = "json", scope = "user", mcp_keys = ["mcp"] },
+  { client = "opencode", kind = "config", path = "AppData/Roaming/opencode/opencode.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcp"] },
+  { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "user", mcp_keys = [], plugins_key = "enabledPlugins" },
+  { client = "amp", kind = "config", path = ".config/amp/settings.json", format = "json", scope = "user", mcp_keys = ["amp.mcpServers"] },
+  { client = "qwen", kind = "config", path = ".qwen/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "pi", kind = "config", path = ".pi/agent/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "maestro", kind = "config", path = ".maestro/config.toml", format = "toml", scope = "user" },
+  { client = "maestro", kind = "config", path = ".composer/config.toml", format = "toml", scope = "user" },
+  { client = "windsurf", kind = "config", path = ".codeium/windsurf/mcp_config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "copilot", kind = "config", path = ".copilot/mcp-config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = ".vscode/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "kiro", kind = "config", path = ".kiro/settings/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "antigravity", kind = "config", path = ".gemini/antigravity/mcp_config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "amazonq", kind = "config", path = ".aws/amazonq/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "amazonq", kind = "config", path = ".aws/amazonq/agents/default.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "windsurf", kind = "skill", path = ".codeium/windsurf/skills", format = "skill-dir", scope = "user" },
+  { client = "copilot", kind = "skill", path = ".copilot/skills", format = "skill-dir", scope = "user" },
+  { client = "cursor", kind = "skill", path = ".cursor/skills", format = "skill-dir", scope = "user" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/skills", format = "skill-dir", scope = "user" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/workspace/skills", format = "skill-dir", scope = "user" },
+  { client = "amp", kind = "skill", path = ".config/agents/skills", format = "skill-dir", scope = "user" },
+
+  { client = "claude", kind = "config", path = "/etc/claude-code/managed-mcp.json", format = "json", scope = "system", platforms = ["linux"], mcp_keys = ["mcpServers"] },
+  { client = "claude", kind = "config", path = "/Library/Application Support/ClaudeCode/managed-mcp.json", format = "json", scope = "system", platforms = ["macos"], mcp_keys = ["mcpServers"] },
+
+  # Model caches: https://huggingface.co/docs/huggingface_hub/guides/manage-cache,
+  # https://docs.ollama.com/faq#where-are-models-stored,
+  # https://lmstudio.ai/docs/app/advanced/import-model
+  { client = "huggingface", kind = "model", path = ".cache/huggingface/hub", format = "hf-hub", scope = "user", platforms = ["linux"] },
+  { client = "ollama", kind = "model", path = ".ollama/models", format = "model-dir", scope = "user", platforms = ["linux"] },
+  { client = "lmstudio", kind = "model", path = ".lmstudio/models", format = "model-dir", scope = "user", platforms = ["linux"] },
+
+  { client = "claude", kind = "config", path = ".mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"], plugins_key = "enabledPlugins" },
+  { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "toml", scope = "project" },
+  { client = "opencode", kind = "config", path = ".opencode/opencode.json", format = "json", scope = "project", mcp_keys = ["mcp"] },
+  { client = "agents", kind = "config", path = ".agents/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "agents", kind = "skill", path = ".agents/skills", format = "skill-dir", scope = "project" },
+  { client = "claude", kind = "skill", path = ".claude/skills", format = "skill-dir", scope = "project" },
+  { client = "claude", kind = "agent", path = ".claude/agents", format = "md", scope = "project" },
+  { client = "codex", kind = "skill", path = ".codex/skills", format = "skill-dir", scope = "project" },
+  { client = "cursor", kind = "skill", path = ".cursor/skills", format = "skill-dir", scope = "project" },
+  { client = "maestro", kind = "plugin", path = ".maestro/plugins", format = "plugin-dir", scope = "project", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "maestro", kind = "plugin", path = ".composer/plugins", format = "plugin-dir", scope = "project", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "copilot", kind = "skill", path = ".github/skills", format = "skill-dir", scope = "project" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/skills", format = "skill-dir", scope = "project" },
+  { client = "amp", kind = "skill", path = ".amp/skills", format = "skill-dir", scope = "project" },
+]
+
+# AI agents by the name their process runs under, for agent session
+# attribution. When a program's process, or its nearest ancestor that is one,
+# runs as an AI agent, its exec, script, connect, dns and file events carry
+# `agent` (the client) and `agent_session` (that agent process's process key,
+# boot id:pid:start time). Every `cli` row of ai_locations counts (its path is
+# the process name); these rows add the names a client runs under that are not
+# its command name. A name matches the kernel's process name (its first 15
+# bytes) or the executable's file name. An agent that runs as a plain
+# interpreter (node, python) under no name of its own is not attributed.
+#
+# client: a client named by ai_locations.
+# name: the process name, a bare file name.
+ai_agent_processes = [
+  { client = "cursor", name = "cursor-agent" },
+  { client = "copilot", name = "copilot" },
+]
+
+# AI editor and browser extensions the editor-extensions and
+# chromium-extensions locations report, by id. Each id was checked on its
+# store page; an installed extension not listed here is never named.
+#
+# store: vscode-marketplace (id <publisher>.<name>; page
+#   https://marketplace.visualstudio.com/items?itemName=<id>) or
+#   chrome-web-store (id of 32 letters a to p; page
+#   https://chromewebstore.google.com/detail/<id>).
+# name, publisher: as the store page shows them.
+ai_extensions = [
+  { store = "vscode-marketplace", id = "Anthropic.claude-code", name = "Claude Code for VS Code", publisher = "Anthropic" },
+  { store = "vscode-marketplace", id = "openai.chatgpt", name = "Codex - OpenAI's coding agent", publisher = "OpenAI" },
+  { store = "vscode-marketplace", id = "GitHub.copilot", name = "GitHub Copilot", publisher = "GitHub" },
+  { store = "vscode-marketplace", id = "GitHub.copilot-chat", name = "GitHub Copilot Chat", publisher = "GitHub" },
+  { store = "vscode-marketplace", id = "saoudrizwan.claude-dev", name = "Cline", publisher = "Cline" },
+  { store = "vscode-marketplace", id = "Continue.continue", name = "Continue - open-source AI code agent", publisher = "Continue" },
+  { store = "vscode-marketplace", id = "Google.geminicodeassist", name = "Gemini Code Assist", publisher = "Google" },
+  { store = "vscode-marketplace", id = "AmazonWebServices.amazon-q-vscode", name = "Amazon Q", publisher = "Amazon Web Services" },
+  { store = "vscode-marketplace", id = "sourcegraph.cody-ai", name = "Cody: AI Code Assistant", publisher = "Sourcegraph" },
+  { store = "vscode-marketplace", id = "kilocode.Kilo-Code", name = "Kilo Code", publisher = "Kilo Code" },
+  { store = "vscode-marketplace", id = "augment.vscode-augment", name = "Augment", publisher = "Augment Computing" },
+  { store = "chrome-web-store", id = "fcoeoabgfenejglbffodgkkbkcdhcgfn", name = "Claude", publisher = "Anthropic" },
+  { store = "chrome-web-store", id = "ejcfepkfckglbgocfkanmcdngdijcgld", name = "ChatGPT search", publisher = "OpenAI" },
+]
+
+# Rules run, on the computer, on the content of each AI skill (its SKILL.md),
+# custom agent file and plugin manifest the ai_tools collector finds, with
+# YARA-X. A finding carries the file's SHA-256 and the ids of the rules it
+# matched, never the content. A test compiles every rule file and checks that
+# the rules in it are exactly the ids declared for it here.
+#
+# id: the rule name, as findings report it.
+# engine: yara.
+# file: the rule file, under rules/ai/.
+#
+# skill-scanner/: the YARA rules of Cisco AI Defense skill-scanner
+# (https://github.com/cisco-ai-defense/skill-scanner, Apache-2.0; LICENSE and
+# README.md beside them), unchanged. Its LLM, Cisco API, signature and Python
+# analyzers are not run.
+ai_content_rules = [
+  { id = "autonomy_abuse_generic", engine = "yara", file = "skill-scanner/autonomy_abuse_generic.yara" },
+  { id = "SUSP_Lnx_EncodedShell_DecodeExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Win_EncodedPowerShell_Exec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RawIP_DownloadExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_CredentialExfil_Chain_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_EncodedArchive_Exec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_Cryptomining_ConfigExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_Cron_C2_Persistence_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RemoteMiner_AcquireExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RemoteConfig_StageExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "capability_inflation_generic", engine = "yara", file = "skill-scanner/capability_inflation_generic.yara" },
+  { id = "code_execution_generic", engine = "yara", file = "skill-scanner/code_execution_generic.yara" },
+  { id = "coercive_injection_generic", engine = "yara", file = "skill-scanner/coercive_injection_generic.yara" },
+  { id = "command_injection_generic", engine = "yara", file = "skill-scanner/command_injection_generic.yara" },
+  { id = "credential_harvesting_generic", engine = "yara", file = "skill-scanner/credential_harvesting_generic.yara" },
+  { id = "embedded_elf_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_pe_executable", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_macho_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_shebang_in_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "indirect_prompt_injection_generic", engine = "yara", file = "skill-scanner/indirect_prompt_injection_generic.yara" },
+  { id = "jailbreak_generic", engine = "yara", file = "skill-scanner/jailbreak_generic.yara" },
+  { id = "prompt_injection_generic", engine = "yara", file = "skill-scanner/prompt_injection_generic.yara" },
+  { id = "prompt_injection_unicode_steganography", engine = "yara", file = "skill-scanner/prompt_injection_unicode_steganography.yara" },
+  { id = "script_injection_generic", engine = "yara", file = "skill-scanner/script_injection_generic.yara" },
+  { id = "sql_injection_generic", engine = "yara", file = "skill-scanner/sql_injection_generic.yara" },
+  { id = "system_manipulation_generic", engine = "yara", file = "skill-scanner/system_manipulation_generic.yara" },
+  { id = "tool_chaining_abuse_generic", engine = "yara", file = "skill-scanner/tool_chaining_abuse_generic.yara" },
+]
+
+# group: checks, inventory, ai_tools, security_events or agent.
+# records: the check-in sections or event kinds the collector produces.
+# capabilities: static build capabilities that declare supported collectors.
+# retention: while_enrolled (the device record: current state is replaced on
+# check-in, and retirement/disposal leaves a device tombstone) or
+# telemetry_window (raw events, kept for the server's telemetry window).
+[[collectors]]
+id = "posture_checks"
+group = "checks"
+title = "Security settings"
+what = "Whether disk encryption, screen lock, OS and automatic updates, firewall, remote access, endpoint protection and a password manager are in place, and whether AI coding agents (Claude Code, Codex, Gemini CLI, Cursor CLI) are set to act without asking, each as pass, fail or unknown with a short reason and a hash of the evidence read. For AI agents the reason names the setting (from ai-agent-approval.toml); the setting's value, the file's path and the account are not sent. On Linux, whether a pickle model file in the Hugging Face, Ollama or LM Studio cache imports a function that can run code when loaded, found by reading its pickle instructions without loading it; only the result is sent, never file names, paths or contents. AI agent and model file results are reported and do not affect secure-device access unless the workspace policy turns that on. Settings are read; their contents are not copied."
+why = "Workstation controls in SOC 2 and ISO 27001 ask that company computers are encrypted, locked, patched and protected."
+records = ["posture.checks", "posture.findings", "posture.coverage"]
+capabilities = ["posture_reporting"]
+retention = "while_enrolled"
+[[collectors]]
+id = "hardening"
+group = "checks"
+title = "System hardening facts"
+what = "Read-only facts about kernel parameters, boot settings, service configuration and Kubernetes components, taken from a fixed list of targets, reported as normalized states and hashes."
+why = "Configuration benchmarks (CIS-style) that controls reference."
+records = ["hardening.observations"]
+capabilities = ["security_configuration_assessment", "linux_boot_trust_posture"]
+retention = "while_enrolled"
+[[collectors]]
+id = "os_and_hardware"
+group = "inventory"
+title = "Operating system and hardware"
+what = "OS name and version, kernel, architecture, CPU model and count, memory and disk totals, uptime, virtualization and network interface names and states. No addresses."
+why = "The device record every control refers to."
+records = ["os_info"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"
+[[collectors]]
+id = "software"
+group = "inventory"
+title = "Installed software and services"
+what = "Package names, versions and architectures from the system package manager; service names and states; known vulnerability matches by package and version."
+why = "Patch management and vulnerability controls."
+records = ["inventory.package_manager", "inventory.packages", "inventory.services", "inventory.vulnerabilities", "inventory.collected_at", "inventory.collection_source"]
+capabilities = ["system_inventory", "rootcheck"]
+retention = "while_enrolled"
+[[collectors]]
+id = "accounts"
+group = "inventory"
+title = "User accounts and groups"
+what = "Account names, numeric ids, whether an account is an administrator, and its login shell; group names. No passwords or password hashes."
+why = "Access control: who can sign in to the computer and with what rights."
+records = ["inventory.users", "inventory.groups"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"
+[[collectors]]
+id = "network_exposure"
+group = "inventory"
+title = "Listening ports and containers"
+what = "Protocol, port and state of listening sockets; container ids, names, images, states and runtimes; cloud provider, instance id and region when the machine runs in a cloud."
+why = "Exposure and asset inventory controls."
+records = ["inventory.listening_ports", "inventory.containers", "inventory.cloud_provider", "inventory.cloud_instance_id", "inventory.cloud_region"]
+capabilities = ["container_inventory", "cloud_inventory"]
+retention = "while_enrolled"
+[[collectors]]
+id = "running_programs"
+group = "inventory"
+title = "Running programs"
+what = "For each process: id, program name, executable path, owning user id and state. Not the command line or arguments."
+why = "Endpoint protection and unauthorized software controls."
+records = ["inventory.processes"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"
+[[collectors]]
+id = "file_integrity"
+group = "inventory"
+title = "File integrity baselines"
+what = "For files in selected system locations: path, SHA-256 when readable within the size limit, size, permissions, modification time and status. File bodies are read locally for hashes and selected configuration values; raw bodies are not uploaded."
+why = "Change detection on system configuration."
+records = ["inventory.fim", "inventory.sca"]
+capabilities = ["file_integrity"]
+retention = "while_enrolled"
+[[collectors]]
+id = "ai_tools"
+group = "ai_tools"
+title = "AI coding tools and MCP servers"
+what = "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), which agent skills or instructions exist (client, kind, name, source), and which declared AI editor and browser extensions (ai_extensions) are installed in VS Code and Chrome, by id, on this computer, inside up to 16 running containers (Docker, podman including rootless, containerd, CRI-O), each read through its own root and marked with its image name when Docker records one, and on Windows inside WSL distributions as they start, marked with the distribution name. A WSL distribution that has not been read is reported as not scanned, with why, and so is a declared config file over its read limit (by its fixed label). For each MCP server, what it runs: for a local server the package or image a known runner starts (npx, bunx, pnpm dlx, npm exec, uvx, pipx run, docker run) or else the program's file name; for a remote server only the URL's host name. AI tool configuration files and plugin manifests on each root are read locally, up to 64 KiB each, to derive these fields (MCP entries, enabled plugin names, package and host); their bodies are not sent. On Linux, each skill's SKILL.md, custom agent file and plugin manifest is read on the computer and checked against the declared ai_content_rules; only its SHA-256 and the ids of the rules it matched are sent. Arguments beyond that package name, environment variables, headers, URL paths, query strings, tokens and file bodies are never sent."
+why = "AI tool governance: knowing which agents and servers run on company machines."
+records = ["inventory.agent_clis", "inventory.mcp_servers", "inventory.agent_assets", "inventory.ai_location_coverage"]
+capabilities = []
+retention = "while_enrolled"
+[[collectors]]
+id = "process_events"
+group = "security_events"
+title = "Program starts, scripts and exits"
+what = "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events. Scripts record the interpreter, script path and SHA-256 of the script body read locally; the raw script body is not uploaded. A program that runs under a declared AI agent (ai_agent_processes), or is one, also records the agent's name and its session id (the agent process's key: boot id, process id and start time)."
+why = "Detecting and investigating attacks (endpoint detection)."
+records = ["exec", "script", "fork", "exit", "task_exit"]
+capabilities = ["segment_upload"]
+retention = "telemetry_window"
+[[collectors]]
+id = "network_events"
+group = "security_events"
+title = "Network connections and DNS lookups"
+what = "Outbound connections (program, source and destination address and port), socket state changes, network interface changes, and the domain names programs look up with the program that asked and the names of any assigned rules the lookup matched. A connection or lookup made by a program that runs under a declared AI agent, or is one, also records the agent's name and its session id. Not page contents, messages or what was sent."
+why = "Detecting command-and-control, data exfiltration and DNS tunnelling."
+records = ["connect", "socket", "netif", "dns"]
+capabilities = ["segment_upload", "policy_dns"]
+retention = "telemetry_window"
+[[collectors]]
+id = "file_events"
+group = "security_events"
+title = "Changes in watched system locations"
+what = "The path, operation and program for changes under a fixed list of persistence and configuration locations, and the AI agent's name and session id when the program runs under a declared one. File bodies are not uploaded."
+why = "Detecting persistence (startup items, cron, shell profiles) and tampering."
+records = ["file"]
+capabilities = ["segment_upload"]
+retention = "telemetry_window"
+[[collectors]]
+id = "memory_and_privilege_events"
+group = "security_events"
+title = "Memory, privilege and kernel signals"
+what = "Anonymous memory files, io_uring use, credential changes to root, selected system calls with their numeric arguments and memory-protection transitions, and eBPF program changes. Program name and id only; no file contents or command lines."
+why = "Detecting in-memory attacks, privilege escalation and sensor tampering."
+records = ["memfd", "iouring", "iouring_op", "cred", "security", "bpfcheck"]
+capabilities = ["segment_upload"]
+retention = "telemetry_window"
+[[collectors]]
+id = "enforcement"
+group = "agent"
+title = "What the agent blocked or stopped"
+what = "When a signed rule blocks a program from starting or stops a running one: the program, the rule name and the outcome. Nothing is blocked unless the workspace assigned a rule that blocks."
+why = "Evidence that endpoint protection acted, and a record of every action taken on this computer."
+records = ["deny", "kill"]
+capabilities = ["rules_sync"]
+retention = "telemetry_window"
+[[collectors]]
+id = "health"
+group = "agent"
+title = "Agent health"
+what = "How many events were kept or dropped, upload backlog and errors, and the agent version."
+why = "Knowing the evidence stream is complete; a device that stopped reporting is a finding, not a pass."
+records = ["health", "check_in.health", "check_in.capabilities"]
+capabilities = ["segment_upload"]
+retention = "while_enrolled"
+
+# Each claim names the source fact or test that keeps it true.
+[[never_collected]]
+claim = "Command lines and arguments in recorded process events, including what an AI agent was asked or ran (attributing an event to an agent adds only the agent's name and session id)"
+proof = "spool::write_value omits cmdline (test serialized_exec_omits_commands_even_when_a_rule_matched); inventory DeviceProcess has no cmdline or args field; agent_session::stamp adds only agent, a declared client name, and agent_session, a process key (tests a_script_an_agent_ran_adds_only_the_agent_and_its_session and a_program_outside_any_agent_is_not_attributed_and_gains_no_keys)"
+[[never_collected]]
+claim = "Raw file, document, message, skill, agent or plugin bodies in uploaded records"
+proof = "file events contain metadata and selected derived fields; FIM and script monitoring read bounded bodies locally for DeviceFIMEntry.sha256 and script_sha256; AI skill, agent and plugin manifest files are read on the computer (up to 256 KiB each) to hash and check, and only the SHA-256 and matched rule ids are kept (ai_discovery/content_scan.rs; test a_planted_malicious_skill_is_flagged_by_rule_id_and_hash_only); raw bodies are not serialized"
+[[never_collected]]
+claim = "MCP server arguments beyond the package name, environment variables, headers, URL paths, query strings and tokens; skill, agent or plugin file contents (only their SHA-256 and the ids of declared rules they matched); AI agent settings values; and installed editor or browser extensions other than the declared ai_extensions ids, in uploaded records"
+proof = "bounded local config and plugin manifest reads derive DeviceMCPServer client, name, source, transport, location, package, host; package is a package spec, image reference or program file name and host a URL host name (ai_discovery/mcp_identity.rs stdio_package and remote_host, and on macOS MCPIdentity.swift with the same cases; tests a_known_runner_reports_only_its_package_spec, an_mcp_identity_never_carries_a_secret and MCPIdentityTests discoveryCarriesIdentityWithoutSecrets); DeviceAgentAsset is client, kind, name, source, location, sha256, matched_rules, where matched_rules are declared ai_content_rules ids and a container or WSL scan's are filtered to them (ai_discovery.rs keep_valid_content_facts; test a_skill_hash_and_its_matched_rule_ids_reach_the_check_in_and_forged_ones_do_not; test a_child_scan_keeps_only_a_hex_hash_and_declared_rule_ids); collect_agent_discovery never executes a CLI; linux_posture_ai reports only declared reasons, rule ids and an observation hash (test claude_code_bypass_mode_and_allow_all_shell_are_findings); every location is opened with no symlink anywhere below the home and a linked home is not scanned (sync.rs open_agent_directory, read_agent_config_beneath; tests a_linked_parent_below_the_home_is_never_followed and a_linked_home_is_not_scanned); an editor or browser extension is named only when its directory matches a declared ai_extensions id (ai_discovery/extensions.rs; tests an_editor_extension_is_named_by_its_declared_id_and_no_other_is and only_declared_ai_extensions_are_named_and_a_linked_profile_is_not_followed)"
+[[never_collected]]
+claim = "Password and password-hash fields from account records"
+proof = "DeviceUser is name, uid, admin, shell, source; posture evidence is a hash of what was read, with redactions declared"
+[[never_collected]]
+claim = "Keystrokes, screen contents, camera or microphone"
+proof = "no collector opens input, display, video or audio devices (test no_collector_touches_input_display_or_media_devices)"
+[[never_collected]]
+claim = "Web pages, chats or what you typed into them (domain names looked up are recorded; page contents are not)"
+proof = "dns events carry pid, uid, comm, the queried name and matched rule names; connect events carry addresses and ports"
+
+# What the agent keeps on the computer.
+[[local]]
+path = "/var/lib/merlin"
+holds = "The event spool: finished segments wait here until the server accepts them, then they are deleted; segments the server refuses for good move to quarantine/ and are never uploaded."
+[[local]]
+path = "/etc/merlin"
+holds = "The device credential (0600, root) and the signed rules the workspace assigned."
