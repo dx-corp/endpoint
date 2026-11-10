@@ -17,7 +17,8 @@ pub(super) struct DeviceCheckInRequest<'a> {
     /// `crate::manifest::MANIFEST_VERSION`: which collection manifest the
     /// server may show for this device.
     pub(super) manifest_version: u32,
-    /// Manifest collector ids this agent runs (`manifest::active_collector_ids`).
+    /// Manifest collector ids declared as supported by this build. This
+    /// compatibility field does not observe runtime collector state.
     pub(super) active_collectors: Vec<&'static str>,
     pub(super) health: DeviceHealth,
     pub(super) posture: linux_posture::DevicePosture,

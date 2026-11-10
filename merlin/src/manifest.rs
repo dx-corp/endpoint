@@ -17,7 +17,8 @@ use serde::Serialize;
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Retention {
-    /// Current state, replaced on every check-in and deleted with the device.
+    /// Current device state, replaced on check-in. Retirement or disposal
+    /// leaves a device-record tombstone.
     WhileEnrolled,
     /// Raw events, kept for the server's telemetry window (default 30 days
     /// and 10 GiB per device; the server reports its actual values).
@@ -72,7 +73,8 @@ pub struct LocalStore {
 }
 
 /// How an AI location is read; see the `ai_locations` comment in the TOML.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum Format {
     Executable,
     Json,
@@ -85,21 +87,32 @@ pub enum Format {
     GeminiExtension,
     CursorAgent,
     CursorPlugin,
+    ClaudePluginCache,
+    /// Hugging Face's hub cache, read by the model-file posture check.
+    HfHub,
+    /// A model directory (Ollama, LM Studio), read by the model-file posture
+    /// check.
+    ModelDir,
+    EditorExtensions,
+    ChromiumExtensions,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Relative to each user's home.
     User,
     /// Relative to each visited project directory.
     Project,
+    /// An absolute path on the computer (or container root), read once.
+    System,
 }
 
 /// One place the `ai_tools` collector looks, from `ai_locations`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Clone, Copy, Debug)]
 pub struct AiLocation {
     pub client: &'static str,
-    /// cli, config, skill, agent, plugin or extension.
+    /// cli, config, skill, agent, plugin, extension or model.
     pub kind: &'static str,
     /// Relative to the home or project; a bare executable name for a cli.
     pub path: &'static str,
@@ -114,6 +127,9 @@ pub struct AiLocation {
     pub plugins_key: &'static str,
     /// Files inside each plugin directory read for MCP servers.
     pub mcp_files: &'static [&'static str],
+    /// The most bytes of this file read; a larger file is reported as not
+    /// scanned (`too_large`) instead.
+    pub max_bytes: u64,
 }
 
 impl AiLocation {
@@ -122,15 +138,86 @@ impl AiLocation {
         match self.scope {
             Scope::User => self.path.to_string(),
             Scope::Project => format!("project/{}", self.path),
+            Scope::System => format!("system{}", self.path),
         }
     }
 
     /// The locations the Linux agent reads in `scope`, in declared order.
     pub fn linux(scope: Scope) -> impl Iterator<Item = &'static AiLocation> {
+        Self::on("linux", scope)
+    }
+
+    /// The AI tool inventory locations that apply on `platform` (linux, macos
+    /// or windows) in `scope`, in declared order. Model caches (kind model)
+    /// are not inventory; see `models`.
+    pub fn on(platform: &'static str, scope: Scope) -> impl Iterator<Item = &'static AiLocation> {
+        AI_LOCATIONS.iter().filter(move |l| {
+            l.scope == scope && l.platforms.contains(&platform) && l.kind != "model"
+        })
+    }
+
+    /// The model caches the model-file posture check reads on `platform`,
+    /// in declared order.
+    pub fn models(platform: &'static str) -> impl Iterator<Item = &'static AiLocation> {
         AI_LOCATIONS
             .iter()
-            .filter(move |l| l.scope == scope && l.platforms.contains(&"linux"))
+            .filter(move |l| l.kind == "model" && l.platforms.contains(&platform))
     }
+}
+
+/// Where an AI extension is published; its id has that store's shape.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExtensionStore {
+    VscodeMarketplace,
+    ChromeWebStore,
+}
+
+/// One AI editor or browser extension reported by id, from
+/// `ai_extensions`.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct AiExtension {
+    pub store: ExtensionStore,
+    pub id: &'static str,
+    pub name: &'static str,
+    pub publisher: &'static str,
+}
+
+/// A name an AI agent's process runs under, from `ai_agent_processes`.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct AiAgentProcess {
+    /// The client, as ai_locations names it.
+    pub client: &'static str,
+    /// The process name: the kernel's process name or the executable's file
+    /// name.
+    pub name: &'static str,
+}
+
+impl AiAgentProcess {
+    /// Every name an AI agent runs under: each `cli` row of ai_locations
+    /// (its path is the command name), then the `ai_agent_processes` rows.
+    pub fn all() -> impl Iterator<Item = AiAgentProcess> {
+        AI_LOCATIONS
+            .iter()
+            .filter(|l| l.kind == "cli")
+            .map(|l| AiAgentProcess {
+                client: l.client,
+                name: l.path,
+            })
+            .chain(AI_AGENT_PROCESSES.iter().copied())
+    }
+}
+
+/// One rule run on the content of AI skill, agent and plugin files, from
+/// `ai_content_rules`.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct AiContentRule {
+    /// The rule name findings report.
+    pub id: &'static str,
+    /// yara.
+    pub engine: &'static str,
+    /// The rule file under `rules/ai/`.
+    pub file: &'static str,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -150,11 +237,23 @@ pub struct Manifest {
     /// Journald carries health and errors only; per-event details are debug
     /// level and off by default.
     pub journal: &'static str,
+    /// Every place this agent looks for AI tools, from `ai_locations`, so the
+    /// transparency page lists them all.
+    pub ai_locations: Vec<AiLocation>,
+    /// The names AI agents run under (cli rows and `ai_agent_processes`):
+    /// telemetry from their process trees carries the agent and its session.
+    pub ai_agent_processes: Vec<AiAgentProcess>,
+    /// The rules run on the content of the AI skill, agent and plugin files
+    /// found there, from `ai_content_rules`.
+    pub ai_content_rules: Vec<AiContentRule>,
+    /// The AI editor and browser extensions reported by id, from
+    /// `ai_extensions`; no other extension is named.
+    pub ai_extensions: Vec<AiExtension>,
 }
 
-// MANIFEST_VERSION (bumped when a collector is added, removed or changes
-// what it records), JOURNAL, INVENTORY_FIELDS (the check-in's inventory
-// record kinds), EVENT_KINDS (every telemetry event kind a monitor writes),
+// MANIFEST_VERSION (set by the release, 0 in a development build), JOURNAL,
+// INVENTORY_FIELDS (the check-in's inventory record kinds), EVENT_KINDS
+// (every telemetry event kind a monitor writes),
 // COLLECTORS, NEVER_COLLECTED, LOCAL and AI_LOCATIONS (where the ai_tools
 // collector looks), from the TOML.
 include!(concat!(env!("OUT_DIR"), "/manifest_data.rs"));
@@ -171,14 +270,21 @@ pub fn manifest() -> Manifest {
         never_collected: NEVER_COLLECTED.to_vec(),
         local: LOCAL.to_vec(),
         journal: JOURNAL,
+        ai_locations: AI_LOCATIONS
+            .iter()
+            .filter(|l| l.platforms.contains(&"linux"))
+            .copied()
+            .collect(),
+        ai_agent_processes: AiAgentProcess::all().collect(),
+        ai_content_rules: AI_CONTENT_RULES.to_vec(),
+        ai_extensions: AI_EXTENSIONS.to_vec(),
     }
 }
 
-/// The collectors this agent runs, derived from the capabilities it announces
-/// at check-in: a collector whose manifest lists no capability is always on
-/// (discovery that needs no sensor); the others are on when any capability
-/// they name is announced. The health section says whether the sensors behind
-/// them attached.
+/// The collectors declared as supported by this build, derived from its
+/// static check-in capabilities. A collector whose manifest lists no
+/// capability is always declared; the others are declared when any capability
+/// they name is present. This does not observe runtime collector state.
 pub fn active_collector_ids(capabilities: &[&str]) -> Vec<&'static str> {
     COLLECTORS
         .iter()
@@ -192,16 +298,30 @@ pub fn active_collector_ids(capabilities: &[&str]) -> Vec<&'static str> {
         .collect()
 }
 
+/// How people read a manifest version: `v103` for a release, `(development
+/// build)` for 0, which main carries until the release sets the number.
+pub fn version_label(version: u32) -> String {
+    if version == 0 {
+        "(development build)".to_owned()
+    } else {
+        format!("v{version}")
+    }
+}
+
 /// Plain text for a terminal: one line per collector, then the never list.
 pub fn render_text() -> String {
     let m = manifest();
     let mut out = format!(
-        "Deixic Endpoint ({} {}) collection manifest v{}\n\nWhat it collects\n",
-        m.agent, m.agent_version, m.manifest_version
+        "Deixic Endpoint ({} {}) collection manifest {}\n\nWhat it collects\n",
+        m.agent,
+        m.agent_version,
+        version_label(m.manifest_version)
     );
     for c in &m.collectors {
         let retention = match c.retention {
-            Retention::WhileEnrolled => "current state, kept while enrolled",
+            Retention::WhileEnrolled => {
+                "current device state, replaced on check-in; a tombstone remains after retirement/disposal"
+            }
             Retention::TelemetryWindow => "raw events, kept for the server's telemetry window",
         };
         out.push_str(&format!(
@@ -213,6 +333,32 @@ pub fn render_text() -> String {
     for n in &m.never_collected {
         out.push_str(&format!("  - {}\n", n.claim));
     }
+    out.push_str("\nWhere it looks for AI tools\n");
+    for (scope, heading) in [
+        (Scope::User, "In each home directory"),
+        (Scope::Project, "In each configured project directory"),
+        (Scope::System, "On the computer"),
+    ] {
+        out.push_str(&format!("  {heading}:\n"));
+        for l in m.ai_locations.iter().filter(|l| l.scope == scope) {
+            let place = if l.kind == "cli" {
+                format!("{} in the fixed bin directories", l.path)
+            } else {
+                l.path.to_string()
+            };
+            out.push_str(&format!("    {} {}: {place}\n", l.client, l.kind));
+        }
+    }
+    out.push_str(
+        "\nAI agents whose programs, connections, lookups and file changes are attributed to them\n",
+    );
+    for p in &m.ai_agent_processes {
+        out.push_str(&format!("  {} (process {})\n", p.client, p.name));
+    }
+    out.push_str("\nRules run on AI skill, agent and plugin files (ids reported, never content)\n");
+    for r in &m.ai_content_rules {
+        out.push_str(&format!("  {} ({})\n", r.id, r.file));
+    }
     out.push_str("\nOn this computer\n");
     for l in &m.local {
         out.push_str(&format!("  {}: {}\n", l.path, l.holds));
@@ -221,12 +367,14 @@ pub fn render_text() -> String {
     out
 }
 
-#[cfg(test)]
+// The tests tie the manifest to the Linux agent's modules.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
     const SYNC: &str = include_str!("sync.rs");
+    const AI_DISCOVERY: &str = include_str!("ai_discovery.rs");
     const SOURCES: &[(&str, &str)] = &[
         ("telemetry.rs", include_str!("telemetry.rs")),
         ("filemon.rs", include_str!("filemon.rs")),
@@ -239,6 +387,7 @@ mod tests {
         ("spool.rs", include_str!("spool.rs")),
         ("fileless.rs", include_str!("fileless.rs")),
         ("proctree.rs", include_str!("proctree.rs")),
+        ("agent_session.rs", include_str!("agent_session.rs")),
         ("linux_posture.rs", include_str!("linux_posture.rs")),
         ("linux_hardening.rs", include_str!("linux_hardening.rs")),
         ("sync.rs", SYNC),
@@ -260,7 +409,10 @@ mod tests {
                 {
                     return None;
                 }
-                let name = line.strip_prefix("pub ").unwrap_or(line);
+                let name = line
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| line.strip_prefix("pub "))
+                    .unwrap_or(line);
                 let (name, _) = name.split_once(':')?;
                 Some(name.trim().to_owned())
             })
@@ -356,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn active_collectors_follow_the_announced_capabilities() {
+    fn declared_collectors_follow_the_static_build_capabilities() {
         let all: Vec<&str> = COLLECTORS
             .iter()
             .flat_map(|c| c.capabilities.iter().copied())
@@ -365,7 +517,7 @@ mod tests {
         assert_eq!(active_collector_ids(&all), every);
         // Nothing announced: only the discovery that needs no sensor.
         assert_eq!(active_collector_ids(&[]), vec!["ai_tools"]);
-        // A segment uploader without inventory runs the event collectors only.
+        // A segment uploader without inventory declares the event collectors only.
         let events = active_collector_ids(&["segment_upload"]);
         assert!(events.contains(&"process_events") && events.contains(&"health"));
         assert!(!events.contains(&"software") && !events.contains(&"posture_checks"));
@@ -374,16 +526,32 @@ mod tests {
     #[test]
     fn the_never_claims_are_backed_by_the_code_they_name() {
         // Inventory processes carry no command line.
-        let process = struct_fields(SYNC, "DeviceProcess");
+        let process = struct_fields(AI_DISCOVERY, "DeviceProcess");
         assert_eq!(process, ["pid", "name", "executable", "user", "state"]);
         // MCP servers and agent assets: names and places only.
         assert_eq!(
-            struct_fields(SYNC, "DeviceMCPServer"),
-            ["client", "name", "source", "transport", "location"]
+            struct_fields(AI_DISCOVERY, "DeviceMCPServer"),
+            [
+                "client",
+                "name",
+                "source",
+                "transport",
+                "location",
+                "package",
+                "host"
+            ]
         );
         assert_eq!(
-            struct_fields(SYNC, "DeviceAgentAsset"),
-            ["client", "kind", "name", "source", "location"]
+            struct_fields(AI_DISCOVERY, "DeviceAgentAsset"),
+            [
+                "client",
+                "kind",
+                "name",
+                "source",
+                "location",
+                "sha256",
+                "matched_rules"
+            ]
         );
         // Accounts: no secrets.
         assert_eq!(
@@ -415,7 +583,12 @@ mod tests {
         }
         for location in AI_LOCATIONS {
             // A label is a fixed probe: no home, account or absolute path.
-            assert!(!location.path.starts_with('/') && !location.path.contains(".."));
+            // Only a system row's path is absolute, and its label is not.
+            assert!(!location.label().starts_with('/') && !location.path.contains(".."));
+            assert_eq!(
+                location.path.starts_with('/'),
+                location.scope == Scope::System
+            );
             assert!(!location.client.is_empty() && !location.kind.is_empty());
             // The project walker reads these formats only.
             if location.scope == Scope::Project {
@@ -478,6 +651,96 @@ mod tests {
         }
     }
 
+    /// The product directory: collection-manifest.toml, macos/ and packaging/.
+    fn product_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+    }
+
+    // Pull requests never set the manifest version; the release does
+    // (packaging/stamp-manifest-version.sh). A number on main is what made
+    // every endpoint pull request conflict with every other.
+    #[test]
+    fn main_carries_the_development_manifest_version() {
+        assert_eq!(
+            MANIFEST_VERSION, 0,
+            "manifest_version in collection-manifest.toml is set by the release; keep it 0"
+        );
+        let swift =
+            std::fs::read_to_string(product_dir().join("macos/Sources/MerlinMacOS/Manifest.swift"))
+                .unwrap();
+        assert!(
+            swift
+                .lines()
+                .any(|line| line == "    static let version = 0"),
+            "CollectionManifest.version in Manifest.swift is set by the release; keep it 0"
+        );
+        assert_eq!(version_label(0), "(development build)");
+        assert_eq!(version_label(103), "v103");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_release_stamp_sets_the_rust_and_swift_versions_together() {
+        let product = product_dir();
+        let scratch = std::env::temp_dir().join(format!(
+            "merlin-manifest-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let swift = "macos/Sources/MerlinMacOS/Manifest.swift";
+        let fresh = || {
+            let _ = std::fs::remove_dir_all(&scratch);
+            std::fs::create_dir_all(scratch.join("macos/Sources/MerlinMacOS")).unwrap();
+            for file in ["collection-manifest.toml", swift] {
+                std::fs::copy(product.join(file), scratch.join(file)).unwrap();
+            }
+        };
+        let stamp = |release: &str| {
+            std::process::Command::new("sh")
+                .arg(product.join("packaging/stamp-manifest-version.sh"))
+                .arg(release)
+                .arg(&scratch)
+                .output()
+                .unwrap()
+        };
+        let versions = || {
+            let toml: toml::Table =
+                std::fs::read_to_string(scratch.join("collection-manifest.toml"))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+            let swift = std::fs::read_to_string(scratch.join(swift)).unwrap();
+            let swift = swift
+                .lines()
+                .find_map(|line| line.strip_prefix("    static let version = "))
+                .map(|value| value.parse::<i64>().unwrap());
+            (toml["manifest_version"].as_integer(), swift)
+        };
+        for (release, want) in [
+            ("merlin-v0.1.3", 103),
+            ("v1.2.3", 10203),
+            ("0.2.0-rc.1", 200),
+            ("99.99.99", 999_999),
+        ] {
+            fresh();
+            let out = stamp(release);
+            assert!(out.status.success(), "{release}: {out:?}");
+            assert_eq!(versions(), (Some(want), Some(want)), "{release}");
+            // A stamped checkout is refused, not stamped twice.
+            assert!(!stamp(release).status.success(), "{release} stamped twice");
+            assert_eq!(versions(), (Some(want), Some(want)), "{release}");
+        }
+        for release in ["0.0.0", "0.1", "1.2.3.4", "100.0.0", "0.1.x", "nightly", ""] {
+            fresh();
+            assert!(!stamp(release).status.success(), "{release:?} accepted");
+            assert_eq!(versions(), (Some(0), Some(0)), "{release:?}");
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
     #[test]
     fn the_manifest_serialises_and_renders() {
         let value = serde_json::to_value(manifest()).unwrap();
@@ -490,6 +753,23 @@ mod tests {
         assert_eq!(ids.len(), COLLECTORS.len(), "collector ids are unique");
         let text = render_text();
         assert!(text.contains("What it never collects"));
+        assert!(text.contains("a tombstone remains after retirement/disposal"));
+        // Every Linux AI location is printed, in JSON and text.
+        let linux: Vec<&AiLocation> = AI_LOCATIONS
+            .iter()
+            .filter(|l| l.platforms.contains(&"linux"))
+            .collect();
+        assert_eq!(value["ai_locations"].as_array().unwrap().len(), linux.len());
+        for l in linux {
+            assert!(text.contains(l.path), "{} is not printed", l.path);
+        }
+        assert!(!value["ai_locations"].as_array().unwrap().iter().any(|l| {
+            !l["platforms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p == "linux")
+        }));
         assert!(text.contains("/var/lib/merlin"));
     }
 }

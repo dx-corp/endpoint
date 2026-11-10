@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
+use crate::agent_session;
+use crate::proctree::ProcTable;
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::spool;
 use crate::telemetry;
@@ -352,12 +355,16 @@ fn open_socket() -> Result<i32> {
 }
 
 /// Start the capture thread.
-pub fn spawn(rules: RulesHandle, tx: Sender<Value>) -> Result<thread::JoinHandle<()>> {
+pub fn spawn(
+    rules: RulesHandle,
+    table: Arc<Mutex<ProcTable>>,
+    tx: Sender<Value>,
+) -> Result<thread::JoinHandle<()>> {
     let fd = open_socket()?;
     log::info!("dns: capturing port-53 traffic via AF_PACKET");
     thread::Builder::new()
         .name("dns".into())
-        .spawn(move || capture_loop(fd, rules, tx))
+        .spawn(move || capture_loop(fd, rules, table, tx))
         .context("spawning dns thread")
 }
 
@@ -385,7 +392,7 @@ fn matched_log_rules(
         .collect()
 }
 
-fn capture_loop(fd: i32, rules: RulesHandle, tx: Sender<Value>) {
+fn capture_loop(fd: i32, rules: RulesHandle, table: Arc<Mutex<ProcTable>>, tx: Sender<Value>) {
     let mut attr = Attribution::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -449,6 +456,9 @@ fn capture_loop(fd: i32, rules: RulesHandle, tx: Sender<Value>) {
         if via_system {
             event["via_system_resolver"] = Value::Bool(true);
         }
+        // The process that asked; a system resolver's own upstream lookup
+        // runs under no agent.
+        agent_session::stamp(&mut event, agent_session::agent_for(&table, pid));
         spool::try_send(&tx, event);
     }
 }

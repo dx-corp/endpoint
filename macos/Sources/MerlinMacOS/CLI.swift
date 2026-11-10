@@ -17,7 +17,7 @@ struct Merlin: ParsableCommand {
         commandName: "merlin-macos",
         abstract: "Deixic Endpoint: endpoint telemetry and policy enforcement for macOS",
         subcommands: [RunCommand.self, CheckCommand.self, PostureCommand.self, GenHashCommand.self,
-                      MCPHookCommand.self, ManifestCommand.self]
+                      MCPHookCommand.self, ManifestCommand.self, DiscoverCommand.self]
     )
 }
 
@@ -424,6 +424,39 @@ struct ManifestCommand: ParsableCommand {
         } else {
             print(manifest.renderText(), terminator: "")
         }
+    }
+}
+
+/// One-shot AI tool discovery: the same scan the check-in sends, printed as
+/// JSON. Names and fixed labels only, no paths, values or file contents.
+struct DiscoverCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "discover",
+        abstract: "Print the AI tools, MCP servers, skills and plugins this computer's check-in reports, as JSON."
+    )
+
+    struct Report: Encodable {
+        let agentCLIs: [DeviceAgentCLI]
+        let agentApps: [DeviceAgentApp]
+        let mcpServers: [DeviceMCPServer]
+        let agentAssets: [DeviceAgentAsset]
+        let aiLocationCoverage: [DeviceAILocationCoverage]
+
+        enum CodingKeys: String, CodingKey {
+            case agentCLIs = "agent_clis"
+            case agentApps = "agent_apps"
+            case mcpServers = "mcp_servers"
+            case agentAssets = "agent_assets"
+            case aiLocationCoverage = "ai_location_coverage"
+        }
+    }
+
+    func run() throws {
+        let found = collectMacAgentDiscovery()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(Report(agentCLIs: found.clis, agentApps: found.apps, mcpServers: found.servers, agentAssets: found.assets, aiLocationCoverage: found.coverage))
+        print(String(decoding: data, as: UTF8.self))
     }
 }
 

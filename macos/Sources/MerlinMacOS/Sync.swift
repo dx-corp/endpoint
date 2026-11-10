@@ -70,7 +70,7 @@ struct SyncConfig: Sendable {
 
 let merlinAgentVersion = "0.1.0"
 
-/// What this build announces at check-in; the manifest derives the active collectors from it.
+/// What this build announces at check-in; the manifest derives its declared collectors from it.
 let checkInCapabilities: [String] = [
     "segment_upload",
     "rules_sync",
@@ -105,7 +105,8 @@ private struct DeviceCheckInRequest: Encodable, Sendable {
     let capabilities: [String]
     /// `CollectionManifest.version`: which manifest the server may show for this Mac.
     let manifestVersion: Int
-    /// Manifest collector ids this build runs (`CollectionManifest.activeCollectorIds`).
+    /// Manifest collector ids declared as supported by this build. This
+    /// compatibility field does not observe runtime collector state.
     let activeCollectors: [String]
     let osInfo: DeviceOSInfo
     let inventory: DeviceInventory

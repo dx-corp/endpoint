@@ -185,6 +185,12 @@ fn boot_id() -> &'static str {
         .as_str()
 }
 
+/// A process's key for this boot: `<boot id>:<pid>:<start time>`. A recycled
+/// pid has another start time, so the key names one process.
+pub fn process_key(pid: impl std::fmt::Display, start_time: u64) -> String {
+    format!("{}:{pid}:{start_time}", boot_id())
+}
+
 fn numeric(object: &Map<String, Value>, key: &str) -> Option<u64> {
     object.get(key).and_then(Value::as_u64)
 }
@@ -264,7 +270,7 @@ fn decorate_event(event: &mut Value) {
     let process_key = if namespace_valid {
         numeric(object, "pid")
             .zip(numeric(object, "pid_start_time"))
-            .map(|(pid, start)| format!("{}:{}:{}", boot_id(), pid, start))
+            .map(|(pid, start)| process_key(pid, start))
     } else {
         None
     };

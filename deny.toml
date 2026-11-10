@@ -1,10 +1,20 @@
 [graph]
 all-features = true
+# The targets this workspace ships: the Linux agent and sync server, and the
+# Windows collector. Bans below are judged on these graphs.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-pc-windows-gnu",
+  "aarch64-pc-windows-gnullvm",
+]
 
 [advisories]
 version = 2
 yanked = "deny"
 ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 is unmaintained through merlin -> yara-x 1.22.1. RustSec reports maintenance cessation with no patched version; current yara-x 1.23.0 still requires bincode 2.0.1, so a supported upgrade does not remove it. Endpoint compiles only its bundled declared YARA rules and does not load serialized rules; YARA still serializes and decodes its own compiler globals internally. This limits exposure but does not establish safety for arbitrary bincode input. Exact archive/capability and call-site review: rust/supply-chain/reviews/endpoint-yara-1.22.1.md. Remove this maintenance acceptance when qualified upstream replaces bincode, or re-review at expiry. expires: 2026-11-17" },
 ]
 
 [licenses]
@@ -27,8 +37,13 @@ private = { ignore = true }
 multiple-versions = "allow"
 wildcards = "allow"
 deny = [
-  { name = "native-tls", reason = "TLS must use rustls so builds do not depend on host OpenSSL" },
-  { name = "openssl", reason = "TLS must use rustls so builds do not depend on host OpenSSL" },
+  # The Windows collector checks in over the OS TLS stack (schannel) through
+  # ureq; native-tls is allowed only there, and OpenSSL stays banned.
+  { name = "native-tls", wrappers = ["ureq"], reason = "TLS must use rustls, or schannel through ureq on Windows, so builds do not depend on host OpenSSL" },
+  # cargo-deny judges one feature-unified graph, where native-tls (Windows
+  # only) appears to reach OpenSSL on Linux. No shipped target builds it;
+  # components/merlin.yaml checks that with cargo tree per Linux target.
+  { name = "openssl", wrappers = ["native-tls"], reason = "TLS must use rustls so builds do not depend on host OpenSSL" },
 ]
 
 [sources]

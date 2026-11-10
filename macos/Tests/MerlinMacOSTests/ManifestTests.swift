@@ -56,6 +56,17 @@ private func declaredMacAILocations(_ source: String) -> Set<String> {
     return rows
 }
 
+/// The `max_bytes` of each user ai_locations row that sets one, by path.
+private func declaredUserReadLimits(_ source: String) -> [String: Int] {
+    var limits: [String: Int] = [:]
+    for line in source.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) where line.hasPrefix("{") && line.contains("scope = \"user\"") {
+        guard let path = line.range(of: "path = \""), let bytes = line.range(of: "max_bytes = ") else { continue }
+        let name = line[path.upperBound...].prefix { $0 != "\"" }
+        limits[String(name)] = Int(line[bytes.upperBound...].prefix { $0.isNumber })
+    }
+    return limits
+}
+
 @Suite("collection manifest")
 struct ManifestTests {
     @Test("collector ids match the Linux port")
@@ -68,8 +79,32 @@ struct ManifestTests {
         #expect(CollectionManifest.collectors.count == mac.count, "ids are unique")
         // Same version and the same number of never-claims.
         #expect(rust.contains("\nmanifest_version = \(CollectionManifest.version)\n"))
+        // The release sets the version (packaging/stamp-manifest-version.sh);
+        // main and pull requests keep the development placeholder.
+        #expect(CollectionManifest.version == 0, "set by the release; keep it 0")
+        #expect(CollectionManifest.versionLabel(0) == "(development build)")
+        #expect(CollectionManifest.versionLabel(103) == "v103")
         let rustNever = rust.components(separatedBy: "[[never_collected]]").count - 1
         #expect(rustNever == CollectionManifest.neverCollected.count)
+    }
+
+    @Test("AI extension ids match the declared manifest")
+    func aiExtensionsMatchManifest() throws {
+        var declared: [String: Set<String>] = [:]
+        var inside = false
+        for line in try declaredManifestSource().split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+            if line == "ai_extensions = [" { inside = true; continue }
+            if inside && line == "]" { break }
+            guard inside, line.hasPrefix("{") else { continue }
+            func value(_ key: String) -> String? {
+                guard let start = line.range(of: "\(key) = \"") else { return nil }
+                let rest = line[start.upperBound...]
+                return rest.firstIndex(of: "\"").map { String(rest[..<$0]) }
+            }
+            if let store = value("store"), let id = value("id") { declared[store, default: []].insert(id) }
+        }
+        #expect(declared["vscode-marketplace"] == Set(macEditorAIExtensions))
+        #expect(declared["chrome-web-store"] == Set(macChromeAIExtensions))
     }
 
     @Test("AI locations match the declared manifest")
@@ -79,15 +114,26 @@ struct ManifestTests {
         var probed = Set(macAgentCLINames.map { "user \($0) cli \($0)" })
         probed.insert("user cursor agent \(macCursorAgentsDirectory)")
         probed.insert("user cursor plugin \(macCursorLocalPluginsDirectory)")
+        probed.insert("user claude plugin \(macClaudePluginCacheDirectory)")
+        probed.insert("user vscode extension \(macEditorExtensionsDirectory)")
+        probed.insert("user chrome extension \(macChromeUserDataDirectory)")
         for (client, relative, _) in macUserAgentConfigs { probed.insert("user \(client) config \(relative)") }
         for (client, kind, relative, _) in macUserAgentAssetDirs { probed.insert("user \(client) \(kind) \(relative)") }
         for (client, relative, _) in macProjectAgentConfigs { probed.insert("project \(client) config \(relative)") }
+        for (client, path) in macSystemAgentConfigs { probed.insert("system \(client) config \(path)") }
         for (client, kind, relative, _) in macProjectAgentAssetDirs { probed.insert("project \(client) \(kind) \(relative)") }
         #expect(probed == declared, "not probed: \(declared.subtracting(probed).sorted()); not declared: \(probed.subtracting(declared).sorted())")
     }
 
-    @Test("active collectors follow the announced capabilities")
-    func activeCollectorsFollowCapabilities() {
+    @Test("config read limits match the declared max_bytes")
+    func readLimitsMatchManifest() throws {
+        let declared = declaredUserReadLimits(try declaredManifestSource())
+        #expect(!declared.isEmpty)
+        #expect(declared == macUserAgentConfigReadLimits)
+    }
+
+    @Test("declared collectors follow the static build capabilities")
+    func declaredCollectorsFollowCapabilities() {
         let every = CollectionManifest.collectors.map(\.id)
         #expect(CollectionManifest.activeCollectorIds(capabilities: checkInCapabilities) == every,
                 "this build announces every collector it declares")
@@ -97,11 +143,29 @@ struct ManifestTests {
         #expect(!events.contains("software") && !events.contains("posture_checks"))
     }
 
+    @Test("serialized records contain hashes and identifiers without raw values")
+    func serializedRecordFields() throws {
+        let fim = DeviceFIMEntry(
+            path: "/etc/example", sha256: "abc123", sizeBytes: 42,
+            mode: "600", modifiedUnix: 1_700_000_000, status: "present")
+        let fimObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fim)) as? [String: Any]
+        #expect(fimObject.map { Set($0.keys) } == ["path", "sha256", "size_bytes", "mode", "modified_unix", "status"])
+        #expect(fimObject?["sha256"] as? String == "abc123")
+        #expect(fimObject?["size_bytes"] as? Int == 42)
+
+        let mcp = DeviceMCPServer(client: "codex", name: "docs", source: ".codex/config.toml", transport: "stdio")
+        let mcpObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(mcp)) as? [String: Any]
+        #expect(mcpObject.map { Set($0.keys) } == ["client", "name", "source", "transport"])
+        #expect(mcpObject?["name"] as? String == "docs")
+        #expect(mcpObject?["transport"] as? String == "stdio")
+    }
+
     @Test("renders text and JSON with the public shape")
     func renders() throws {
         let manifest = CollectionManifest.current()
         let text = manifest.renderText()
         #expect(text.contains("What it never collects"))
+        #expect(text.contains("a tombstone remains after retirement/disposal"))
         let data = Data(try manifest.renderJSON().utf8)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(object?["manifest_version"] as? Int == CollectionManifest.version)

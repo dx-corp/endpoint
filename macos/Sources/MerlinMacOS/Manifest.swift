@@ -8,7 +8,8 @@ import Foundation
 // of never-claims drift apart.
 
 enum ManifestRetention: String, Encodable, Sendable {
-    /// Current state, replaced on every check-in and deleted with the device.
+    /// Current device state, replaced on check-in. Retirement or disposal
+    /// leaves a device-record tombstone.
     case whileEnrolled = "while_enrolled"
     /// Raw events, kept for the server's telemetry window (default 30 days and
     /// 10 GiB per device; the server reports its actual values).
@@ -64,9 +65,16 @@ struct CollectionManifest: Encodable, Sendable {
         case journal
     }
 
-    /// Bumped with `manifest_version` in `collection-manifest.toml` when a
-    /// collector is added, removed or changes what it records.
-    static let version = 4
+    /// Set by the release; pull requests never change it. 0 is a development
+    /// build; `packaging/stamp-manifest-version.sh` writes the release's number
+    /// here and into `collection-manifest.toml` before a release build.
+    static let version = 0
+
+    /// `v103` for a release, `(development build)` for 0 (merlin's
+    /// `manifest::version_label`).
+    static func versionLabel(_ version: Int) -> String {
+        version == 0 ? "(development build)" : "v\(version)"
+    }
 
     static let collectors: [ManifestCollector] = [
         ManifestCollector(
@@ -112,18 +120,18 @@ struct CollectionManifest: Encodable, Sendable {
             records: ["inventory.processes"], capabilities: ["system_inventory"], retention: .whileEnrolled),
         ManifestCollector(
             id: "file_integrity", group: .inventory, title: "File integrity baselines",
-            what: "For files in a fixed list of system locations: path, size, permissions, modification time and whether the baseline changed. File contents are never read.",
+            what: "For files in selected system locations: path, SHA-256 when readable within the size limit, size, permissions, modification time and status. File bodies are read locally for hashes and selected configuration values; raw bodies are not uploaded.",
             why: "Change detection on system configuration.",
             records: ["inventory.fim", "inventory.sca"], capabilities: ["file_integrity"], retention: .whileEnrolled),
         ManifestCollector(
             id: "ai_tools", group: .aiTools, title: "AI coding tools and MCP servers",
-            what: "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), and which agent skills or instructions exist (client, kind, name, source). Commands, arguments, URLs, environment variables and file bodies are never read.",
+            what: "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), and which agent skills or instructions exist (client, kind, name, source). A declared config file over its read limit is reported as not scanned, by its fixed label. For each MCP server, what it runs: for a local server the package or image a known runner starts (npx, bunx, pnpm dlx, npm exec, uvx, pipx run, docker run) or else the program's file name; for a remote server only the URL's host name. Configuration files are read locally to derive these fields; argument values beyond that package name, environment variable values, headers, URL paths, query strings, tokens and skill or instruction bodies are not recorded.",
             why: "AI tool governance: knowing which agents and servers run on company machines.",
-            records: ["inventory.agent_clis", "inventory.mcp_servers", "inventory.agent_assets"],
+            records: ["inventory.agent_clis", "inventory.mcp_servers", "inventory.agent_assets", "inventory.ai_location_coverage"],
             capabilities: [], retention: .whileEnrolled),
         ManifestCollector(
             id: "process_events", group: .securityEvents, title: "Program starts and exits",
-            what: "When a program starts or ends: program name, executable path, code signature identity, parent programs, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events.",
+            what: "When a program starts or ends: program name, executable path, executable SHA-256 when computed, code signature identity, parent programs, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events.",
             why: "Detecting and investigating attacks (endpoint detection).",
             records: ["exec", "fork", "exit"], capabilities: ["segment_upload"], retention: .telemetryWindow),
         ManifestCollector(
@@ -133,7 +141,7 @@ struct CollectionManifest: Encodable, Sendable {
             records: ["connect", "dns"], capabilities: ["segment_upload", "policy_dns"], retention: .telemetryWindow),
         ManifestCollector(
             id: "file_events", group: .securityEvents, title: "Changes in watched system locations",
-            what: "The path, operation and program for changes under a fixed list of persistence and configuration locations (launch items, login items, profiles). File contents are never read.",
+            what: "The path, operation and program for changes under a fixed list of persistence and configuration locations (launch items, login items, profiles). Selected plist bodies are read locally for labels, programs and login-item details; raw bodies are not uploaded.",
             why: "Detecting persistence and tampering.",
             records: ["file"], capabilities: ["segment_upload"], retention: .telemetryWindow),
         ManifestCollector(
@@ -148,7 +156,7 @@ struct CollectionManifest: Encodable, Sendable {
             records: ["deny", "kill"], capabilities: ["rules_sync"], retention: .telemetryWindow),
         ManifestCollector(
             id: "health", group: .agent, title: "Agent health",
-            what: "Which providers are attached, how many events were kept or dropped, upload backlog and errors, and the agent version.",
+            what: "How many events were kept or dropped, upload backlog and errors, and the agent version.",
             why: "Knowing the evidence stream is complete; a device that stopped reporting is a finding, not a pass.",
             records: ["health", "snapshot", "config", "check_in.health", "check_in.capabilities"],
             capabilities: ["segment_upload"], retention: .whileEnrolled),
@@ -159,11 +167,11 @@ struct CollectionManifest: Encodable, Sendable {
             claim: "Command lines and arguments in recorded process events",
             proof: "SpoolEvent.encode omits cmdline (EventEncodingTests.commandLinesStayLocal); inventory processes carry no command line"),
         ManifestNever(
-            claim: "Contents of your files, documents or messages",
-            proof: "file events carry path, op, label and program only; no provider opens file bodies"),
+            claim: "Raw file, document, message, skill or instruction bodies in uploaded records",
+            proof: "file events contain metadata and selected plist fields; FIM, process and persistence providers read file bodies locally for hashes and selected fields; raw bodies are not encoded"),
         ManifestNever(
-            claim: "MCP server commands, arguments, URLs, environment variables, skill or instruction bodies",
-            proof: "MCP discovery records client, name, source and transport only and never executes a CLI"),
+            claim: "MCP server arguments beyond the package name, environment variable values, headers, URL paths, query strings or tokens in uploaded records",
+            proof: "bounded local config reads derive MCP client, name, source, transport, package and host; package is a package spec, image reference or program file name and host a URL host name (MCPIdentity.swift mcpStdioPackage and mcpRemoteHost; test discoveryCarriesIdentityWithoutSecrets); discovery never executes a CLI"),
         ManifestNever(
             claim: "Password and password-hash fields from account records",
             proof: "accounts are name, uid, admin, shell; posture evidence is a hash of what was read"),
@@ -189,11 +197,11 @@ struct CollectionManifest: Encodable, Sendable {
 
     static let journal = "launchd keeps the daemon's standard output and error in /Library/Logs/Merlin/merlin.log: starts, provider attach, upload results, enforcement actions by rule name. Per-event details stay in the spool."
 
-    /// The collectors this build runs, derived from the capabilities it
-    /// announces at check-in: a collector that lists no capability is always
-    /// on (discovery that needs no sensor); the others are on when any
-    /// capability they name is announced. Same rule as the Linux port's
-    /// `manifest::active_collector_ids`.
+    /// The collectors declared as supported by this build, derived from its
+    /// static check-in capabilities. A collector that lists no capability is
+    /// always declared; the others are declared when any capability they name
+    /// is present. This does not observe runtime collector state. Same rule as
+    /// the Linux port's `manifest::active_collector_ids`.
     static func activeCollectorIds(capabilities: [String]) -> [String] {
         let announced = Set(capabilities)
         return collectors
@@ -215,10 +223,10 @@ struct CollectionManifest: Encodable, Sendable {
     }
 
     func renderText() -> String {
-        var out = "Deixic Endpoint (\(agent) \(agentVersion)) collection manifest v\(manifestVersion)\n\nWhat it collects\n"
+        var out = "Deixic Endpoint (\(agent) \(agentVersion)) collection manifest \(Self.versionLabel(manifestVersion))\n\nWhat it collects\n"
         for c in collectors {
             let kept = c.retention == .whileEnrolled
-                ? "current state, kept while enrolled"
+                ? "current device state, replaced on check-in; a tombstone remains after retirement/disposal"
                 : "raw events, kept for the server's telemetry window"
             out += "  \(c.title)\n    \(c.what)\n    Why: \(c.why)\n    Kept: \(kept)\n"
         }

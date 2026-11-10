@@ -171,7 +171,8 @@ struct KqueueProviderTests {
         """, spoolPath: spool)
         defer { provider.stop() }
 
-        let pid = forkExec("/bin/bash", ["-c", "sleep 30 # \(marker)"])
+        // Keep the marker in the final process argv when Bash execs sleep.
+        let pid = forkExec("/bin/bash", ["-c", "exec -a \(marker) /bin/sleep 30"])
 
         let kill = awaitEvent(in: spool) {
             $0["kind"] as? String == "kill"

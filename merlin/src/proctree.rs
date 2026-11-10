@@ -129,11 +129,58 @@ impl ProcTable {
         }
     }
 
+    /// The nearest process, `pid` itself first and then its ancestors (at
+    /// most ANCESTOR_DEPTH of them), that `client_of` names an AI agent,
+    /// with its start time. Unknown or exited-and-unseen processes end the
+    /// walk: missing evidence is no attribution, never a guess.
+    pub fn agent_of(
+        &mut self,
+        pid: u32,
+        client_of: impl Fn(&ProcInfo) -> Option<&'static str>,
+    ) -> Option<AgentProcess> {
+        let mut cur = Some(pid);
+        for _ in 0..=ANCESTOR_DEPTH {
+            let pid = cur.filter(|p| *p != 0)?;
+            let info = self.resolve(pid)?;
+            if let Some(client) = client_of(info) {
+                return Some(AgentProcess {
+                    client,
+                    pid,
+                    start_time: info.start_time,
+                });
+            }
+            if pid == 1 {
+                return None;
+            }
+            cur = info.ppid;
+        }
+        None
+    }
+
+    /// Keep a cached process's name current. A program may rename itself
+    /// after exec (node's process.title does), and a fork event reports the
+    /// parent's current name; only an already cached entry is updated.
+    pub fn note_comm(&mut self, pid: u32, comm: &str) {
+        if let Some(info) = self.map.get_mut(&pid) {
+            if !comm.is_empty() && info.comm.as_deref() != Some(comm) {
+                info.comm = Some(comm.to_owned());
+            }
+        }
+    }
+
     /// Lineage for a pid (resolves the pid first to find its parent).
     pub fn lineage_of(&mut self, pid: u32) -> Lineage {
         let ppid = self.resolve(pid).and_then(|i| i.ppid);
         self.lineage(ppid)
     }
+}
+
+/// An AI agent process found by [`ProcTable::agent_of`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentProcess {
+    pub client: &'static str,
+    pub pid: u32,
+    pub start_time: u64,
 }
 
 pub struct Lineage {
