@@ -40,6 +40,32 @@ use crate::spool;
 use crate::{linux_hardening, linux_posture};
 
 const UPLOAD_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// The collection capabilities this build announces at check-in; every one
+/// belongs to a manifest collector (the manifest tests check this).
+pub(crate) const CHECK_IN_CAPABILITIES: &[&str] = &[
+    "segment_upload",
+    "rules_sync",
+    "system_inventory",
+    "file_integrity",
+    "security_configuration_assessment",
+    "rootcheck",
+    "container_inventory",
+    "cloud_inventory",
+    "posture_reporting",
+    "linux_boot_trust_posture",
+];
+
+/// Everything this build announces at check-in: the collection capabilities
+/// and the desired-state ones. They select the manifest's active collectors
+/// for the server and for the local screen alike.
+pub(crate) fn check_in_capabilities() -> Vec<&'static str> {
+    CHECK_IN_CAPABILITIES
+        .iter()
+        .chain(desired_state::CAPABILITIES)
+        .copied()
+        .collect()
+}
+
 const CHECK_IN_INTERVAL: Duration = Duration::from_secs(60);
 const BACKOFF_BASE_SECS: u64 = 2;
 const BACKOFF_MAX_SECS: u64 = 60;
@@ -1043,21 +1069,7 @@ impl SyncClient {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "unknown".to_string());
-        let capabilities: Vec<&'static str> = [
-            "segment_upload",
-            "rules_sync",
-            "system_inventory",
-            "file_integrity",
-            "security_configuration_assessment",
-            "rootcheck",
-            "container_inventory",
-            "cloud_inventory",
-            "posture_reporting",
-            "linux_boot_trust_posture",
-        ]
-        .into_iter()
-        .chain(desired_state::CAPABILITIES.iter().copied())
-        .collect();
+        let capabilities = check_in_capabilities();
         let active_collectors = crate::manifest::active_collector_ids(&capabilities);
         let request_body = serde_json::to_vec(&DeviceCheckInRequest {
             host: &self.host,

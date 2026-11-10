@@ -2,27 +2,28 @@ import Foundation
 import Testing
 @testable import MerlinMacOS
 
-// The macOS manifest and the Linux one (merlin/src/manifest.rs) describe one
-// product: same collector ids, same number of never-claims, same version.
+// The macOS manifest and the declared one (collection-manifest.toml, which the
+// Linux port compiles in) describe one product: same collector ids, same
+// number of never-claims, same version.
 // A collector added to one port without the other fails here.
 
-private func rustManifestSource() throws -> String {
+private func declaredManifestSource() throws -> String {
     let here = URL(fileURLWithPath: #filePath)
     let rust = here
         .deletingLastPathComponent() // ManifestTests.swift -> MerlinMacOSTests
         .deletingLastPathComponent() // -> Tests
         .deletingLastPathComponent() // -> macos
         .deletingLastPathComponent() // -> deixic-endpoint
-        .appendingPathComponent("merlin/src/manifest.rs")
+        .appendingPathComponent("collection-manifest.toml")
     return try String(contentsOf: rust, encoding: .utf8)
 }
 
-private func rustCollectorIds(_ source: String) -> Set<String> {
+private func declaredCollectorIds(_ source: String) -> Set<String> {
     var ids = Set<String>()
     for line in source.split(separator: "\n") {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("id: \"") {
-            let rest = trimmed.dropFirst("id: \"".count)
+        if trimmed.hasPrefix("id = \"") {
+            let rest = trimmed.dropFirst("id = \"".count)
             if let end = rest.firstIndex(of: "\"") { ids.insert(String(rest[..<end])) }
         }
     }
@@ -33,15 +34,15 @@ private func rustCollectorIds(_ source: String) -> Set<String> {
 struct ManifestTests {
     @Test("collector ids match the Linux port")
     func collectorIdsMatchLinux() throws {
-        let rust = try rustManifestSource()
-        let linux = rustCollectorIds(rust)
+        let rust = try declaredManifestSource()
+        let linux = declaredCollectorIds(rust)
         let mac = Set(CollectionManifest.collectors.map(\.id))
         #expect(!linux.isEmpty)
         #expect(mac == linux, "macOS \(mac.symmetricDifference(linux)) differs from Linux")
         #expect(CollectionManifest.collectors.count == mac.count, "ids are unique")
         // Same version and the same number of never-claims.
-        #expect(rust.contains("pub const MANIFEST_VERSION: u32 = \(CollectionManifest.version);"))
-        let rustNever = rust.components(separatedBy: "Never {").count - 1 - 1 // minus the struct declaration
+        #expect(rust.contains("\nmanifest_version = \(CollectionManifest.version)\n"))
+        let rustNever = rust.components(separatedBy: "[[never_collected]]").count - 1
         #expect(rustNever == CollectionManifest.neverCollected.count)
     }
 

@@ -3,17 +3,15 @@
 //! them. `merlin manifest` prints it; the transparency page, the TUI and the
 //! menu bar app render from it, so what people read is what the binary does.
 //!
-//! The manifest is declared here, next to the collectors, and the tests in
-//! this module tie it to the code: every inventory field the check-in
-//! serialises, every telemetry event kind any monitor emits, and every
-//! check-in capability must be named by a collector, and every "never"
-//! claim names the source fact or test that proves it. A collector added
+//! The manifest is declared once, in `../collection-manifest.toml`; `build.rs`
+//! compiles it into the constants below, and the tests in this module tie it
+//! to the code: every inventory field the check-in serialises, every
+//! telemetry event kind any monitor emits, and every check-in capability must
+//! be named by a collector, and every "never" claim names the source fact or
+//! test that proves it. A collector added
 //! without a manifest entry fails `cargo test`.
 
 use serde::Serialize;
-
-/// Bumped when a collector is added, removed or changes what it records.
-pub const MANIFEST_VERSION: u32 = 2;
 
 /// Where the server keeps a collector's output.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,274 +90,11 @@ pub struct Manifest {
     pub journal: &'static str,
 }
 
-/// Inventory record kinds, as the check-in's `inventory` object names them
-/// (field names of `DeviceInventory` in `sync.rs`; the test below checks
-/// this list against that struct).
-pub const INVENTORY_FIELDS: &[&str] = &[
-    "collected_at",
-    "package_manager",
-    "cloud_provider",
-    "cloud_instance_id",
-    "cloud_region",
-    "packages",
-    "services",
-    "users",
-    "groups",
-    "listening_ports",
-    "containers",
-    "processes",
-    "fim",
-    "sca",
-    "vulnerabilities",
-    "agent_clis",
-    "mcp_servers",
-    "agent_assets",
-    "collection_source",
-];
-
-/// Every telemetry event kind a Linux monitor writes to the spool (checked
-/// against the sources below).
-pub const EVENT_KINDS: &[&str] = &[
-    "exec",
-    "script",
-    "fork",
-    "exit",
-    "task_exit",
-    "kill",
-    "deny",
-    "connect",
-    "socket",
-    "dns",
-    "netif",
-    "file",
-    "memfd",
-    "iouring",
-    "iouring_op",
-    "cred",
-    "security",
-    "bpfcheck",
-    "health",
-];
-
-pub const COLLECTORS: &[Collector] = &[
-    Collector {
-        id: "posture_checks",
-        group: Group::Checks,
-        title: "Security settings",
-        what: "Whether disk encryption, screen lock, OS and automatic updates, firewall, remote access, endpoint protection and a password manager are in place, each as pass, fail or unknown with a short reason and a hash of the evidence read. Settings are read; their contents are not copied.",
-        why: "Workstation controls in SOC 2 and ISO 27001 ask that company computers are encrypted, locked, patched and protected.",
-        records: &["posture.checks", "posture.findings", "posture.coverage"],
-        capabilities: &["posture_reporting"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "hardening",
-        group: Group::Checks,
-        title: "System hardening facts",
-        what: "Read-only facts about kernel parameters, boot settings, service configuration and Kubernetes components, taken from a fixed list of targets, reported as normalized states and hashes.",
-        why: "Configuration benchmarks (CIS-style) that controls reference.",
-        records: &["hardening.observations"],
-        capabilities: &[
-            "security_configuration_assessment",
-            "linux_boot_trust_posture",
-        ],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "os_and_hardware",
-        group: Group::Inventory,
-        title: "Operating system and hardware",
-        what: "OS name and version, kernel, architecture, CPU model and count, memory and disk totals, uptime, virtualization and network interface names and states. No addresses.",
-        why: "The device record every control refers to.",
-        records: &["os_info"],
-        capabilities: &["system_inventory"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "software",
-        group: Group::Inventory,
-        title: "Installed software and services",
-        what: "Package names, versions and architectures from the system package manager; service names and states; known vulnerability matches by package and version.",
-        why: "Patch management and vulnerability controls.",
-        records: &[
-            "inventory.package_manager",
-            "inventory.packages",
-            "inventory.services",
-            "inventory.vulnerabilities",
-            "inventory.collected_at",
-            "inventory.collection_source",
-        ],
-        capabilities: &["system_inventory", "rootcheck"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "accounts",
-        group: Group::Inventory,
-        title: "User accounts and groups",
-        what: "Account names, numeric ids, whether an account is an administrator, and its login shell; group names. No passwords or password hashes.",
-        why: "Access control: who can sign in to the computer and with what rights.",
-        records: &["inventory.users", "inventory.groups"],
-        capabilities: &["system_inventory"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "network_exposure",
-        group: Group::Inventory,
-        title: "Listening ports and containers",
-        what: "Protocol, port and state of listening sockets; container ids, names, images, states and runtimes; cloud provider, instance id and region when the machine runs in a cloud.",
-        why: "Exposure and asset inventory controls.",
-        records: &[
-            "inventory.listening_ports",
-            "inventory.containers",
-            "inventory.cloud_provider",
-            "inventory.cloud_instance_id",
-            "inventory.cloud_region",
-        ],
-        capabilities: &["container_inventory", "cloud_inventory"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "running_programs",
-        group: Group::Inventory,
-        title: "Running programs",
-        what: "For each process: id, program name, executable path, owning user id and state. Not the command line or arguments.",
-        why: "Endpoint protection and unauthorized software controls.",
-        records: &["inventory.processes"],
-        capabilities: &["system_inventory"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "file_integrity",
-        group: Group::Inventory,
-        title: "File integrity baselines",
-        what: "For files in a fixed list of system locations: path, size, permissions, modification time and whether the baseline changed. File contents are never read.",
-        why: "Change detection on system configuration.",
-        records: &["inventory.fim", "inventory.sca"],
-        capabilities: &["file_integrity"],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "ai_tools",
-        group: Group::AiTools,
-        title: "AI coding tools and MCP servers",
-        what: "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), and which agent skills or instructions exist (client, kind, name, source). Commands, arguments, URLs, environment variables and file bodies are never read.",
-        why: "AI tool governance: knowing which agents and servers run on company machines.",
-        records: &[
-            "inventory.agent_clis",
-            "inventory.mcp_servers",
-            "inventory.agent_assets",
-        ],
-        capabilities: &[],
-        retention: Retention::WhileEnrolled,
-    },
-    Collector {
-        id: "process_events",
-        group: Group::SecurityEvents,
-        title: "Program starts, scripts and exits",
-        what: "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events. Scripts record the interpreter and script path.",
-        why: "Detecting and investigating attacks (endpoint detection).",
-        records: &["exec", "script", "fork", "exit", "task_exit"],
-        capabilities: &["segment_upload"],
-        retention: Retention::TelemetryWindow,
-    },
-    Collector {
-        id: "network_events",
-        group: Group::SecurityEvents,
-        title: "Network connections and DNS lookups",
-        what: "Outbound connections (program, source and destination address and port), socket state changes, network interface changes, and the domain names programs look up with the program that asked. Not page contents, messages or what was sent.",
-        why: "Detecting command-and-control, data exfiltration and DNS tunnelling.",
-        records: &["connect", "socket", "netif", "dns"],
-        capabilities: &["segment_upload"],
-        retention: Retention::TelemetryWindow,
-    },
-    Collector {
-        id: "file_events",
-        group: Group::SecurityEvents,
-        title: "Changes in watched system locations",
-        what: "The path, operation and program for changes under a fixed list of persistence and configuration locations. File contents are never read.",
-        why: "Detecting persistence (startup items, cron, shell profiles) and tampering.",
-        records: &["file"],
-        capabilities: &["segment_upload"],
-        retention: Retention::TelemetryWindow,
-    },
-    Collector {
-        id: "memory_and_privilege_events",
-        group: Group::SecurityEvents,
-        title: "Memory, privilege and kernel signals",
-        what: "Anonymous memory files, io_uring use, credential changes to root, selected system calls with their numeric arguments and memory-protection transitions, and eBPF program changes. Program name and id only; no file contents or command lines.",
-        why: "Detecting in-memory attacks, privilege escalation and sensor tampering.",
-        records: &[
-            "memfd",
-            "iouring",
-            "iouring_op",
-            "cred",
-            "security",
-            "bpfcheck",
-        ],
-        capabilities: &["segment_upload"],
-        retention: Retention::TelemetryWindow,
-    },
-    Collector {
-        id: "enforcement",
-        group: Group::Agent,
-        title: "What the agent blocked or stopped",
-        what: "When a signed rule blocks a program from starting or stops a running one: the program, the rule name and the outcome. Nothing is blocked unless the workspace assigned a rule that blocks.",
-        why: "Evidence that endpoint protection acted, and a record of every action taken on this computer.",
-        records: &["deny", "kill"],
-        capabilities: &["rules_sync"],
-        retention: Retention::TelemetryWindow,
-    },
-    Collector {
-        id: "health",
-        group: Group::Agent,
-        title: "Agent health",
-        what: "Whether the sensors are attached, how many events were kept or dropped, upload backlog and errors, and the agent version.",
-        why: "Knowing the evidence stream is complete; a device that stopped reporting is a finding, not a pass.",
-        records: &["health", "check_in.health", "check_in.capabilities"],
-        capabilities: &["segment_upload"],
-        retention: Retention::WhileEnrolled,
-    },
-];
-
-pub const NEVER_COLLECTED: &[Never] = &[
-    Never {
-        claim: "Command lines and arguments in recorded process events",
-        proof: "spool::write_value omits cmdline (test serialized_exec_omits_commands_even_when_a_rule_matched); inventory DeviceProcess has no cmdline or args field",
-    },
-    Never {
-        claim: "Contents of your files, documents or messages",
-        proof: "file events carry path, op, pid, comm and matched rules only; FIM records path, size, mode, mtime and status; no monitor opens file bodies",
-    },
-    Never {
-        claim: "MCP server commands, arguments, URLs, environment variables, skill or instruction bodies",
-        proof: "DeviceMCPServer is client, name, source, transport; DeviceAgentAsset is client, kind, name, source; collect_agent_discovery never executes a CLI or reads configuration values",
-    },
-    Never {
-        claim: "Password and password-hash fields from account records",
-        proof: "DeviceUser is name, uid, admin, shell, source; posture evidence is a hash of what was read, with redactions declared",
-    },
-    Never {
-        claim: "Keystrokes, screen contents, camera or microphone",
-        proof: "no collector opens input, display, video or audio devices (test no_collector_touches_input_display_or_media_devices)",
-    },
-    Never {
-        claim: "Web pages, chats or what you typed into them (domain names looked up are recorded; page contents are not)",
-        proof: "dns events carry pid, uid, comm and the queried name; connect events carry addresses and ports",
-    },
-];
-
-pub const LOCAL: &[LocalStore] = &[
-    LocalStore {
-        path: "/var/lib/merlin",
-        holds: "The event spool: finished segments wait here until the server accepts them, then they are deleted; segments the server refuses for good move to quarantine/ and are never uploaded.",
-    },
-    LocalStore {
-        path: "/etc/merlin",
-        holds: "The device credential (0600, root) and the signed rules the workspace assigned.",
-    },
-];
-
-pub const JOURNAL: &str = "The system journal (journalctl -u merlin) carries health and errors only: starts, sensor attach, upload results, enforcement actions by rule name. Per-event details are debug level and off by default.";
+// MANIFEST_VERSION (bumped when a collector is added, removed or changes
+// what it records), JOURNAL, INVENTORY_FIELDS (the check-in's inventory
+// record kinds), EVENT_KINDS (every telemetry event kind a monitor writes),
+// COLLECTORS, NEVER_COLLECTED and LOCAL, from the TOML.
+include!(concat!(env!("OUT_DIR"), "/manifest_data.rs"));
 
 pub fn manifest() -> Manifest {
     Manifest {
@@ -541,12 +276,7 @@ mod tests {
 
     #[test]
     fn every_check_in_capability_belongs_to_a_collector() {
-        let start = SYNC
-            .find("capabilities: Vec<&'static str> = [")
-            .expect("check-in capabilities");
-        let body = &SYNC[start..];
-        let end = body.find(']').expect("capabilities end");
-        let announced: Vec<&str> = body[..end].split('"').skip(1).step_by(2).collect();
+        let announced = crate::sync::CHECK_IN_CAPABILITIES;
         assert!(!announced.is_empty());
         let declared: BTreeSet<&str> = COLLECTORS
             .iter()
