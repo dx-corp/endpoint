@@ -83,6 +83,7 @@ fn generate(m: &toml::Table) -> String {
             "journal",
             "inventory_fields",
             "event_kinds",
+            "ai_locations",
             "collectors",
             "never_collected",
             "local",
@@ -159,6 +160,151 @@ fn generate(m: &toml::Table) -> String {
         )
         .unwrap();
     }
+    out.push_str("];\npub const AI_LOCATIONS: &[AiLocation] = &[\n");
+    for l in tables(m, "ai_locations") {
+        out.push_str(&ai_location(l));
+    }
     out.push_str("];\n");
     out
+}
+
+/// Formats the Linux collector reads; `Format::<PascalCase>` in manifest.rs.
+const FORMATS: &[&str] = &[
+    "executable",
+    "json",
+    "toml",
+    "codex-toml",
+    "skill-dir",
+    "md",
+    "js-ts",
+    "plugin-dir",
+    "gemini-extension",
+    "cursor-agent",
+    "cursor-plugin",
+];
+
+/// `codex-toml` -> `CodexToml`.
+fn pascal(value: &str) -> String {
+    value
+        .split(['-', '_'])
+        .map(|word| word[..1].to_uppercase() + &word[1..])
+        .collect()
+}
+
+/// One `ai_locations` row as an `AiLocation` literal. A row that names an
+/// unknown key, kind, format, scope or platform, an unsafe path, or a field
+/// its format does not read fails the build.
+fn ai_location(l: &toml::Table) -> String {
+    const REQUIRED: &[&str] = &["client", "kind", "path", "format", "scope"];
+    const OPTIONAL: &[&str] = &["platforms", "mcp_keys", "plugins_key", "mcp_files"];
+    for key in l.keys() {
+        assert!(
+            REQUIRED.contains(&key.as_str()) || OPTIONAL.contains(&key.as_str()),
+            "ai_locations: unknown key {key:?}"
+        );
+    }
+    let text = |key: &str| -> &str {
+        l.get(key)
+            .unwrap_or_else(|| panic!("ai_locations: a row needs {key}"))
+            .as_str()
+            .unwrap_or_else(|| panic!("ai_locations: {key} must be a string"))
+    };
+    let list = |key: &str| -> Vec<&str> {
+        l.get(key).map_or_else(Vec::new, |value| {
+            value
+                .as_array()
+                .unwrap_or_else(|| panic!("ai_locations: {key} must be an array"))
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .unwrap_or_else(|| panic!("ai_locations: {key} holds strings"))
+                })
+                .collect()
+        })
+    };
+    let (client, kind, path, format, scope) = (
+        text("client"),
+        text("kind"),
+        text("path"),
+        text("format"),
+        text("scope"),
+    );
+    assert!(!client.is_empty(), "ai_locations: {path}: empty client");
+    assert!(
+        ["cli", "config", "skill", "agent", "plugin", "extension"].contains(&kind),
+        "ai_locations: {path}: unknown kind {kind:?}"
+    );
+    assert!(
+        FORMATS.contains(&format),
+        "ai_locations: {path}: unknown format {format:?}"
+    );
+    assert!(
+        ["user", "project"].contains(&scope),
+        "ai_locations: {path}: unknown scope {scope:?}"
+    );
+    assert!(
+        !path.starts_with('/')
+            && !path.contains('\\')
+            && path
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != ".."),
+        "ai_locations: {path:?} must be a plain relative path"
+    );
+    assert_eq!(
+        kind == "config",
+        ["json", "toml", "codex-toml"].contains(&format),
+        "ai_locations: {path}: kind config goes with format json, toml or codex-toml"
+    );
+    assert_eq!(
+        kind == "cli",
+        format == "executable",
+        "ai_locations: {path}: kind cli goes with format executable"
+    );
+    assert!(
+        kind != "cli" || (scope == "user" && !path.contains('/')),
+        "ai_locations: {path}: a cli is a bare executable name with scope user"
+    );
+    let needs_mcp_keys = format == "json" || format == "gemini-extension";
+    let has = |key: &str| l.contains_key(key);
+    assert!(
+        has("mcp_keys") == needs_mcp_keys || (format == "plugin-dir" && has("mcp_files")),
+        "ai_locations: {path}: mcp_keys is required for json and gemini-extension rows and for plugin-dir rows with mcp_files"
+    );
+    assert!(
+        format == "plugin-dir" || !has("mcp_files"),
+        "ai_locations: {path}: only plugin-dir reads mcp_files"
+    );
+    assert!(
+        format == "json" || !has("plugins_key"),
+        "ai_locations: {path}: only json reads plugins_key"
+    );
+    let platforms = if has("platforms") {
+        list("platforms")
+    } else {
+        vec!["linux", "macos", "windows"]
+    };
+    assert!(!platforms.is_empty(), "ai_locations: {path}: no platforms");
+    for platform in &platforms {
+        assert!(
+            ["linux", "macos", "windows"].contains(platform),
+            "ai_locations: {path}: unknown platform {platform:?}"
+        );
+    }
+    let strs = |items: Vec<&str>| {
+        let quoted: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+        format!("&[{}]", quoted.join(", "))
+    };
+    let plugins_key = if has("plugins_key") {
+        text("plugins_key")
+    } else {
+        ""
+    };
+    format!(
+        "    AiLocation {{ client: {client:?}, kind: {kind:?}, path: {path:?}, format: Format::{}, scope: Scope::{}, platforms: {}, mcp_keys: {}, plugins_key: {plugins_key:?}, mcp_files: {} }},\n",
+        pascal(format),
+        pascal(scope),
+        strs(platforms),
+        strs(list("mcp_keys")),
+        strs(list("mcp_files")),
+    )
 }

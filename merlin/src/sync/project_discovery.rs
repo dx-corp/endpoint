@@ -12,8 +12,10 @@ use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 
 use super::{
-    DeviceAgentAsset, DeviceMCPServer, codex_mcp_entries, json_mcp_entries, safe_agent_asset_name,
+    DeviceAgentAsset, DeviceMCPServer, config_mcp_entries, json_enabled_plugin_names,
+    json_mcp_entries, safe_agent_asset_name,
 };
+use crate::manifest::{AiLocation, Format, Scope};
 
 // MDM supplies a JSON array in the root-owned service configuration. No default
 // workspace roots are scanned, and no configured path is sent in inventory.
@@ -172,24 +174,6 @@ pub(super) fn project_directory_count(root: &Path, deadline: Instant) -> usize {
 pub(super) fn collect_project_agent_discovery(
     roots: &[PathBuf],
 ) -> (Vec<DeviceMCPServer>, Vec<DeviceAgentAsset>) {
-    const CONFIGS: &[(&str, &str, bool)] = &[
-        ("claude", ".mcp.json", false),
-        ("claude", ".claude/settings.json", false),
-        ("cursor", ".cursor/mcp.json", false),
-        ("codex", ".codex/config.toml", true),
-        ("opencode", ".opencode/opencode.json", false),
-        ("agents", ".agents/mcp.json", false),
-    ];
-    const ASSETS: &[(&str, &str, &str, &str)] = &[
-        ("agents", "skill", ".agents/skills", "skill"),
-        ("claude", "skill", ".claude/skills", "skill"),
-        ("claude", "agent", ".claude/agents", "md"),
-        ("claude", "plugin", ".claude/plugins", "plugin"),
-        ("codex", "skill", ".codex/skills", "skill"),
-        ("cursor", "skill", ".cursor/skills", "skill"),
-        ("maestro", "plugin", ".maestro/plugins", "plugin"),
-        ("maestro", "plugin", ".composer/plugins", "plugin"),
-    ];
     let mut servers = BTreeSet::new();
     let mut assets = BTreeSet::new();
     let mut plugin_config_reads = 0;
@@ -205,61 +189,51 @@ pub(super) fn collect_project_agent_discovery(
             if Instant::now() >= deadline {
                 break;
             }
-            for (client, relative, is_toml) in CONFIGS {
+            for location in
+                AiLocation::linux(Scope::Project).filter(|location| location.kind == "config")
+            {
                 if Instant::now() >= deadline {
                     break;
                 }
-                let Some(body) = read_agent_config_at(&project, relative) else {
+                let Some(body) = read_agent_config_at(&project, location.path) else {
                     continue;
                 };
+                let source = location.label();
                 assets.insert(DeviceAgentAsset {
-                    client: (*client).into(),
+                    client: location.client.into(),
                     kind: "config".into(),
                     name: "project".into(),
-                    source: format!("project/{relative}"),
+                    source: source.clone(),
                 });
-                if *relative == ".claude/settings.json" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-                        if let Some(plugins) =
-                            value.get("enabledPlugins").and_then(|v| v.as_object())
-                        {
-                            for (name, enabled) in plugins {
-                                if enabled.as_bool() == Some(true) && safe_agent_asset_name(name) {
-                                    assets.insert(DeviceAgentAsset {
-                                        client: "claude".into(),
-                                        kind: "plugin".into(),
-                                        name: name.clone(),
-                                        source: "project/.claude/settings.json".into(),
-                                    });
-                                }
-                            }
-                        }
+                if !location.plugins_key.is_empty() {
+                    for name in json_enabled_plugin_names(&body, location.plugins_key) {
+                        assets.insert(DeviceAgentAsset {
+                            client: location.client.into(),
+                            kind: "plugin".into(),
+                            name,
+                            source: source.clone(),
+                        });
                     }
                 }
-                let entries = if *is_toml {
-                    codex_mcp_entries(&body)
-                } else if *client == "opencode" {
-                    json_mcp_entries(&body, &["mcp"])
-                } else {
-                    json_mcp_entries(&body, &["mcpServers", "servers"])
-                };
-                for (name, transport) in entries
+                for (name, transport) in config_mcp_entries(location, &body)
                     .into_iter()
                     .filter(|(name, _)| safe_agent_asset_name(name))
                 {
                     servers.insert(DeviceMCPServer {
-                        client: (*client).into(),
+                        client: location.client.into(),
                         name,
-                        source: format!("project/{relative}"),
+                        source: source.clone(),
                         transport,
                     });
                 }
             }
-            for (client, kind, relative, format) in ASSETS {
+            for location in
+                AiLocation::linux(Scope::Project).filter(|location| location.kind != "config")
+            {
                 if Instant::now() >= deadline {
                     break;
                 }
-                let Some(mut directory) = open_relative_directory(&project, relative) else {
+                let Some(mut directory) = open_relative_directory(&project, location.path) else {
                     continue;
                 };
                 for entry in first_entries(&mut directory) {
@@ -267,55 +241,54 @@ pub(super) fn collect_project_agent_discovery(
                         break;
                     }
                     let filename = entry.to_string_lossy().into_owned();
-                    let child_directory = if *format == "skill" || *format == "plugin" {
-                        open_directory_at(&directory, &entry)
-                    } else {
-                        None
-                    };
-                    let name = match *format {
-                        "skill"
+                    let child_directory =
+                        if matches!(location.format, Format::SkillDir | Format::PluginDir) {
+                            open_directory_at(&directory, &entry)
+                        } else {
+                            None
+                        };
+                    let name = match location.format {
+                        Format::SkillDir
                             if child_directory.as_ref().is_some_and(|child| {
                                 open_regular_file_at(child, OsStr::new("SKILL.md")).is_some()
                             }) =>
                         {
                             Some(filename.as_str())
                         }
-                        "plugin" if child_directory.is_some() => Some(filename.as_str()),
-                        "md" if open_regular_file_at(&directory, &entry).is_some() => {
+                        Format::PluginDir if child_directory.is_some() => Some(filename.as_str()),
+                        Format::Md if open_regular_file_at(&directory, &entry).is_some() => {
                             filename.strip_suffix(".md")
                         }
                         _ => None,
                     };
-                    if let Some(name) = name.filter(|name| safe_agent_asset_name(name)) {
-                        assets.insert(DeviceAgentAsset {
-                            client: (*client).into(),
-                            kind: (*kind).into(),
-                            name: name.into(),
-                            source: format!("project/{relative}"),
-                        });
-                        if *client == "maestro" && *kind == "plugin" {
-                            for config in ["mcp.json", ".mcp.json"] {
-                                if plugin_config_reads >= 32 {
-                                    break;
-                                }
-                                plugin_config_reads += 1;
-                                if let Some(body) = child_directory
-                                    .as_ref()
-                                    .and_then(|child| read_agent_config_at(child, config))
-                                {
-                                    for (server, transport) in
-                                        json_mcp_entries(&body, &["mcpServers", "servers"])
-                                    {
-                                        if safe_agent_asset_name(&server) {
-                                            servers.insert(DeviceMCPServer {
-                                                client: "maestro".into(),
-                                                name: server,
-                                                source: format!("project/{relative}/*/{config}"),
-                                                transport,
-                                            });
-                                        }
-                                    }
-                                }
+                    let Some(name) = name.filter(|name| safe_agent_asset_name(name)) else {
+                        continue;
+                    };
+                    assets.insert(DeviceAgentAsset {
+                        client: location.client.into(),
+                        kind: location.kind.into(),
+                        name: name.into(),
+                        source: location.label(),
+                    });
+                    for config in location.mcp_files {
+                        if plugin_config_reads >= 32 {
+                            break;
+                        }
+                        plugin_config_reads += 1;
+                        let Some(body) = child_directory
+                            .as_ref()
+                            .and_then(|child| read_agent_config_at(child, config))
+                        else {
+                            continue;
+                        };
+                        for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
+                            if safe_agent_asset_name(&server) {
+                                servers.insert(DeviceMCPServer {
+                                    client: location.client.into(),
+                                    name: server,
+                                    source: format!("{}/*/{config}", location.label()),
+                                    transport,
+                                });
                             }
                         }
                     }

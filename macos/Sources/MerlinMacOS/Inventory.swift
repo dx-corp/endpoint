@@ -286,8 +286,8 @@ func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPSer
 // after opening it and prove subsequent probes stay bound to that directory.
 func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
     defer { rootFDs.forEach { close($0) } }
-    let configs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true), ("opencode", ".opencode/opencode.json", false), ("agents", ".agents/mcp.json", false)]
-    let assetDirs: [(String, String, String, String)] = [("agents", "skill", ".agents/skills", "skill"), ("claude", "skill", ".claude/skills", "skill"), ("claude", "agent", ".claude/agents", "md"), ("claude", "plugin", ".claude/plugins", "plugin"), ("codex", "skill", ".codex/skills", "skill"), ("cursor", "skill", ".cursor/skills", "skill"), ("maestro", "plugin", ".maestro/plugins", "plugin"), ("maestro", "plugin", ".composer/plugins", "plugin")]
+    let configs = macProjectAgentConfigs
+    let assetDirs = macProjectAgentAssetDirs
     var found = Set<String>()
     var assets = Set<String>()
     var pluginConfigReads = 0
@@ -380,9 +380,50 @@ func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPSe
     })
 }
 
+// Where the macOS collector looks. collection-manifest.toml ai_locations
+// declares these; ManifestTests keeps them equal.
+let macAgentCLINames = ["cursor", "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
+let macCursorAgentsDirectory = ".cursor/agents"
+let macCursorLocalPluginsDirectory = ".cursor/plugins/local"
+let macUserAgentConfigs: [(String, String, Bool)] = [
+    ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
+    ("claude", ".claude.json", false),
+    ("cursor", ".cursor/mcp.json", false),
+    ("gemini", ".gemini/settings.json", false),
+    ("vscode", "Library/Application Support/Code/User/mcp.json", false),
+    ("codex", ".codex/config.toml", true),
+    ("opencode", ".config/opencode/opencode.json", false),
+    ("claude", ".claude/settings.json", false),
+    ("amp", ".config/amp/settings.json", false),
+    ("qwen", ".qwen/settings.json", false),
+    ("pi", ".pi/agent/settings.json", false),
+    ("maestro", ".maestro/config.toml", true),
+    ("maestro", ".composer/config.toml", true),
+]
+let macUserAgentAssetDirs: [(String, String, String, String)] = [
+    ("agents", "skill", ".agents/skills", "skill"),
+    ("codex", "skill", ".codex/skills", "skill"),
+    ("claude", "skill", ".claude/skills", "skill"),
+    ("claude", "agent", ".claude/agents", "md"),
+    ("gemini", "skill", ".gemini/skills", "skill"),
+    ("gemini", "extension", ".gemini/extensions", "directory"),
+    ("opencode", "skill", ".config/opencode/skills", "skill"),
+    ("opencode", "plugin", ".config/opencode/plugins", "js-ts"),
+    ("opencode", "agent", ".config/opencode/agents", "md"),
+    ("amp", "skill", ".config/amp/skills", "skill"),
+    ("qwen", "skill", ".qwen/skills", "skill"),
+    ("pi", "skill", ".pi/agent/skills", "skill"),
+    ("pi", "extension", ".pi/agent/extensions", "js-ts"),
+    ("maestro", "skill", ".composer/skills", "skill"),
+    ("maestro", "plugin", ".maestro/plugins", "plugin-directory"),
+    ("maestro", "plugin", ".composer/plugins", "plugin-directory"),
+]
+let macProjectAgentConfigs: [(String, String, Bool)] = [("claude", ".mcp.json", false), ("claude", ".claude/settings.json", false), ("cursor", ".cursor/mcp.json", false), ("codex", ".codex/config.toml", true), ("opencode", ".opencode/opencode.json", false), ("agents", ".agents/mcp.json", false)]
+let macProjectAgentAssetDirs: [(String, String, String, String)] = [("agents", "skill", ".agents/skills", "skill"), ("claude", "skill", ".claude/skills", "skill"), ("claude", "agent", ".claude/agents", "md"), ("claude", "plugin", ".claude/plugins", "plugin"), ("codex", "skill", ".codex/skills", "skill"), ("cursor", "skill", ".cursor/skills", "skill"), ("maestro", "plugin", ".maestro/plugins", "plugin"), ("maestro", "plugin", ".composer/plugins", "plugin")]
+
 // Fixed probes only: no CLI execution and no configuration values are emitted.
 func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [String]? = nil) -> (clis: [DeviceAgentCLI], apps: [DeviceAgentApp], servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
-    let names = ["cursor", "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
+    let names = macAgentCLINames
     let bins = systemBins + homes.flatMap { ["\($0)/.local/bin", "\($0)/.npm-global/bin", "\($0)/.bun/bin", "\($0)/.cargo/bin", "\($0)/.codex/bin"] }
     let clis = names.filter { name in
         bins.contains { bin in
@@ -402,44 +443,13 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         return nil
     }
 
-    let configs: [(String, String, Bool)] = [
-        ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
-        ("claude", ".claude.json", false),
-        ("cursor", ".cursor/mcp.json", false),
-        ("gemini", ".gemini/settings.json", false),
-        ("vscode", "Library/Application Support/Code/User/mcp.json", false),
-        ("codex", ".codex/config.toml", true),
-        ("opencode", ".config/opencode/opencode.json", false),
-        ("claude", ".claude/settings.json", false),
-        ("amp", ".config/amp/settings.json", false),
-        ("qwen", ".qwen/settings.json", false),
-        ("pi", ".pi/agent/settings.json", false),
-        ("maestro", ".maestro/config.toml", true),
-        ("maestro", ".composer/config.toml", true),
-    ]
+    let configs = macUserAgentConfigs
     var found = Set<String>()
     var assetNames = Set<String>()
     var pluginConfigReads = 0
     var cursorPluginDirectoriesSeen = 0
     for home in homes.prefix(65) {
-        let assetDirs: [(String, String, String, String)] = [
-            ("agents", "skill", ".agents/skills", "skill"),
-            ("codex", "skill", ".codex/skills", "skill"),
-            ("claude", "skill", ".claude/skills", "skill"),
-            ("claude", "agent", ".claude/agents", "md"),
-            ("gemini", "skill", ".gemini/skills", "skill"),
-            ("gemini", "extension", ".gemini/extensions", "directory"),
-            ("opencode", "skill", ".config/opencode/skills", "skill"),
-            ("opencode", "plugin", ".config/opencode/plugins", "js-ts"),
-            ("opencode", "agent", ".config/opencode/agents", "md"),
-            ("amp", "skill", ".config/amp/skills", "skill"),
-            ("qwen", "skill", ".qwen/skills", "skill"),
-            ("pi", "skill", ".pi/agent/skills", "skill"),
-            ("pi", "extension", ".pi/agent/extensions", "js-ts"),
-            ("maestro", "skill", ".composer/skills", "skill"),
-            ("maestro", "plugin", ".maestro/plugins", "plugin-directory"),
-            ("maestro", "plugin", ".composer/plugins", "plugin-directory"),
-        ]
+        let assetDirs = macUserAgentAssetDirs
         for (client, kind, relative, format) in assetDirs {
             let directory = "\(home)/\(relative)"
             for entry in boundedAgentDirectoryEntries(directory) {
@@ -485,17 +495,17 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
             }
             if assetNames.count >= 128 { break }
         }
-        if let agents = openAgentDirectoryNoFollow(home: home, relative: ".cursor/agents") {
+        if let agents = openAgentDirectoryNoFollow(home: home, relative: macCursorAgentsDirectory) {
             defer { close(agents) }
             for entry in boundedAgentDirectoryEntries(descriptor: agents) where entry.hasSuffix(".md") && assetNames.count < 128 {
                 let name = String(entry.dropLast(3))
                 var info = stat()
                 guard safeAgentAssetName(name), fstatat(agents, entry, &info, AT_SYMLINK_NOFOLLOW) == 0,
                       info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0, info.st_size <= 64 << 10 else { continue }
-                assetNames.insert("cursor\u{0}agent\u{0}\(name)\u{0}.cursor/agents")
+                assetNames.insert("cursor\u{0}agent\u{0}\(name)\u{0}\(macCursorAgentsDirectory)")
             }
         }
-        if let localPlugins = openAgentDirectoryNoFollow(home: home, relative: ".cursor/plugins/local") {
+        if let localPlugins = openAgentDirectoryNoFollow(home: home, relative: macCursorLocalPluginsDirectory) {
             defer { close(localPlugins) }
             for entry in boundedAgentDirectoryEntries(descriptor: localPlugins) where cursorPluginDirectoriesSeen < 32 && assetNames.count < 128 {
                 guard safeAgentAssetName(entry) else { continue }
@@ -511,7 +521,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                     let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
                     return object?["name"] as? String == entry
                 }) {
-                    assetNames.insert("cursor\u{0}plugin\u{0}\(entry)\u{0}.cursor/plugins/local")
+                    assetNames.insert("cursor\u{0}plugin\u{0}\(entry)\u{0}\(macCursorLocalPluginsDirectory)")
                 }
             }
         }
