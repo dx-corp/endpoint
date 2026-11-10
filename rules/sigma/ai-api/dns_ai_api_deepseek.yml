@@ -1,0 +1,23 @@
+title: AI API - DeepSeek
+id: 4202c0ea-1528-4c4e-95f7-8f7e95fec33e
+status: experimental
+description: A program on this computer looked up the DeepSeek API host, which shows which program talks to DeepSeek. Detection only.
+references:
+    - https://api-docs.deepseek.com/
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.deepseek.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.deepseek.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

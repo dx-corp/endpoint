@@ -1,0 +1,23 @@
+title: AI API - Fireworks AI
+id: e46140d3-7f46-4d41-a6c4-832fc5851a2e
+status: experimental
+description: A program on this computer looked up the Fireworks AI API host, which shows which program talks to Fireworks AI. Detection only.
+references:
+    - https://docs.fireworks.ai/api-reference/post-chatcompletions
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.fireworks.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.fireworks.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

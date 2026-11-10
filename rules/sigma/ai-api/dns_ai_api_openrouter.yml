@@ -1,0 +1,24 @@
+title: AI API - OpenRouter
+id: fa412995-685a-4901-8a02-854dac12bf02
+status: experimental
+description: A program on this computer looked up the OpenRouter API host, which shows which program talks to OpenRouter. Detection only.
+references:
+    - https://openrouter.ai/docs/api/reference/overview
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - openrouter.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .openrouter.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+    - Opening the OpenRouter website (the API shares its domain)
+level: informational

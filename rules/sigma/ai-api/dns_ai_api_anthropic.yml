@@ -1,0 +1,23 @@
+title: AI API - Anthropic
+id: 73bf234b-8c7f-492e-aa0e-6d0a5ad5ef3f
+status: experimental
+description: A program on this computer looked up the Anthropic API host, which shows which program talks to Anthropic. Detection only.
+references:
+    - https://platform.claude.com/docs/en/api/overview
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.anthropic.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.anthropic.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

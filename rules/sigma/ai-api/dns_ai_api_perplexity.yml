@@ -1,0 +1,23 @@
+title: AI API - Perplexity
+id: 12aef5da-785d-49b7-9ea8-471c605c81a4
+status: experimental
+description: A program on this computer looked up the Perplexity API host, which shows which program talks to Perplexity. Detection only.
+references:
+    - https://docs.perplexity.ai/api-reference/chat-completions-post
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.perplexity.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.perplexity.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

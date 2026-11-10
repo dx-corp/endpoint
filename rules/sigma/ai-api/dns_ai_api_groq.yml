@@ -1,0 +1,23 @@
+title: AI API - Groq
+id: e259e307-5bb9-41a5-aec1-41d6c101c47c
+status: experimental
+description: A program on this computer looked up the Groq API host, which shows which program talks to Groq. Detection only.
+references:
+    - https://console.groq.com/docs/api-reference
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.groq.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.groq.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

@@ -1,0 +1,23 @@
+title: AI API - xAI
+id: 37597007-bdc8-41d7-8392-789c9c5987b8
+status: experimental
+description: A program on this computer looked up the xAI API host, which shows which program talks to xAI. Detection only.
+references:
+    - https://docs.x.ai/docs/api-reference
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.x.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.x.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

@@ -1,0 +1,25 @@
+title: AI API - Google Vertex AI
+id: 1e11797b-3150-4a6a-9621-04255a1a411b
+status: experimental
+description: A program on this computer looked up the Google Vertex AI API host, which shows which program talks to Google Vertex AI. Detection only.
+references:
+    - https://docs.cloud.google.com/vertex-ai/docs/reference/rest
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    # Global aiplatform.googleapis.com and regional <region>-aiplatform.googleapis.com.
+    selection_global:
+        QueryName: aiplatform.googleapis.com
+    selection_global_subdomain:
+        QueryName|endswith: .aiplatform.googleapis.com
+    selection_regional:
+        QueryName|contains: -aiplatform.
+        QueryName|endswith: .googleapis.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

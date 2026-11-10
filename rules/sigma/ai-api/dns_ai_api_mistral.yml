@@ -1,0 +1,23 @@
+title: AI API - Mistral
+id: 301db379-bba5-4e0c-8b47-429c6a3da511
+status: experimental
+description: A program on this computer looked up the Mistral API host, which shows which program talks to Mistral. Detection only.
+references:
+    - https://docs.mistral.ai/api/
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.mistral.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.mistral.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

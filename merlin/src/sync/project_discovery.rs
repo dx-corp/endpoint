@@ -200,6 +200,7 @@ pub(super) fn collect_project_agent_discovery(
                 };
                 let source = location.label();
                 assets.insert(DeviceAgentAsset {
+                    location: String::new(),
                     client: location.client.into(),
                     kind: "config".into(),
                     name: "project".into(),
@@ -208,6 +209,7 @@ pub(super) fn collect_project_agent_discovery(
                 if !location.plugins_key.is_empty() {
                     for name in json_enabled_plugin_names(&body, location.plugins_key) {
                         assets.insert(DeviceAgentAsset {
+                            location: String::new(),
                             client: location.client.into(),
                             kind: "plugin".into(),
                             name,
@@ -220,6 +222,7 @@ pub(super) fn collect_project_agent_discovery(
                     .filter(|(name, _)| safe_agent_asset_name(name))
                 {
                     servers.insert(DeviceMCPServer {
+                        location: String::new(),
                         client: location.client.into(),
                         name,
                         source: source.clone(),
@@ -265,6 +268,7 @@ pub(super) fn collect_project_agent_discovery(
                         continue;
                     };
                     assets.insert(DeviceAgentAsset {
+                        location: String::new(),
                         client: location.client.into(),
                         kind: location.kind.into(),
                         name: name.into(),
@@ -284,6 +288,7 @@ pub(super) fn collect_project_agent_discovery(
                         for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
                             if safe_agent_asset_name(&server) {
                                 servers.insert(DeviceMCPServer {
+                                    location: String::new(),
                                     client: location.client.into(),
                                     name: server,
                                     source: format!("{}/*/{config}", location.label()),

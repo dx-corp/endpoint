@@ -249,6 +249,44 @@ struct RulesTests {
         #expect(!r.matches(MatchCtx(daddr: "8.8.8.8"))) // no qname in ctx
     }
 
+    @Test("dns_suffix matches the end of the queried name only (Linux parity)")
+    func dnsSuffixSelector() throws {
+        let r = try rule("name: t\nmatch:\n  dns_suffix: .openai.azure.com\naction: log\n")
+        #expect(r.matches(MatchCtx(dns: "contoso.openai.azure.com")))
+        #expect(r.matches(MatchCtx(dns: "Contoso.OpenAI.Azure.COM")))
+        #expect(!r.matches(MatchCtx(dns: "contoso.openai.azure.com.evil.example")))
+        #expect(!r.matches(MatchCtx(dns: "openai.azure.com")))
+        #expect(!r.matches(MatchCtx(dns: "notopenai.azure.com")))
+        let apex = try rule("name: t\nmatch:\n  dns_suffix: openrouter.ai\naction: log\n")
+        #expect(apex.matches(MatchCtx(dns: "openrouter.ai")))
+        #expect(apex.matches(MatchCtx(dns: "eu.OpenRouter.ai")))
+        #expect(!apex.matches(MatchCtx(dns: "notopenrouter.ai")))
+        #expect(!apex.matches(MatchCtx(dns: "openrouter.ai.example.net")))
+        #expect(!apex.matches(MatchCtx(dns: "ai")))
+        #expect(!r.matches(MatchCtx(basename: "contoso.openai.azure.com")))
+        #expect(r.hasDnsSelector)
+        #expect(!(try rule("name: t\nmatch:\n  comm: curl\naction: log\n")).hasDnsSelector)
+    }
+
+    @Test("dns selectors AND together in match_all (Linux parity)")
+    func dnsSelectorsMatchAll() throws {
+        let r = try rule("name: t\nmatch_all:\n  dns_contains: bedrock-runtime\n  dns_suffix: .amazonaws.com\naction: log\n")
+        #expect(r.matches(MatchCtx(dns: "bedrock-runtime.eu-west-1.amazonaws.com")))
+        #expect(!r.matches(MatchCtx(dns: "bedrock-runtime.evil.example")))
+        #expect(!r.matches(MatchCtx(dns: "s3.us-east-1.amazonaws.com")))
+    }
+
+    @Test("empty dns selectors are rejected at load (Linux parity)")
+    func emptyDnsSelectorsRejected() throws {
+        for key in ["dns_contains", "dns_suffix"] {
+            for block in ["match", "match_all", "not"] {
+                #expect(throws: Error.self) {
+                    try Rules.parse("rules:\n  - name: t\n    \(block):\n      \(key): \" \"\n    action: log\n")
+                }
+            }
+        }
+    }
+
     @Test("combined network selectors: uid constraint + daddr + dport")
     func combinedNetworkSelectors() throws {
         let r = try rule("name: t\nmatch:\n  daddr: 8.8.8.8\n  dport: 53\n  uid: 501\naction: log\n")
@@ -389,6 +427,22 @@ struct RulesTests {
         for rel in ["rules/block-demo.yaml", "rules/network-demo.yaml", "rules/content/macos-lolbins.yaml"] {
             let p = Self.repoRoot.appendingPathComponent(rel).path
             _ = try Rules.load(path: p)
+        }
+    }
+
+    @Test("Sigma pack loads and its AI provider rules match API lookups only")
+    func sigmaPackAiApiRules() throws {
+        let pack = try Rules.load(path: Self.repoRoot.appendingPathComponent("packs/sigma-macos.yaml").path)
+        let ai = pack.rules.filter { $0.name.hasPrefix("sigma-ai-api-") }
+        #expect(!ai.isEmpty)
+        #expect(ai.allSatisfy { $0.action == .log && $0.hasDnsSelector })
+        func hits(_ name: String) -> [String] { ai.filter { $0.matches(MatchCtx(dns: name)) }.map(\.name) }
+        #expect(hits("api.openai.com") == ["sigma-ai-api-openai"])
+        #expect(hits("contoso.openai.azure.com") == ["sigma-ai-api-azure-openai"])
+        #expect(hits("bedrock-runtime.eu-west-1.amazonaws.com") == ["sigma-ai-api-aws-bedrock"])
+        #expect(hits("openrouter.ai") == ["sigma-ai-api-openrouter"])
+        for nearMiss in ["openai.com", "notopenrouter.ai", "api.openai.com.example.net", "bedrock.eu-west-1.amazonaws.com"] {
+            #expect(hits(nearMiss).isEmpty, "\(nearMiss)")
         }
     }
 

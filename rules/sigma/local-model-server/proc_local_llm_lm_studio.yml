@@ -1,0 +1,21 @@
+title: Local Model Server - LM Studio
+id: 6ef2f891-e037-4f9d-8220-bcfe5cc08fae
+status: experimental
+description: LM Studio started on this computer. It serves a language model locally, which keeps prompts off the network and outside provider logs. Detection only.
+references:
+    - https://lmstudio.ai/docs/cli
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: process_creation
+detection:
+    # lms server start
+    selection:
+        Image|endswith: /lms
+        CommandLine|contains: 'server start'
+    condition: selection
+falsepositives:
+    - Sanctioned local model use
+level: informational

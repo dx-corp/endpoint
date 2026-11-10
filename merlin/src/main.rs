@@ -156,6 +156,19 @@ enum Cmd {
     /// Open the local screen: what Deixic sees on this computer, from this
     /// build's collection manifest. Reads nothing remote; collects nothing.
     Screen,
+    /// Scan another file system root (a running container's or a WSL
+    /// distribution's) for the declared AI locations and print the findings,
+    /// tagged with `--location`, as JSON. Chroots into the root first, so its
+    /// symlinks cannot reach the host. Run by the agent itself; needs root.
+    #[command(hide = true)]
+    ScanAiLocations {
+        /// The root to scan, such as /proc/<pid>/root.
+        #[arg(long)]
+        root: PathBuf,
+        /// container:<image> or wsl:<distribution>.
+        #[arg(long)]
+        location: String,
+    },
 }
 
 fn default_ebpf_candidates() -> Vec<PathBuf> {
@@ -192,6 +205,9 @@ async fn main() -> Result<()> {
                 print!("{}", manifest::render_text());
             }
             Ok(())
+        }
+        Cmd::ScanAiLocations { root, location } => {
+            sync::scan_ai_locations_in_root(&root, &location)
         }
         Cmd::Posture => posture::run(),
         Cmd::Hardening => {
@@ -459,7 +475,7 @@ async fn run(
     };
 
     // DNS telemetry (AF_PACKET, port 53 both directions).
-    dnsmon::spawn(tx.clone())?;
+    dnsmon::spawn(rules.clone(), tx.clone())?;
 
     // Network/task/BPF telemetry threads are fail-open: a startup failure
     // is telemetry loss, never a daemon outage.

@@ -1,0 +1,21 @@
+title: AI API - AWS Bedrock
+id: a4d26da2-5d23-40d3-94d3-d26c9fbe80e3
+status: experimental
+description: A program on this computer looked up the AWS Bedrock API host, which shows which program talks to AWS Bedrock. Detection only.
+references:
+    - https://docs.aws.amazon.com/general/latest/gr/bedrock.html
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    # bedrock-runtime.{region}.amazonaws.com and bedrock-runtime-fips.{region}.amazonaws.com
+    selection:
+        QueryName|contains: bedrock-runtime
+        QueryName|endswith: .amazonaws.com
+    condition: selection
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

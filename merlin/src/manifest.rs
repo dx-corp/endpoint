@@ -379,11 +379,11 @@ mod tests {
         // MCP servers and agent assets: names and places only.
         assert_eq!(
             struct_fields(SYNC, "DeviceMCPServer"),
-            ["client", "name", "source", "transport"]
+            ["client", "name", "source", "transport", "location"]
         );
         assert_eq!(
             struct_fields(SYNC, "DeviceAgentAsset"),
-            ["client", "kind", "name", "source"]
+            ["client", "kind", "name", "source", "location"]
         );
         // Accounts: no secrets.
         assert_eq!(

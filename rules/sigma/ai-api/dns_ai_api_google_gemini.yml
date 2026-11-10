@@ -1,0 +1,23 @@
+title: AI API - Google Gemini
+id: a59711bd-8ef9-4e9e-9dc7-c4967e219cb6
+status: experimental
+description: A program on this computer looked up the Google Gemini API host, which shows which program talks to Google Gemini. Detection only.
+references:
+    - https://aistudio.google.com/api-reference
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - generativelanguage.googleapis.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .generativelanguage.googleapis.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

@@ -1,0 +1,25 @@
+title: AI API - Together AI
+id: bd1eab5c-cfd4-4e5d-ad36-0d0034db1ff2
+status: experimental
+description: A program on this computer looked up the Together AI API host, which shows which program talks to Together AI. Detection only.
+references:
+    - https://docs.together.ai/reference/chat-completions-1
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.together.ai
+            - api-inference.together.ai
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.together.ai
+            - .api-inference.together.ai
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

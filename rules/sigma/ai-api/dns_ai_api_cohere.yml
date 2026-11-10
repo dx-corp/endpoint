@@ -1,0 +1,23 @@
+title: AI API - Cohere
+id: d3e27211-6e8d-4e37-b3aa-2690d6c56e55
+status: experimental
+description: A program on this computer looked up the Cohere API host, which shows which program talks to Cohere. Detection only.
+references:
+    - https://docs.cohere.com/reference/chat
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.cohere.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.cohere.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

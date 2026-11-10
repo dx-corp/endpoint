@@ -141,3 +141,44 @@ struct SocketTableOrderTests {
         }
     }
 }
+
+@Suite("dns rule matches")
+struct DnsRuleMatchTests {
+    @Test("a lookup carries the log rules that name a DNS selector and match it")
+    func lookupCarriesMatchedRules() throws {
+        let path = NSTemporaryDirectory() + "merlin-dns-rules-\(UUID().uuidString).jsonl"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let rules = try Rules.parse("""
+        rules:
+          - name: ai-api-openai
+            match:
+              dns_suffix: api.openai.com
+            action: log
+          - name: curl-only
+            match_all:
+              comm: curl
+              dns_suffix: api.openai.com
+            action: log
+          - name: exec-rule
+            match:
+              comm: curl
+            action: log
+        """)
+        let engine = Engine(rules: rules, spool: try SpoolWriter(path: path), canBlock: false)
+        func lookup(_ name: String, comm: String) {
+            engine.handleDns(pid: nil, uid: 501, comm: comm, identity: nil,
+                             msg: DnsMessage(id: 1, isResponse: false, rcode: nil, qname: name, qtype: 1, qclass: 1))
+        }
+        lookup("api.openai.com", comm: "python3")
+        lookup("API.OpenAI.com", comm: "curl")
+        lookup("api.openai.com.example.net", comm: "curl")
+        let events = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map {
+            try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }
+        #expect(events.count == 3)
+        #expect(events[0]?["matched_rules"] as? [String] == ["ai-api-openai"])
+        // exec-rule names no DNS selector, so it never tags a lookup.
+        #expect(events[1]?["matched_rules"] as? [String] == ["ai-api-openai", "curl-only"])
+        #expect(events[2]?["matched_rules"] as? [String] == [])
+    }
+}

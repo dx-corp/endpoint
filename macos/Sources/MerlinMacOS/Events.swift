@@ -51,7 +51,7 @@ struct Ancestor: Codable, Sendable, Equatable {
 ///   deny: ts kind pid uid path sha256 cdhash matched_rules
 ///   kill: ts kind pid uid comm exe matched_rules
 ///   connect: ts kind pid uid comm saddr daddr dport
-///   dns: ts kind pid uid comm query qtype direction rcode
+///   dns: ts kind pid uid comm query qtype direction rcode matched_rules
 ///   file: ts kind pid path op label program
 struct SpoolEvent: Encodable, Sendable {
     let kind: EventKind
@@ -302,6 +302,7 @@ struct SpoolEvent: Encodable, Sendable {
             try opt(qtype, .qtype)
             try opt(direction, .direction)
             try opt(rcode, .rcode)
+            try c.encode(matchedRules ?? [], forKey: .matchedRules)
             try opt(pidStartSec, .pidStartSec)
             try opt(pidStartUsec, .pidStartUsec)
             if ownResolver == true { try c.encode(true, forKey: .ownResolver) }

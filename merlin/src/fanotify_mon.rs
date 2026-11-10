@@ -280,6 +280,7 @@ fn handle_event(
         comm: comm.as_deref(),
         parent_basename: None,
         ancestors: &[],
+        dns: None,
     };
     let mut matched: Vec<String> = rules
         .rules

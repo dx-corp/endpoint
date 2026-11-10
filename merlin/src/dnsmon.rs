@@ -20,6 +20,11 @@
 //! Conditional keys mirror macOS: `own_resolver` when the attributed comm
 //! is NOT the system resolver (an app doing its own DNS), and
 //! `via_system_resolver` when it is.
+//!
+//! Every event carries `matched_rules`: the `log` rules that name
+//! `dns_contains` or `dns_suffix` and whose selectors (with any comm/uid
+//! constraint) the lookup satisfied. Only
+//! log rules apply here, as for file events; nothing is blocked on a lookup.
 
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +36,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
+use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::spool;
 use crate::telemetry;
 
@@ -346,16 +352,40 @@ fn open_socket() -> Result<i32> {
 }
 
 /// Start the capture thread.
-pub fn spawn(tx: Sender<Value>) -> Result<thread::JoinHandle<()>> {
+pub fn spawn(rules: RulesHandle, tx: Sender<Value>) -> Result<thread::JoinHandle<()>> {
     let fd = open_socket()?;
     log::info!("dns: capturing port-53 traffic via AF_PACKET");
     thread::Builder::new()
         .name("dns".into())
-        .spawn(move || capture_loop(fd, tx))
+        .spawn(move || capture_loop(fd, rules, tx))
         .context("spawning dns thread")
 }
 
-fn capture_loop(fd: i32, tx: Sender<Value>) {
+/// The `log` rules that name a DNS selector and match a lookup of `qname`
+/// by `comm`/`uid`. The attributed comm stands in for the basename, as on
+/// macOS; no path or lineage is read for a lookup.
+fn matched_log_rules(
+    rules: &Rules,
+    qname: &str,
+    comm: Option<&str>,
+    uid: Option<u32>,
+) -> Vec<String> {
+    let ctx = MatchCtx {
+        basename: comm,
+        comm,
+        uid,
+        dns: Some(qname),
+        ..Default::default()
+    };
+    rules
+        .rules
+        .iter()
+        .filter(|rule| rule.action == Action::Log && rule.has_dns_selector() && rule.matches(&ctx))
+        .map(|rule| rule.name.clone())
+        .collect()
+}
+
+fn capture_loop(fd: i32, rules: RulesHandle, tx: Sender<Value>) {
     let mut attr = Attribution::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -397,6 +427,7 @@ fn capture_loop(fd: i32, tx: Sender<Value>) {
             .as_deref()
             .is_some_and(|c| SYSTEM_RESOLVERS.contains(&c));
         let own_resolver = comm.is_some() && !via_system;
+        let matched = matched_log_rules(&rules.get(), &msg.qname, comm.as_deref(), uid);
 
         let mut event = serde_json::json!({
             "ts": spool::now_ts(),
@@ -410,6 +441,7 @@ fn capture_loop(fd: i32, tx: Sender<Value>) {
             "qtype": msg.qtype_name(),
             "direction": msg.direction(),
             "rcode": msg.rcode,
+            "matched_rules": matched,
         });
         if own_resolver {
             event["own_resolver"] = Value::Bool(true);
@@ -567,6 +599,28 @@ mod tests {
         assert_eq!(pkt.dport, 53);
         let msg = parse_dns(&frame[pkt.payload_off..pkt.payload_off + pkt.payload_len]).unwrap();
         assert_eq!(msg.qname, "example.com");
+    }
+
+    #[test]
+    fn lookups_carry_the_log_rules_they_match() {
+        let rules = Rules::parse(concat!(
+            "rules:\n",
+            "  - name: ai-api-openai\n    match:\n      dns_suffix: api.openai.com\n    action: log\n",
+            "  - name: kill-on-lookup\n    match:\n      dns_suffix: api.openai.com\n    action: kill\n",
+            "  - name: curl-only\n    match_all:\n      comm: curl\n      dns_suffix: api.openai.com\n    action: log\n",
+            "  - name: exec-rule\n    match:\n      path_basename: curl\n    action: log\n",
+        ))
+        .unwrap();
+        let hit = matched_log_rules(&rules, "api.openai.com", Some("python3"), Some(1000));
+        assert_eq!(hit, vec!["ai-api-openai"]);
+        let by_curl = matched_log_rules(&rules, "API.OpenAI.com", Some("curl"), Some(1000));
+        // exec-rule names no DNS selector, so it never tags a lookup.
+        assert_eq!(by_curl, vec!["ai-api-openai", "curl-only"]);
+        let near_miss =
+            matched_log_rules(&rules, "api.openai.com.example.net", Some("python3"), None);
+        assert!(near_miss.is_empty());
+        let unattributed = matched_log_rules(&rules, "api.openai.com", None, None);
+        assert_eq!(unattributed, vec!["ai-api-openai"]);
     }
 
     #[test]
