@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::desired_state::{self, AssertionReceipt};
+use crate::manifest::{AiLocation, Format, Scope};
 use crate::rules::{Rules, RulesHandle};
 use crate::spool;
 use crate::{linux_hardening, linux_posture};
@@ -2100,31 +2101,15 @@ fn collect_agent_discovery_from(
     Vec<DeviceMCPServer>,
     Vec<DeviceAgentAsset>,
 ) {
-    const CLIS: &[&str] = &[
-        "codex", "claude", "cursor", "gemini", "opencode", "aider", "maestro", "amp", "goose",
-        "qwen", "pi",
-    ];
-    const CONFIGS: &[(&str, &str, bool)] = &[
-        ("claude", ".config/Claude/claude_desktop_config.json", false),
-        ("claude", ".claude.json", false),
-        ("cursor", ".cursor/mcp.json", false),
-        ("gemini", ".gemini/settings.json", false),
-        ("vscode", ".config/Code/User/mcp.json", false),
-        ("codex", ".codex/config.toml", true),
-        ("opencode", ".config/opencode/opencode.json", false),
-        ("claude", ".claude/settings.json", false),
-        ("amp", ".config/amp/settings.json", false),
-        ("qwen", ".qwen/settings.json", false),
-        ("pi", ".pi/agent/settings.json", false),
-        ("maestro", ".maestro/config.toml", true),
-        ("maestro", ".composer/config.toml", true),
-    ];
     let mut clis = BTreeSet::new();
     let mut servers = BTreeSet::new();
     let mut assets = BTreeSet::new();
     let mut plugin_config_reads = 0;
     let mut cursor_manifest_reads = 0;
-    for name in CLIS {
+    for name in AiLocation::linux(Scope::User)
+        .filter(|location| location.format == Format::Executable)
+        .map(|location| location.path)
+    {
         let found = system_bins
             .iter()
             .map(PathBuf::from)
@@ -2142,134 +2127,37 @@ fn collect_agent_discovery_from(
                     .is_ok_and(|meta| meta.is_file() && meta.mode() & 0o111 != 0)
             });
         if found {
-            clis.insert(DeviceAgentCLI {
-                name: (*name).into(),
-            });
+            clis.insert(DeviceAgentCLI { name: name.into() });
         }
     }
     for home in homes.iter().take(65) {
-        collect_cursor_user_assets(home, &mut assets, &mut cursor_manifest_reads);
-        for (client, kind, relative, extension) in [
-            ("agents", "skill", ".agents/skills", ""),
-            ("codex", "skill", ".codex/skills", ""),
-            ("claude", "skill", ".claude/skills", ""),
-            ("claude", "agent", ".claude/agents", "md"),
-            ("gemini", "skill", ".gemini/skills", ""),
-            ("gemini", "extension", ".gemini/extensions", ""),
-            ("opencode", "skill", ".config/opencode/skills", ""),
-            ("opencode", "plugin", ".config/opencode/plugins", "js-ts"),
-            ("opencode", "agent", ".config/opencode/agents", "md"),
-            ("amp", "skill", ".config/amp/skills", ""),
-            ("qwen", "skill", ".qwen/skills", ""),
-            ("pi", "skill", ".pi/agent/skills", ""),
-            ("pi", "extension", ".pi/agent/extensions", "js-ts"),
-            ("maestro", "skill", ".composer/skills", ""),
-            ("maestro", "plugin", ".maestro/plugins", "plugin"),
-            ("maestro", "plugin", ".composer/plugins", "plugin"),
-        ] {
-            let directory = home.join(relative);
-            if !directory
-                .symlink_metadata()
-                .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
-            {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(&directory) else {
-                continue;
-            };
-            for entry in entries.take(256).flatten() {
-                let Ok(kind_on_disk) = entry.file_type() else {
-                    continue;
-                };
-                let file_name = entry.file_name().to_string_lossy().into_owned();
-                let name = if extension == "md" && kind_on_disk.is_file() {
-                    file_name.strip_suffix(".md")
-                } else if extension == "js-ts" && kind_on_disk.is_file() {
-                    file_name
-                        .strip_suffix(".js")
-                        .or_else(|| file_name.strip_suffix(".ts"))
-                } else if kind_on_disk.is_dir()
-                    && (extension == "plugin"
-                        || (extension.is_empty()
-                            && match kind {
-                                "skill" => Some("SKILL.md"),
-                                "extension" => Some("gemini-extension.json"),
-                                _ => None,
-                            }
-                            .is_some_and(|manifest| {
-                                directory
-                                    .join(&file_name)
-                                    .join(manifest)
-                                    .symlink_metadata()
-                                    .is_ok_and(|meta| {
-                                        meta.is_file() && !meta.file_type().is_symlink()
-                                    })
-                            })))
-                {
-                    Some(file_name.as_str())
-                } else {
-                    None
-                };
-                if let Some(name) = name.filter(|name| safe_agent_asset_name(name)) {
-                    assets.insert(DeviceAgentAsset {
-                        client: client.into(),
-                        kind: kind.into(),
-                        name: name.into(),
-                        source: relative.into(),
-                    });
-                    if client == "gemini" && kind == "extension" {
-                        if let Some(body) = read_agent_config(
-                            &directory.join(&file_name).join("gemini-extension.json"),
-                        ) {
-                            for (server, transport) in
-                                json_mcp_entries(&body, &["mcpServers", "servers"])
-                            {
-                                if safe_agent_asset_name(&server) {
-                                    servers.insert(DeviceMCPServer {
-                                        client: "gemini".into(),
-                                        name: server,
-                                        source: ".gemini/extensions/*/gemini-extension.json".into(),
-                                        transport,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    if client == "maestro" && kind == "plugin" {
-                        for config in ["mcp.json", ".mcp.json"] {
-                            if plugin_config_reads >= 32 {
-                                break;
-                            }
-                            if let Some(body) =
-                                read_agent_config(&directory.join(&file_name).join(config))
-                            {
-                                plugin_config_reads += 1;
-                                for (server, transport) in
-                                    json_mcp_entries(&body, &["mcpServers", "servers"])
-                                {
-                                    if safe_agent_asset_name(&server) {
-                                        servers.insert(DeviceMCPServer {
-                                            client: "maestro".into(),
-                                            name: server,
-                                            source: format!("{relative}/*/{config}"),
-                                            transport,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
+        for location in AiLocation::linux(Scope::User)
+            .filter(|location| !matches!(location.kind, "cli" | "config"))
+        {
+            match location.format {
+                Format::CursorAgent => collect_cursor_agents(home, location, &mut assets),
+                Format::CursorPlugin => {
+                    collect_cursor_plugins(home, location, &mut assets, &mut cursor_manifest_reads)
+                }
+                _ => {
+                    collect_user_asset_directory(
+                        home,
+                        location,
+                        &mut assets,
+                        &mut servers,
+                        &mut plugin_config_reads,
+                    );
                     if assets.len() >= 128 {
                         break;
                     }
                 }
             }
-            if assets.len() >= 128 {
-                break;
-            }
         }
-        for (client, relative, is_toml) in CONFIGS {
-            let body = if *client == "codex" {
+        for location in AiLocation::linux(Scope::User).filter(|location| location.kind == "config")
+        {
+            let relative = location.path;
+            let source = location.label();
+            let body = if location.format == Format::CodexToml {
                 read_agent_config_beneath(home, relative)
             } else {
                 read_agent_config(&home.join(relative))
@@ -2278,59 +2166,43 @@ fn collect_agent_discovery_from(
                 continue;
             };
             assets.insert(DeviceAgentAsset {
-                client: (*client).into(),
+                client: location.client.into(),
                 kind: "config".into(),
                 name: "user".into(),
-                source: (*relative).into(),
+                source: source.clone(),
             });
-            if *client == "claude" && *relative == ".claude/settings.json" {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(plugins) = value
-                        .get("enabledPlugins")
-                        .and_then(|value| value.as_object())
-                    {
-                        for (name, enabled) in plugins {
-                            if enabled.as_bool() == Some(true) && safe_agent_asset_name(name) {
-                                assets.insert(DeviceAgentAsset {
-                                    client: "claude".into(),
-                                    kind: "plugin".into(),
-                                    name: name.clone(),
-                                    source: ".claude/settings.json".into(),
-                                });
-                            }
-                        }
-                    }
+            if !location.plugins_key.is_empty() {
+                for name in json_enabled_plugin_names(&body, location.plugins_key) {
+                    assets.insert(DeviceAgentAsset {
+                        client: location.client.into(),
+                        kind: "plugin".into(),
+                        name,
+                        source: source.clone(),
+                    });
                 }
+            }
+            if location.format == Format::Json && location.mcp_keys.is_empty() {
                 continue;
             }
-            if *client == "codex" && *relative == ".codex/config.toml" {
+            if location.format == Format::CodexToml {
                 for name in codex_enabled_plugin_names(&body) {
                     if assets.len() >= 128 {
                         break;
                     }
                     assets.insert(DeviceAgentAsset {
-                        client: "codex".into(),
+                        client: location.client.into(),
                         kind: "plugin".into(),
                         name,
-                        source: ".codex/config.toml".into(),
+                        source: source.clone(),
                     });
                 }
             }
-            let entries: Vec<(String, String)> = if *client == "amp" {
-                json_mcp_entries(&body, &["amp.mcpServers"])
-            } else if *client == "opencode" {
-                json_mcp_entries(&body, &["mcp"])
-            } else if *is_toml {
-                codex_mcp_entries(&body)
-            } else {
-                json_mcp_entries(&body, &["mcpServers", "servers"])
-            };
-            for (name, transport) in entries {
+            for (name, transport) in config_mcp_entries(location, &body) {
                 if safe_agent_asset_name(&name) {
                     servers.insert(DeviceMCPServer {
-                        client: (*client).into(),
+                        client: location.client.into(),
                         name,
-                        source: (*relative).into(),
+                        source: source.clone(),
                         transport,
                     });
                     if servers.len() >= 128 {
@@ -2351,6 +2223,130 @@ fn collect_agent_discovery_from(
         servers.into_iter().take(128).collect(),
         assets.into_iter().take(128).collect(),
     )
+}
+
+/// MCP servers a config location declares: the entries under its `mcp_keys`
+/// for JSON, its `[mcp_servers.<name>]` tables for TOML.
+fn config_mcp_entries(location: &AiLocation, body: &str) -> Vec<(String, String)> {
+    match location.format {
+        Format::Toml | Format::CodexToml => codex_mcp_entries(body),
+        _ => json_mcp_entries(body, location.mcp_keys),
+    }
+}
+
+/// Names under a JSON object key whose value is `true`.
+fn json_enabled_plugin_names(body: &str, key: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    value
+        .get(key)
+        .and_then(|value| value.as_object())
+        .into_iter()
+        .flatten()
+        .filter(|(name, enabled)| enabled.as_bool() == Some(true) && safe_agent_asset_name(name))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// One user asset directory: each entry its format accepts becomes an asset,
+/// and gemini extensions and plugin MCP files add their servers.
+fn collect_user_asset_directory(
+    home: &Path,
+    location: &AiLocation,
+    assets: &mut BTreeSet<DeviceAgentAsset>,
+    servers: &mut BTreeSet<DeviceMCPServer>,
+    plugin_config_reads: &mut usize,
+) {
+    let relative = location.path;
+    let directory = home.join(relative);
+    if !directory
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+    {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return;
+    };
+    let regular_file_in = |child: &str, manifest: &str| {
+        directory
+            .join(child)
+            .join(manifest)
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink())
+    };
+    for entry in entries.take(256).flatten() {
+        let Ok(kind_on_disk) = entry.file_type() else {
+            continue;
+        };
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        let name = match location.format {
+            Format::Md if kind_on_disk.is_file() => file_name.strip_suffix(".md"),
+            Format::JsTs if kind_on_disk.is_file() => file_name
+                .strip_suffix(".js")
+                .or_else(|| file_name.strip_suffix(".ts")),
+            Format::PluginDir if kind_on_disk.is_dir() => Some(file_name.as_str()),
+            Format::SkillDir
+                if kind_on_disk.is_dir() && regular_file_in(&file_name, "SKILL.md") =>
+            {
+                Some(file_name.as_str())
+            }
+            Format::GeminiExtension
+                if kind_on_disk.is_dir()
+                    && regular_file_in(&file_name, "gemini-extension.json") =>
+            {
+                Some(file_name.as_str())
+            }
+            _ => None,
+        };
+        let Some(name) = name.filter(|name| safe_agent_asset_name(name)) else {
+            continue;
+        };
+        assets.insert(DeviceAgentAsset {
+            client: location.client.into(),
+            kind: location.kind.into(),
+            name: name.into(),
+            source: location.label(),
+        });
+        if location.format == Format::GeminiExtension {
+            if let Some(body) =
+                read_agent_config(&directory.join(&file_name).join("gemini-extension.json"))
+            {
+                for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
+                    if safe_agent_asset_name(&server) {
+                        servers.insert(DeviceMCPServer {
+                            client: location.client.into(),
+                            name: server,
+                            source: format!("{}/*/gemini-extension.json", location.label()),
+                            transport,
+                        });
+                    }
+                }
+            }
+        }
+        for config in location.mcp_files {
+            if *plugin_config_reads >= 32 {
+                break;
+            }
+            if let Some(body) = read_agent_config(&directory.join(&file_name).join(config)) {
+                *plugin_config_reads += 1;
+                for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
+                    if safe_agent_asset_name(&server) {
+                        servers.insert(DeviceMCPServer {
+                            client: location.client.into(),
+                            name: server,
+                            source: format!("{}/*/{config}", location.label()),
+                            transport,
+                        });
+                    }
+                }
+            }
+        }
+        if assets.len() >= 128 {
+            break;
+        }
+    }
 }
 
 /// Open each path component relative to the previous directory. A pathname
@@ -2432,36 +2428,50 @@ fn read_agent_dir_entries(directory: &fs::File) -> Option<fs::ReadDir> {
     fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd())).ok()
 }
 
-fn collect_cursor_user_assets(
+/// Cursor agent files: regular `*.md` of at most 64 KiB, opened with no
+/// symlink anywhere below the home.
+fn collect_cursor_agents(
     home: &Path,
+    location: &AiLocation,
+    assets: &mut BTreeSet<DeviceAgentAsset>,
+) {
+    let Some(directory) = open_agent_directory(&home.join(location.path)) else {
+        return;
+    };
+    let Some(entries) = read_agent_dir_entries(&directory) else {
+        return;
+    };
+    for entry in entries.take(256).flatten() {
+        if assets.len() >= 128 {
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(name) = name
+            .strip_suffix(".md")
+            .filter(|name| safe_agent_asset_name(name))
+        else {
+            continue;
+        };
+        if open_agent_regular_file_at(&directory, &format!("{name}.md")).is_some() {
+            assets.insert(DeviceAgentAsset {
+                client: location.client.into(),
+                kind: location.kind.into(),
+                name: name.into(),
+                source: location.label(),
+            });
+        }
+    }
+}
+
+/// Cursor local plugins: a child directory counts when its `plugin.json` or
+/// `.cursor-plugin/plugin.json` is a valid bounded manifest with a safe name.
+fn collect_cursor_plugins(
+    home: &Path,
+    location: &AiLocation,
     assets: &mut BTreeSet<DeviceAgentAsset>,
     manifest_reads: &mut usize,
 ) {
-    if let Some(directory) = open_agent_directory(&home.join(".cursor/agents")) {
-        if let Some(entries) = read_agent_dir_entries(&directory) {
-            for entry in entries.take(256).flatten() {
-                if assets.len() >= 128 {
-                    break;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let Some(name) = name
-                    .strip_suffix(".md")
-                    .filter(|name| safe_agent_asset_name(name))
-                else {
-                    continue;
-                };
-                if open_agent_regular_file_at(&directory, &format!("{name}.md")).is_some() {
-                    assets.insert(DeviceAgentAsset {
-                        client: "cursor".into(),
-                        kind: "agent".into(),
-                        name: name.into(),
-                        source: ".cursor/agents".into(),
-                    });
-                }
-            }
-        }
-    }
-    let Some(directory) = open_agent_directory(&home.join(".cursor/plugins/local")) else {
+    let Some(directory) = open_agent_directory(&home.join(location.path)) else {
         return;
     };
     let Some(entries) = read_agent_dir_entries(&directory) else {
@@ -2492,10 +2502,10 @@ fn collect_cursor_user_assets(
             .is_some_and(|manifest_name| safe_agent_asset_name(&manifest_name));
         if valid_name {
             assets.insert(DeviceAgentAsset {
-                client: "cursor".into(),
-                kind: "plugin".into(),
+                client: location.client.into(),
+                kind: location.kind.into(),
                 name,
-                source: ".cursor/plugins/local".into(),
+                source: location.label(),
             });
         }
     }

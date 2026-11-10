@@ -30,6 +30,32 @@ private func declaredCollectorIds(_ source: String) -> Set<String> {
     return ids
 }
 
+/// The ai_locations rows declared for macOS, as "scope client kind path".
+/// Each row is one inline table on one line of collection-manifest.toml.
+private func declaredMacAILocations(_ source: String) -> Set<String> {
+    var rows = Set<String>()
+    var inside = false
+    for line in source.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+        if line == "ai_locations = [" { inside = true; continue }
+        if inside && line == "]" { inside = false; continue }
+        guard inside, line.hasPrefix("{") else { continue }
+        var fields: [String: String] = [:]
+        for key in ["client", "kind", "path", "scope"] {
+            guard let start = line.range(of: "\(key) = \"") else { continue }
+            let rest = line[start.upperBound...]
+            if let end = rest.firstIndex(of: "\"") { fields[key] = String(rest[..<end]) }
+        }
+        if let platforms = line.range(of: "platforms = [") {
+            let list = line[platforms.upperBound...].prefix { $0 != "]" }
+            if !list.contains("\"macos\"") { continue }
+        }
+        if let scope = fields["scope"], let client = fields["client"], let kind = fields["kind"], let path = fields["path"] {
+            rows.insert("\(scope) \(client) \(kind) \(path)")
+        }
+    }
+    return rows
+}
+
 @Suite("collection manifest")
 struct ManifestTests {
     @Test("collector ids match the Linux port")
@@ -44,6 +70,20 @@ struct ManifestTests {
         #expect(rust.contains("\nmanifest_version = \(CollectionManifest.version)\n"))
         let rustNever = rust.components(separatedBy: "[[never_collected]]").count - 1
         #expect(rustNever == CollectionManifest.neverCollected.count)
+    }
+
+    @Test("AI locations match the declared manifest")
+    func aiLocationsMatchManifest() throws {
+        let declared = declaredMacAILocations(try declaredManifestSource())
+        #expect(!declared.isEmpty)
+        var probed = Set(macAgentCLINames.map { "user \($0) cli \($0)" })
+        probed.insert("user cursor agent \(macCursorAgentsDirectory)")
+        probed.insert("user cursor plugin \(macCursorLocalPluginsDirectory)")
+        for (client, relative, _) in macUserAgentConfigs { probed.insert("user \(client) config \(relative)") }
+        for (client, kind, relative, _) in macUserAgentAssetDirs { probed.insert("user \(client) \(kind) \(relative)") }
+        for (client, relative, _) in macProjectAgentConfigs { probed.insert("project \(client) config \(relative)") }
+        for (client, kind, relative, _) in macProjectAgentAssetDirs { probed.insert("project \(client) \(kind) \(relative)") }
+        #expect(probed == declared, "not probed: \(declared.subtracting(probed).sorted()); not declared: \(probed.subtracting(declared).sorted())")
     }
 
     @Test("active collectors follow the announced capabilities")

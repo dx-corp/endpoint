@@ -71,6 +71,68 @@ pub struct LocalStore {
     pub holds: &'static str,
 }
 
+/// How an AI location is read; see the `ai_locations` comment in the TOML.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Executable,
+    Json,
+    Toml,
+    CodexToml,
+    SkillDir,
+    Md,
+    JsTs,
+    PluginDir,
+    GeminiExtension,
+    CursorAgent,
+    CursorPlugin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Relative to each user's home.
+    User,
+    /// Relative to each visited project directory.
+    Project,
+}
+
+/// One place the `ai_tools` collector looks, from `ai_locations`.
+#[derive(Clone, Copy, Debug)]
+pub struct AiLocation {
+    pub client: &'static str,
+    /// cli, config, skill, agent, plugin or extension.
+    pub kind: &'static str,
+    /// Relative to the home or project; a bare executable name for a cli.
+    pub path: &'static str,
+    pub format: Format,
+    pub scope: Scope,
+    /// linux, macos and/or windows.
+    pub platforms: &'static [&'static str],
+    /// JSON object keys whose entries are MCP servers.
+    pub mcp_keys: &'static [&'static str],
+    /// JSON object key whose `name: true` entries are enabled plugins; empty
+    /// when the file has none.
+    pub plugins_key: &'static str,
+    /// Files inside each plugin directory read for MCP servers.
+    pub mcp_files: &'static [&'static str],
+}
+
+impl AiLocation {
+    /// The fixed source label findings from this location carry.
+    pub fn label(&self) -> String {
+        match self.scope {
+            Scope::User => self.path.to_string(),
+            Scope::Project => format!("project/{}", self.path),
+        }
+    }
+
+    /// The locations the Linux agent reads in `scope`, in declared order.
+    pub fn linux(scope: Scope) -> impl Iterator<Item = &'static AiLocation> {
+        AI_LOCATIONS
+            .iter()
+            .filter(move |l| l.scope == scope && l.platforms.contains(&"linux"))
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct Manifest {
     pub manifest_version: u32,
@@ -93,7 +155,8 @@ pub struct Manifest {
 // MANIFEST_VERSION (bumped when a collector is added, removed or changes
 // what it records), JOURNAL, INVENTORY_FIELDS (the check-in's inventory
 // record kinds), EVENT_KINDS (every telemetry event kind a monitor writes),
-// COLLECTORS, NEVER_COLLECTED and LOCAL, from the TOML.
+// COLLECTORS, NEVER_COLLECTED, LOCAL and AI_LOCATIONS (where the ai_tools
+// collector looks), from the TOML.
 include!(concat!(env!("OUT_DIR"), "/manifest_data.rs"));
 
 pub fn manifest() -> Manifest {
@@ -331,6 +394,65 @@ mod tests {
         for never in NEVER_COLLECTED {
             assert!(!never.proof.is_empty(), "{}", never.claim);
         }
+    }
+
+    #[test]
+    fn every_ai_location_parses_and_its_label_is_unique() {
+        assert!(!AI_LOCATIONS.is_empty());
+        for platform in ["linux", "macos", "windows"] {
+            let mut labels = BTreeSet::new();
+            for location in AI_LOCATIONS
+                .iter()
+                .filter(|l| l.platforms.contains(&platform))
+            {
+                let key = (location.kind == "cli", location.label());
+                assert!(
+                    labels.insert(key),
+                    "{platform}: {} is declared twice",
+                    location.label()
+                );
+            }
+        }
+        for location in AI_LOCATIONS {
+            // A label is a fixed probe: no home, account or absolute path.
+            assert!(!location.path.starts_with('/') && !location.path.contains(".."));
+            assert!(!location.client.is_empty() && !location.kind.is_empty());
+            // The project walker reads these formats only.
+            if location.scope == Scope::Project {
+                assert!(
+                    matches!(
+                        location.format,
+                        Format::Json
+                            | Format::Toml
+                            | Format::SkillDir
+                            | Format::Md
+                            | Format::PluginDir
+                    ),
+                    "project/{} uses a format the project walker does not read",
+                    location.path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ai_tools_collector_reads_the_declared_locations() {
+        // The Linux walkers take every location from AI_LOCATIONS: no
+        // hand-kept list of clients, configs or asset directories remains.
+        let sync = SYNC.split("#[cfg(test)]").next().unwrap_or("");
+        let project = include_str!("sync/project_discovery.rs");
+        for (name, source) in [("sync.rs", sync), ("project_discovery.rs", project)] {
+            for needle in [
+                "const CLIS",
+                "const CONFIGS",
+                "const ASSETS",
+                "\".claude/skills\"",
+            ] {
+                assert!(!source.contains(needle), "{name} still hand-lists {needle}");
+            }
+        }
+        assert!(sync.contains("AiLocation::linux(Scope::User)"));
+        assert!(project.contains("AiLocation::linux(Scope::Project)"));
     }
 
     #[test]

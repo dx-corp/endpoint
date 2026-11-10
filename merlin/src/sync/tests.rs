@@ -1,4 +1,5 @@
 use super::*;
+use crate::manifest::AI_LOCATIONS;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -203,6 +204,162 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Writes the smallest finding each declared location's format accepts
+/// under `base`, so a location the walkers skip fails the tests below.
+fn write_declared_location(base: &Path, location: &AiLocation) {
+    let at = base.join(location.path);
+    let mcp = |keys: &[&str]| {
+        let mut object = serde_json::Map::new();
+        for key in keys {
+            object.insert(
+                (*key).into(),
+                serde_json::json!({"declared": {"command": "private-secret"}}),
+            );
+        }
+        object
+    };
+    match location.format {
+        Format::Executable => {}
+        Format::Json => {
+            let mut object = mcp(location.mcp_keys);
+            if !location.plugins_key.is_empty() {
+                object.insert(
+                    location.plugins_key.into(),
+                    serde_json::json!({"declared@market": true}),
+                );
+            }
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(&at, serde_json::Value::Object(object).to_string()).unwrap();
+        }
+        Format::Toml | Format::CodexToml => {
+            fs::create_dir_all(at.parent().unwrap()).unwrap();
+            fs::write(
+                &at,
+                "[mcp_servers.declared]\ncommand = 'private-secret'\n[plugins.\"declared@market\"]\nenabled = true\n",
+            )
+            .unwrap();
+        }
+        Format::SkillDir => {
+            fs::create_dir_all(at.join("declared")).unwrap();
+            fs::write(at.join("declared/SKILL.md"), "private-secret").unwrap();
+        }
+        Format::Md | Format::CursorAgent => {
+            fs::create_dir_all(&at).unwrap();
+            fs::write(at.join("declared.md"), "private-secret").unwrap();
+        }
+        Format::JsTs => {
+            fs::create_dir_all(&at).unwrap();
+            fs::write(at.join("declared.ts"), "private-secret").unwrap();
+        }
+        Format::PluginDir => {
+            fs::create_dir_all(at.join("declared")).unwrap();
+            for file in location.mcp_files {
+                fs::write(
+                    at.join("declared").join(file),
+                    serde_json::Value::Object(mcp(location.mcp_keys)).to_string(),
+                )
+                .unwrap();
+            }
+        }
+        Format::GeminiExtension => {
+            fs::create_dir_all(at.join("declared")).unwrap();
+            fs::write(
+                at.join("declared/gemini-extension.json"),
+                serde_json::Value::Object(mcp(location.mcp_keys)).to_string(),
+            )
+            .unwrap();
+        }
+        Format::CursorPlugin => {
+            fs::create_dir_all(at.join("declared")).unwrap();
+            fs::write(at.join("declared/plugin.json"), r#"{"name":"declared"}"#).unwrap();
+        }
+    }
+}
+
+/// The MCP source labels a declared location yields when it holds a server.
+fn declared_server_labels(location: &AiLocation) -> Vec<String> {
+    match location.format {
+        Format::Json if !location.mcp_keys.is_empty() => vec![location.label()],
+        Format::Toml | Format::CodexToml => vec![location.label()],
+        Format::GeminiExtension => vec![format!("{}/*/gemini-extension.json", location.label())],
+        Format::PluginDir => location
+            .mcp_files
+            .iter()
+            .map(|file| format!("{}/*/{file}", location.label()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn every_declared_linux_location_is_read() {
+    let root = tmpdir("declared-locations");
+    let home = root.join("home");
+    let bin = home.join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    for location in AiLocation::linux(Scope::User) {
+        if location.format == Format::Executable {
+            let executable = bin.join(location.path);
+            fs::write(&executable, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        write_declared_location(&home, location);
+    }
+    let (clis, servers, assets) = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
+    let project = root.join("project");
+    for location in AiLocation::linux(Scope::Project) {
+        write_declared_location(&project, location);
+    }
+    let (project_servers, project_assets) =
+        collect_project_agent_discovery(std::slice::from_ref(&project));
+
+    for location in AI_LOCATIONS
+        .iter()
+        .filter(|location| location.platforms.contains(&"linux"))
+    {
+        let (servers, assets) = match location.scope {
+            Scope::User => (&servers, &assets),
+            Scope::Project => (&project_servers, &project_assets),
+        };
+        if location.format == Format::Executable {
+            assert!(
+                clis.iter().any(|cli| cli.name == location.path),
+                "cli {} was not found",
+                location.path
+            );
+            continue;
+        }
+        assert!(
+            assets.iter().any(|asset| asset.source == location.label()
+                && asset.client == location.client
+                && asset.kind == location.kind),
+            "{} was not read",
+            location.label()
+        );
+        for label in declared_server_labels(location) {
+            assert!(
+                servers
+                    .iter()
+                    .any(|server| server.source == label && server.name == "declared"),
+                "no MCP server from {label}"
+            );
+        }
+        if !location.plugins_key.is_empty() || location.format == Format::CodexToml {
+            assert!(
+                assets.iter().any(|asset| asset.source == location.label()
+                    && asset.kind == "plugin"
+                    && asset.name == "declared@market"),
+                "no enabled plugin from {}",
+                location.label()
+            );
+        }
+    }
+    let payload =
+        serde_json::to_string(&(servers, assets, project_servers, project_assets)).unwrap();
+    assert!(!payload.contains("private-secret"));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn user_cursor_and_codex_plugin_probes_validate_files_and_hide_values() {
     let root = tmpdir("user-agent-plugins");
@@ -338,7 +495,15 @@ fn user_cursor_probe_keeps_asset_and_directory_entry_caps() {
     }
     let mut plugin_assets = BTreeSet::new();
     let mut manifest_reads = 0;
-    collect_cursor_user_assets(&plugin_home, &mut plugin_assets, &mut manifest_reads);
+    let cursor_plugins = AiLocation::linux(Scope::User)
+        .find(|location| location.format == Format::CursorPlugin)
+        .unwrap();
+    collect_cursor_plugins(
+        &plugin_home,
+        cursor_plugins,
+        &mut plugin_assets,
+        &mut manifest_reads,
+    );
     assert_eq!(manifest_reads, 256);
     assert!(plugin_assets.is_empty());
     fs::remove_dir_all(root).unwrap();
