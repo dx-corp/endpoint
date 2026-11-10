@@ -107,11 +107,11 @@ pub fn resume_sequence(spool_dir: &Path) {
     let reserved = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| parse_sequence_reservation(&text, boot_id()));
-    let now_millis = SystemTime::now()
+    let now_micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(|d| d.as_micros() as u64)
         .unwrap_or(0);
-    let start = resume_start(reserved, now_millis);
+    let start = resume_start(reserved, now_micros);
     EVENT_SEQUENCE.store(start, Ordering::Release);
     if SEQUENCE_FILE.set(path).is_ok() {
         reserve_through(start);
@@ -119,13 +119,15 @@ pub fn resume_sequence(spool_dir: &Path) {
 }
 
 /// Where this boot's sequence resumes: past the recorded reservation, and
-/// never below the current time in milliseconds. The time floor covers a
-/// sensor that ran in this boot without a reservation file (an older build, or
-/// a lost file): a counter that began at 1 never reaches 10^12 events.
-fn resume_start(reserved: Option<u64>, now_millis: u64) -> u64 {
+/// never below the current time in microseconds. The time floor covers a
+/// restart without a reservation (an older build ran earlier in this boot, the
+/// file was lost, or writing it failed). It holds while the agent has averaged
+/// under one event per microsecond; a millisecond floor was overtaken by busy
+/// hosts and replayed sequences (docs/formal/merlin_sequence).
+fn resume_start(reserved: Option<u64>, now_micros: u64) -> u64 {
     reserved
         .map_or(1, |high| high.saturating_add(1))
-        .max(now_millis)
+        .max(now_micros)
         .max(1)
 }
 
@@ -159,14 +161,14 @@ fn reserve_through(seq: u64) {
     match written {
         Ok(()) => SEQUENCE_RESERVED.store(high, Ordering::Release),
         Err(error) => {
-            // Fail open: keep counting; a later restart may then reuse
-            // numbers, which the server refuses as a replay (visible), rather
-            // than dropping events here.
+            // Keep counting rather than drop events, and try again at the next
+            // block instead of giving up for good: until a write succeeds, a
+            // restart relies on the microsecond floor in resume_start.
             log::warn!(
                 "spool: could not record sequence reservation {}: {error}",
                 path.display()
             );
-            SEQUENCE_RESERVED.store(u64::MAX, Ordering::Release);
+            SEQUENCE_RESERVED.store(high, Ordering::Release);
         }
     }
 }
@@ -673,13 +675,15 @@ mod tests {
     #[test]
     fn a_resumed_sequence_is_past_the_reservation_and_the_clock() {
         assert_eq!(
-            super::resume_start(None, 1_794_208_011_000),
-            1_794_208_011_000
+            super::resume_start(None, 1_794_208_011_000_000),
+            1_794_208_011_000_000
         );
         assert_eq!(
-            super::resume_start(Some(1_794_208_011_500), 1_794_208_011_000),
-            1_794_208_011_501
+            super::resume_start(Some(1_794_208_011_000_500), 1_794_208_011_000_000),
+            1_794_208_011_000_501
         );
+        // A millisecond-era counter that outpaced the clock is still passed.
+        assert!(super::resume_start(None, 1_794_208_011_000_000) > 1_794_208_011_000 + 10_000_000);
         assert_eq!(super::resume_start(Some(5), 0), 6);
         assert_eq!(super::resume_start(None, 0), 1);
     }

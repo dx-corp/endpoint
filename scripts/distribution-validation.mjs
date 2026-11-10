@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara", "borg"]);
+const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara", "borg", "ts-rs"]);
 const SHA = /^[0-9a-f]{40}$/;
 const HEX = /^[0-9a-f]{64}$/;
 // `toolDigest` is the one provenance field with two legitimate shapes. Node
@@ -383,6 +383,41 @@ async function validateBorg(root, files) {
   requireValue(member?.name === "borg", "borg standalone workspace member is not the crate");
 }
 
+// The projected macro is standalone, without a committed Cargo.lock. Resolve
+// its manifest and check the applied repair here; destination CI owns compile
+// proof, which alone does not prove deterministic macro expansion.
+async function validateTsRs(root, files) {
+  for (const required of ["README.md", "macros/Cargo.toml", "macros/Cargo.toml.orig",
+    "macros/.cargo_vcs_info.json", "macros/src/lib.rs", "macros/src/deps.rs",
+    "macros/ts-rs-macros-12.0.1.patch"]) {
+    requireValue(files.includes(required), `ts-rs is missing ${required}`);
+  }
+  const manifest = await readFile(join(root, "macros/Cargo.toml"), "utf8");
+  requireValue(!/\bworkspace\s*=\s*true/.test(manifest), "ts-rs Cargo.toml still inherits from the Mono workspace");
+  run("git", ["apply", "--check", "--reverse", "ts-rs-macros-12.0.1.patch"], join(root, "macros"));
+  // Resolution includes dependencies. validate.mjs uses a disposable copy so
+  // Cargo's generated lockfile cannot become part of the publication tree.
+  const metadata = JSON.parse(run("cargo", ["metadata", "--format-version", "1", "--manifest-path", "macros/Cargo.toml"], root));
+  requireValue(metadata.workspace_members.length === 1, "ts-rs standalone workspace gained a member");
+  const member = metadata.packages.find(pkg => pkg.id === metadata.workspace_members[0]);
+  requireValue(member?.name === "ts-rs-macros" && member.version === "12.0.1",
+    "ts-rs standalone workspace member is not the projected crate");
+  requireValue(member.targets.some(target => target.name === "ts_rs_macros"
+    && target.kind.includes("proc-macro") && target.crate_types.includes("proc-macro")),
+    "ts-rs standalone crate is not a proc-macro");
+  requireValue(await realpath(member.manifest_path) === await realpath(join(root, "macros/Cargo.toml")),
+    "ts-rs standalone manifest is not macros/Cargo.toml");
+  const canonicalRoot = await realpath(root);
+  for (const pkg of metadata.packages.filter(pkg => pkg.source === null)) {
+    const path = relative(canonicalRoot, await realpath(pkg.manifest_path)).split("\\").join("/");
+    requireValue(files.includes(path), `ts-rs standalone dependency is outside the projected closure: ${pkg.name}`);
+    for (const target of pkg.targets) {
+      const source = relative(canonicalRoot, await realpath(target.src_path)).split("\\").join("/");
+      requireValue(files.includes(source), `ts-rs standalone target is outside the projected closure: ${pkg.name}/${target.name}`);
+    }
+  }
+}
+
 export async function validateDistribution({ name, target }) {
   requireValue(NAMES.has(name), `unsupported distribution: ${name}`);
   const root = resolve(target);
@@ -391,7 +426,7 @@ export async function validateDistribution({ name, target }) {
   await validateProvenance(name, root);
   const validators = {
     endpoint: validateEndpoint, "private-runner": validateRunner, "private-deployment": validateDeployment,
-    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara, borg: validateBorg,
+    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara, borg: validateBorg, "ts-rs": validateTsRs,
   };
   await validators[name](root, files);
   return { name, target: root, files: files.length, valid: true };

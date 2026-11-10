@@ -1,10 +1,10 @@
 import Foundation
 
 // The collection manifest, macOS port. Same collector ids, groups, retention
-// classes and never-claims as the Linux port's `merlin/src/manifest.rs`, so the
-// transparency page, the TUI and the menu bar app make one claim for both
+// classes and never-claims as the declared manifest (`collection-manifest.toml`,
+// which the Linux port compiles in), so the transparency page, the TUI and the menu bar app make one claim for both
 // operating systems; the `what` text names the macOS sources where they differ.
-// `ManifestTests` reads the Rust file and fails when the id sets or the number
+// `ManifestTests` reads that file and fails when the id sets or the number
 // of never-claims drift apart.
 
 enum ManifestRetention: String, Encodable, Sendable {
@@ -64,8 +64,8 @@ struct CollectionManifest: Encodable, Sendable {
         case journal
     }
 
-    /// Bumped with the Linux port's `MANIFEST_VERSION` when a collector is
-    /// added, removed or changes what it records.
+    /// Bumped with `manifest_version` in `collection-manifest.toml` when a
+    /// collector is added, removed or changes what it records.
     static let version = 2
 
     static let collectors: [ManifestCollector] = [

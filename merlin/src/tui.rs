@@ -196,20 +196,31 @@ fn draw_sees(frame: &mut Frame, app: &App, body: Rect) {
         .map(|c| c.title.chars().count())
         .max()
         .unwrap_or(0);
+    let active = active_ids(&app.local);
     let items: Vec<ListItem> = m
         .collectors
         .iter()
         .map(|c| {
             ListItem::new(Line::from(vec![
+                if active.contains(&c.id) {
+                    teal("● ")
+                } else {
+                    dim("○ ")
+                },
                 plain(format!("{:width$}", c.title)),
                 dim(format!("  {}", retention_short(c.retention))),
             ]))
         })
         .collect();
+    let title = match app.local.running {
+        Some(true) => "What Deixic collects · ● on this device",
+        Some(false) => "What Deixic collects · the sensor is not running, so nothing is collected",
+        None => "What Deixic collects · the sensor's state is unknown",
+    };
     let mut state = ListState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(
         List::new(items)
-            .block(boxed("What Deixic collects"))
+            .block(boxed(title))
             .highlight_style(Style::default().bg(BORDER).add_modifier(Modifier::BOLD))
             .highlight_symbol("› "),
         left,
@@ -241,7 +252,7 @@ fn draw_sees(frame: &mut Frame, app: &App, body: Rect) {
     );
     if app.detail {
         if let Some(collector) = m.collectors.get(app.selected) {
-            draw_detail(frame, collector, body);
+            draw_detail(frame, collector, active.contains(&collector.id), body);
         }
     }
 }
@@ -361,9 +372,20 @@ fn draw_overview(frame: &mut Frame, local: &Local, now: f64, area: Rect) {
     );
 }
 
-fn draw_detail(frame: &mut Frame, collector: &Collector, area: Rect) {
+/// The collectors running on this device: the ones this build's check-in
+/// capabilities select, as the server learns them, while the sensor runs.
+/// With the sensor stopped or its state unknown, none is shown as on.
+fn active_ids(local: &Local) -> Vec<&'static str> {
+    if local.running == Some(true) {
+        manifest::active_collector_ids(&crate::sync::check_in_capabilities())
+    } else {
+        Vec::new()
+    }
+}
+
+fn draw_detail(frame: &mut Frame, collector: &Collector, on: bool, area: Rect) {
     let width = area.width.saturating_sub(8).min(90);
-    let height = area.height.saturating_sub(4).min(11);
+    let height = area.height.saturating_sub(4).min(13);
     let popup = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -372,6 +394,12 @@ fn draw_detail(frame: &mut Frame, collector: &Collector, area: Rect) {
     };
     frame.render_widget(Clear, popup);
     let lines = vec![
+        Line::from(if on {
+            teal("● on this device")
+        } else {
+            dim("○ not running on this device")
+        }),
+        Line::from(""),
         Line::from(vec![dim("What  "), plain(collector.what)]),
         Line::from(vec![dim("Why   "), plain(collector.why)]),
         Line::from(vec![
@@ -486,6 +514,31 @@ mod tests {
         assert!(screen.contains("Never collected") && screen.contains("On this computer"));
         assert!(screen.contains(&format!("manifest v{}", manifest::MANIFEST_VERSION)));
         assert!(screen.contains("dev-desktop"));
+    }
+
+    #[test]
+    fn collectors_read_as_on_only_while_the_sensor_runs() {
+        let mut app = App::new("host".into(), local());
+        let every: Vec<&str> = app.manifest.collectors.iter().map(|c| c.id).collect();
+        assert_eq!(
+            active_ids(&app.local),
+            every,
+            "this build announces every collector"
+        );
+        assert!(app.key(KeyCode::Char('2')));
+        let screen = render(&app);
+        assert!(screen.contains("● on this device"), "{screen}");
+        assert_eq!(screen.matches("○ ").count(), 0, "{screen}");
+        for running in [Some(false), None] {
+            app.local.running = running;
+            assert!(active_ids(&app.local).is_empty());
+            let screen = render(&app);
+            assert_eq!(screen.matches("● ").count(), 0, "{screen}");
+        }
+        assert!(render(&app).contains("state is unknown"));
+        app.local.running = Some(false);
+        assert!(app.key(KeyCode::Enter));
+        assert!(render(&app).contains("○ not running on this device"));
     }
 
     #[test]
