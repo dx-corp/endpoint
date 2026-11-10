@@ -1,0 +1,21 @@
+title: Local Model Server - Ollama
+id: deb00d0e-16c4-4f1e-bdad-7f44bd88c047
+status: experimental
+description: Ollama started on this computer. It serves a language model locally, which keeps prompts off the network and outside provider logs. Detection only.
+references:
+    - https://docs.ollama.com/linux
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: process_creation
+detection:
+    # ExecStart=/usr/bin/ollama serve
+    selection:
+        Image|endswith: /ollama
+        CommandLine|contains: ' serve'
+    condition: selection
+falsepositives:
+    - Sanctioned local model use
+level: informational

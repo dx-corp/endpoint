@@ -66,7 +66,7 @@ struct CollectionManifest: Encodable, Sendable {
 
     /// Bumped with `manifest_version` in `collection-manifest.toml` when a
     /// collector is added, removed or changes what it records.
-    static let version = 2
+    static let version = 4
 
     static let collectors: [ManifestCollector] = [
         ManifestCollector(
@@ -128,9 +128,9 @@ struct CollectionManifest: Encodable, Sendable {
             records: ["exec", "fork", "exit"], capabilities: ["segment_upload"], retention: .telemetryWindow),
         ManifestCollector(
             id: "network_events", group: .securityEvents, title: "Network connections and DNS lookups",
-            what: "Outbound connections (program, source and destination address and port) and the domain names programs look up with the program that asked, from the system resolver's log. Not page contents, messages or what was sent.",
+            what: "Outbound connections (program, source and destination address and port) and the domain names programs look up with the program that asked, from the system resolver's log, and the names of any assigned rules the lookup matched. Not page contents, messages or what was sent.",
             why: "Detecting command-and-control, data exfiltration and DNS tunnelling.",
-            records: ["connect", "dns"], capabilities: ["segment_upload"], retention: .telemetryWindow),
+            records: ["connect", "dns"], capabilities: ["segment_upload", "policy_dns"], retention: .telemetryWindow),
         ManifestCollector(
             id: "file_events", group: .securityEvents, title: "Changes in watched system locations",
             what: "The path, operation and program for changes under a fixed list of persistence and configuration locations (launch items, login items, profiles). File contents are never read.",
@@ -172,7 +172,7 @@ struct CollectionManifest: Encodable, Sendable {
             proof: "no provider opens input, display, video or audio devices; event taps are reported as a posture fact, never read"),
         ManifestNever(
             claim: "Web pages, chats or what you typed into them (domain names looked up are recorded; page contents are not)",
-            proof: "dns events carry pid, uid, comm and the queried name; connect events carry addresses and ports"),
+            proof: "dns events carry pid, uid, comm, the queried name and matched rule names; connect events carry addresses and ports"),
     ]
 
     static let local: [ManifestLocalStore] = [

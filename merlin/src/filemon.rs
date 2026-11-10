@@ -520,6 +520,7 @@ fn emit(
         comm: comm.as_deref(),
         parent_basename: parent_basename.as_deref(),
         ancestors: &ancestor_comms,
+        dns: None,
     };
     // Only log rules apply to file events: kill/block are exec-context
     // actions (documented in linux-sensor.md).

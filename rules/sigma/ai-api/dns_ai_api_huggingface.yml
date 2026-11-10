@@ -1,0 +1,23 @@
+title: AI API - Hugging Face Inference Providers
+id: a7c533b8-2b62-4682-94fe-c39d2f74e5aa
+status: experimental
+description: A program on this computer looked up the Hugging Face Inference Providers API host, which shows which program talks to Hugging Face Inference Providers. Detection only.
+references:
+    - https://huggingface.co/docs/inference-providers/index
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - router.huggingface.co
+    selection_subdomain:
+        QueryName|endswith:
+            - .router.huggingface.co
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

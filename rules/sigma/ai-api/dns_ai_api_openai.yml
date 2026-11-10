@@ -1,0 +1,23 @@
+title: AI API - OpenAI
+id: f70f2505-bc29-48a7-86c8-a5c1048164b6
+status: experimental
+description: A program on this computer looked up the OpenAI API host, which shows which program talks to OpenAI. Detection only.
+references:
+    - https://developers.openai.com/api/reference/overview
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.openai.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.openai.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

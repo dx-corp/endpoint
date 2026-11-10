@@ -76,6 +76,7 @@ let checkInCapabilities: [String] = [
     "rules_sync",
     "policy_cmdline_regex",
     "policy_network",
+    "policy_dns",
     "policy_signing",
     "policy_suspend",
     "endpoint_security_optional",
@@ -219,7 +220,7 @@ func sha256Hex(_ data: Data) -> String {
 }
 
 private let supportedPolicyCapabilities: Set<String> = [
-	"segment_upload", "rules_sync", "policy_cmdline_regex", "policy_network",
+	"segment_upload", "rules_sync", "policy_cmdline_regex", "policy_network", "policy_dns",
 	"policy_signing", "policy_suspend", "endpoint_security_optional", "kqueue_fallback",
 	"openbsm_legacy", "persistence_metadata", "bounded_spool", "os_inventory",
 	"system_inventory", "file_integrity", "security_configuration_assessment", "rootcheck",

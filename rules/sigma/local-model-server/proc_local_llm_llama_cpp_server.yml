@@ -1,0 +1,19 @@
+title: Local Model Server - llama.cpp server
+id: 9455cead-6a20-475a-8234-91baab646a6c
+status: experimental
+description: llama.cpp server started on this computer. It serves a language model locally, which keeps prompts off the network and outside provider logs. Detection only.
+references:
+    - https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: /llama-server
+    condition: selection
+falsepositives:
+    - Sanctioned local model use
+level: informational

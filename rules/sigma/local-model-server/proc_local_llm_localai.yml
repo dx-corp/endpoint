@@ -1,0 +1,19 @@
+title: Local Model Server - LocalAI
+id: bf12d992-9766-45ea-91f2-ec4d58bf68ef
+status: experimental
+description: LocalAI started on this computer. It serves a language model locally, which keeps prompts off the network and outside provider logs. Detection only.
+references:
+    - https://localai.io/docs/basics/getting_started/
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: /local-ai
+    condition: selection
+falsepositives:
+    - Sanctioned local model use
+level: informational

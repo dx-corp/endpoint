@@ -1,0 +1,23 @@
+title: AI API - Replicate
+id: c539ee5e-b8c4-485f-b288-1982cfc688b9
+status: experimental
+description: A program on this computer looked up the Replicate API host, which shows which program talks to Replicate. Detection only.
+references:
+    - https://replicate.com/docs/reference/http
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    selection_name:
+        QueryName:
+            - api.replicate.com
+    selection_subdomain:
+        QueryName|endswith:
+            - .api.replicate.com
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

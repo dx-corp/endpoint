@@ -10,6 +10,10 @@
 //! A rule with only a `uid` fires on uid alone. This gives hash-primary,
 //! basename-fallback semantics for `block` rules naturally: list both in
 //! `match` and either one triggers the deny.
+//!
+//! `dns_contains` and `dns_suffix` match the queried name of a `dns` event
+//! (ASCII case-insensitive, like DNS itself); no other event carries a
+//! name, so they never match exec, file or fanotify decisions.
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -94,6 +98,13 @@ pub struct Match {
     pub parent_basename: Option<String>,
     /// Substring match against any ancestor's comm (nearest-first chain).
     pub ancestor_comm_contains: Option<String>,
+    /// Substring of a `dns` event's queried name (parity with macOS).
+    pub dns_contains: Option<String>,
+    /// A domain and its subdomains, matched at a label boundary:
+    /// `openrouter.ai` matches `openrouter.ai` and `x.openrouter.ai`, never
+    /// `notopenrouter.ai`; a leading dot (`.openai.azure.com`) matches
+    /// subdomains only.
+    pub dns_suffix: Option<String>,
     pub uid: Option<u32>,
 }
 
@@ -126,6 +137,31 @@ pub struct MatchCtx<'a> {
     pub parent_basename: Option<&'a str>,
     /// Ancestor comms, nearest parent first, from the proctree cache.
     pub ancestors: &'a [String],
+    /// The queried name of a `dns` event; absent for every other kind.
+    pub dns: Option<&'a str>,
+}
+
+/// ASCII case-insensitive substring test. An empty needle never matches
+/// (`Rules::parse` rejects one; this keeps the engine fail-safe anyway).
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    !needle.is_empty()
+        && haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// ASCII case-insensitive domain-suffix test at a label boundary: the name
+/// equals `suffix`, the suffix starts with a dot, or the byte before it in
+/// the name is a dot. An empty suffix never matches.
+fn ends_with_domain(name: &str, suffix: &str) -> bool {
+    let (name, suffix) = (name.as_bytes(), suffix.as_bytes());
+    let Some(start) = name.len().checked_sub(suffix.len()) else {
+        return false;
+    };
+    !suffix.is_empty()
+        && name[start..].eq_ignore_ascii_case(suffix)
+        && (start == 0 || suffix[0] == b'.' || name[start - 1] == b'.')
 }
 
 impl Match {
@@ -137,6 +173,8 @@ impl Match {
             || self.comm.is_some()
             || self.parent_basename.is_some()
             || self.ancestor_comm_contains.is_some()
+            || self.dns_contains.is_some()
+            || self.dns_suffix.is_some()
     }
 
     fn uid_ok(&self, ctx: &MatchCtx) -> bool {
@@ -187,6 +225,18 @@ impl Match {
             .is_some_and(|sub| ctx.ancestors.iter().any(|c| c.contains(sub)))
     }
 
+    fn dns_contains_hit(&self, ctx: &MatchCtx) -> bool {
+        self.dns_contains
+            .as_deref()
+            .is_some_and(|c| ctx.dns.is_some_and(|q| contains_ignore_ascii_case(q, c)))
+    }
+
+    fn dns_suffix_hit(&self, ctx: &MatchCtx) -> bool {
+        self.dns_suffix
+            .as_deref()
+            .is_some_and(|s| ctx.dns.is_some_and(|q| ends_with_domain(q, s)))
+    }
+
     /// OR semantics (`match:`): at least one listed selector must hit.
     fn any_hit(&self, ctx: &MatchCtx) -> bool {
         self.sha256_hit(ctx)
@@ -196,6 +246,8 @@ impl Match {
             || self.comm_hit(ctx)
             || self.parent_hit(ctx)
             || self.ancestor_hit(ctx)
+            || self.dns_contains_hit(ctx)
+            || self.dns_suffix_hit(ctx)
     }
 
     /// AND semantics (`match_all:`): every listed selector must hit.
@@ -219,6 +271,12 @@ impl Match {
             return false;
         }
         if self.ancestor_comm_contains.is_some() && !self.ancestor_hit(ctx) {
+            return false;
+        }
+        if self.dns_contains.is_some() && !self.dns_contains_hit(ctx) {
+            return false;
+        }
+        if self.dns_suffix.is_some() && !self.dns_suffix_hit(ctx) {
             return false;
         }
         true
@@ -256,6 +314,16 @@ impl Rule {
                 .match_all
                 .as_ref()
                 .is_some_and(|all| all.has_selectors() || all.uid.is_some())
+    }
+
+    /// Does this rule name `dns_contains` or `dns_suffix` in `match` or
+    /// `match_all`? Only such rules apply to `dns` events, so a plain
+    /// program rule never tags every lookup that program makes.
+    pub fn has_dns_selector(&self) -> bool {
+        [Some(&self.match_), self.match_all.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|m| m.dns_contains.is_some() || m.dns_suffix.is_some())
     }
 
     pub fn has_sha256_selector(&self) -> bool {
@@ -326,6 +394,23 @@ impl Rules {
                     "rule '{}': invalid approved_alternative",
                     rule.name
                 );
+            }
+            for block in [
+                Some(&rule.match_),
+                rule.match_all.as_ref(),
+                rule.not.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for (key, value) in [
+                    ("dns_contains", &block.dns_contains),
+                    ("dns_suffix", &block.dns_suffix),
+                ] {
+                    if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
+                        bail!("rule '{}': {} must not be empty", rule.name, key);
+                    }
+                }
             }
             for (key, block) in [("match_all", &rule.match_all), ("not", &rule.not)] {
                 if let Some(m) = block {
@@ -410,6 +495,69 @@ mod tests {
 
     fn rule(yaml: &str) -> Rule {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn lookup(name: &str) -> MatchCtx<'_> {
+        MatchCtx {
+            dns: Some(name),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dns_suffix_matches_the_end_of_the_queried_name_only() {
+        let r = rule("name: t\nmatch:\n  dns_suffix: .openai.azure.com\naction: log\n");
+        assert!(r.matches(&lookup("contoso.openai.azure.com")));
+        assert!(r.matches(&lookup("Contoso.OpenAI.Azure.COM")));
+        // Near-misses: the suffix appears but is not the end, or the
+        // name lacks the leading label boundary.
+        assert!(!r.matches(&lookup("contoso.openai.azure.com.evil.example")));
+        assert!(!r.matches(&lookup("openai.azure.com")));
+        assert!(!r.matches(&lookup("notopenai.azure.com")));
+        // Without a leading dot: the domain itself and its subdomains, cut
+        // at a label boundary.
+        let apex = rule("name: t\nmatch:\n  dns_suffix: openrouter.ai\naction: log\n");
+        assert!(apex.matches(&lookup("openrouter.ai")));
+        assert!(apex.matches(&lookup("eu.OpenRouter.ai")));
+        assert!(!apex.matches(&lookup("notopenrouter.ai")));
+        assert!(!apex.matches(&lookup("openrouter.ai.example.net")));
+        assert!(!apex.matches(&lookup("ai")));
+        // Events with no queried name (exec, file, fanotify) never match.
+        assert!(!r.matches(&MatchCtx {
+            basename: Some("contoso.openai.azure.com"),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn dns_contains_is_a_case_insensitive_substring_like_macos() {
+        let r = rule("name: t\nmatch:\n  dns_contains: Bedrock-Runtime\naction: log\n");
+        assert!(r.matches(&lookup("bedrock-runtime.us-east-1.amazonaws.com")));
+        assert!(!r.matches(&lookup("bedrock.us-east-1.amazonaws.com")));
+        assert!(!r.matches(&MatchCtx::default()));
+    }
+
+    #[test]
+    fn dns_selectors_and_together_in_match_all() {
+        let r = rule(
+            "name: t\nmatch_all:\n  dns_contains: bedrock-runtime\n  dns_suffix: .amazonaws.com\naction: log\n",
+        );
+        assert!(r.matches(&lookup("bedrock-runtime.eu-west-1.amazonaws.com")));
+        assert!(r.matches(&lookup("bedrock-runtime-fips.us-east-1.amazonaws.com")));
+        assert!(!r.matches(&lookup("bedrock-runtime.evil.example")));
+        assert!(!r.matches(&lookup("s3.us-east-1.amazonaws.com")));
+    }
+
+    #[test]
+    fn empty_dns_selectors_are_rejected_at_load() {
+        for key in ["dns_contains", "dns_suffix"] {
+            for block in ["match", "match_all", "not"] {
+                let yaml = format!(
+                    "rules:\n  - name: t\n    {block}:\n      {key}: \" \"\n    action: log\n"
+                );
+                assert!(Rules::parse(&yaml).is_err(), "{block}.{key}");
+            }
+        }
     }
 
     #[test]
@@ -597,6 +745,217 @@ mod tests {
         };
         assert!(!crontab.matches(&crontab_ctx("crontab -l")));
         assert!(crontab.matches(&crontab_ctx("crontab -e")));
+    }
+
+    /// Every local model server rule in the Sigma pack fires when its server
+    /// starts, and not on the same program's client commands.
+    #[test]
+    fn local_model_server_pack_rules_fire_on_server_starts_only() {
+        let pack = Rules::load(Path::new("../packs/sigma-linux.yaml")).unwrap();
+        let local: Vec<&Rule> = pack
+            .rules
+            .iter()
+            .filter(|r| r.name.starts_with("sigma-local-model-server-"))
+            .collect();
+        // (rule, exe path, command line that starts the server, a near-miss
+        // command line by the same program)
+        let cases = [
+            (
+                "sigma-local-model-server-ollama",
+                "/usr/bin/ollama",
+                "/usr/bin/ollama serve",
+                "/usr/bin/ollama list",
+            ),
+            (
+                "sigma-local-model-server-llama-cpp-server",
+                "/usr/local/bin/llama-server",
+                "llama-server -m model.gguf",
+                "",
+            ),
+            (
+                "sigma-local-model-server-localai",
+                "/usr/local/bin/local-ai",
+                "local-ai run",
+                "",
+            ),
+            (
+                "sigma-local-model-server-vllm",
+                "/home/u/.venv/bin/vllm",
+                "/home/u/.venv/bin/vllm serve Qwen/Qwen3-8B",
+                "/home/u/.venv/bin/vllm --version",
+            ),
+            (
+                "sigma-local-model-server-vllm-2",
+                "/usr/bin/python3",
+                "python3 -m vllm.entrypoints.openai.api_server --model m",
+                "python3 -m pip install vllm",
+            ),
+            (
+                "sigma-local-model-server-lm-studio",
+                "/home/u/.lmstudio/bin/lms",
+                "lms server start",
+                "lms ls",
+            ),
+        ];
+        let rules: std::collections::BTreeSet<&str> =
+            local.iter().map(|r| r.name.as_str()).collect();
+        let covered: std::collections::BTreeSet<&str> = cases.iter().map(|c| c.0).collect();
+        assert_eq!(rules, covered, "every local model server rule needs a case");
+        let hits = |exe: &str, cmdline: &str| -> Vec<String> {
+            let ctx = MatchCtx {
+                basename: exe.rsplit('/').next(),
+                path: Some(exe),
+                cmdline: Some(cmdline),
+                ..Default::default()
+            };
+            local
+                .iter()
+                .filter(|r| r.matches(&ctx))
+                .map(|r| r.name.clone())
+                .collect()
+        };
+        for (rule, exe, start, near_miss) in cases {
+            assert_eq!(hits(exe, start), vec![rule.to_string()], "{start}");
+            // Basename-only rules have no command-line near-miss ("").
+            if !near_miss.is_empty() {
+                assert!(hits(exe, near_miss).is_empty(), "{near_miss}");
+            }
+            // A program with a similar name is not the server (for rules that
+            // select the program by name; the vLLM module rule runs under any
+            // Python).
+            let by_name = local.iter().any(|r| {
+                r.name == rule
+                    && [Some(&r.match_), r.match_all.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|m| m.path_basename.is_some())
+            });
+            if by_name {
+                assert!(
+                    hits(&format!("{exe}-helper"), start).is_empty(),
+                    "{exe}-helper"
+                );
+            }
+        }
+        assert!(local.iter().all(|r| r.action == Action::Log));
+    }
+
+    /// Every AI provider rule in the Sigma pack fires on a lookup of a host
+    /// its provider's API reference names, and on none of the near-misses.
+    #[test]
+    fn ai_api_pack_rules_fire_on_their_provider_and_not_on_near_misses() {
+        let pack = Rules::load(Path::new("../packs/sigma-linux.yaml")).unwrap();
+        let ai: Vec<&Rule> = pack
+            .rules
+            .iter()
+            .filter(|r| r.name.starts_with("sigma-ai-api-"))
+            .collect();
+        // (rule, a lookup of the provider's API host, a near-miss)
+        let cases = [
+            ("sigma-ai-api-openai", "api.openai.com", "openai.com"),
+            (
+                "sigma-ai-api-anthropic",
+                "api.anthropic.com",
+                "anthropic.com",
+            ),
+            (
+                "sigma-ai-api-google-gemini",
+                "generativelanguage.googleapis.com",
+                "language.googleapis.com",
+            ),
+            (
+                "sigma-ai-api-google-vertex-ai",
+                "aiplatform.googleapis.com",
+                "storage.googleapis.com",
+            ),
+            (
+                "sigma-ai-api-google-vertex-ai-2",
+                "us-central1-aiplatform.googleapis.com",
+                "us-central1-aiplatform.example.net",
+            ),
+            (
+                "sigma-ai-api-azure-openai",
+                "contoso.openai.azure.com",
+                "contoso.cognitiveservices.azure.com",
+            ),
+            (
+                "sigma-ai-api-aws-bedrock",
+                "bedrock-runtime.us-east-1.amazonaws.com",
+                "bedrock.us-east-1.amazonaws.com",
+            ),
+            (
+                "sigma-ai-api-aws-bedrock",
+                "bedrock-runtime-fips.us-west-2.amazonaws.com",
+                "s3.us-west-2.amazonaws.com",
+            ),
+            ("sigma-ai-api-mistral", "api.mistral.ai", "mistral.ai"),
+            ("sigma-ai-api-cohere", "api.cohere.com", "cohere.com"),
+            ("sigma-ai-api-groq", "api.groq.com", "groq.com"),
+            ("sigma-ai-api-together-ai", "api.together.ai", "together.ai"),
+            (
+                "sigma-ai-api-together-ai-2",
+                "api-inference.together.ai",
+                "inference.together.ai",
+            ),
+            (
+                "sigma-ai-api-fireworks-ai",
+                "api.fireworks.ai",
+                "app.fireworks.ai",
+            ),
+            (
+                "sigma-ai-api-deepseek",
+                "api.deepseek.com",
+                "chat.deepseek.com",
+            ),
+            ("sigma-ai-api-xai", "api.x.ai", "x.ai"),
+            (
+                "sigma-ai-api-perplexity",
+                "api.perplexity.ai",
+                "www.perplexity.ai",
+            ),
+            (
+                "sigma-ai-api-openrouter",
+                "openrouter.ai",
+                "notopenrouter.ai",
+            ),
+            (
+                "sigma-ai-api-hugging-face-inference-providers",
+                "router.huggingface.co",
+                "huggingface.co",
+            ),
+            (
+                "sigma-ai-api-replicate",
+                "api.replicate.com",
+                "replicate.com",
+            ),
+        ];
+        let rules: std::collections::BTreeSet<&str> = ai.iter().map(|r| r.name.as_str()).collect();
+        let covered: std::collections::BTreeSet<&str> = cases.iter().map(|c| c.0).collect();
+        assert_eq!(rules, covered, "every AI provider rule needs a case");
+        let hits = |name: &str| -> Vec<&str> {
+            ai.iter()
+                .filter(|r| r.matches(&lookup(name)))
+                .map(|r| r.name.as_str())
+                .collect()
+        };
+        for (rule, host, near_miss) in cases {
+            assert_eq!(hits(host), vec![rule], "{host}");
+            assert!(hits(near_miss).is_empty(), "{near_miss}");
+            assert!(
+                hits(&format!("{host}.example.net")).is_empty(),
+                "{host}.example.net"
+            );
+            // Rules name DNS selectors only, so program events never match.
+            assert!(
+                ai.iter().all(|r| !r.matches(&MatchCtx {
+                    basename: Some(host),
+                    comm: Some(host),
+                    ..Default::default()
+                })),
+                "{host}"
+            );
+        }
+        assert!(ai.iter().all(|r| r.action == Action::Log));
     }
 
     #[test]

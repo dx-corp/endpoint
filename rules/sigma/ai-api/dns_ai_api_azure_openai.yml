@@ -1,0 +1,20 @@
+title: AI API - Azure OpenAI
+id: fea353b0-dc39-42bf-917a-7c0145942431
+status: experimental
+description: A program on this computer looked up the Azure OpenAI API host, which shows which program talks to Azure OpenAI. Detection only.
+references:
+    - https://learn.microsoft.com/en-us/azure/ai-foundry/openai/reference
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: dns_query
+detection:
+    # https://{your-resource-name}.openai.azure.com
+    selection:
+        QueryName|endswith: .openai.azure.com
+    condition: selection
+falsepositives:
+    - Sanctioned use of the provider's API
+level: informational

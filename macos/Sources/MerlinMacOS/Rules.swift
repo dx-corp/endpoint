@@ -8,8 +8,9 @@
 // selector hits. `not:` vetoes: any selector hit in `not` and the rule
 // does not fire. Evaluation order: not → match_all → match. `uid` is an
 // AND-constraint inside `match`/`match_all`, not a selector. A rule with
-// only a `uid` fires on uid alone. Hash selectors, `dns_contains` and
-// `cmdline_regex` compare case-insensitively.
+// only a `uid` fires on uid alone. Hash selectors, `dns_contains`,
+// `dns_suffix` and `cmdline_regex` compare case-insensitively. The DNS
+// selectors match only a `dns` event's queried name.
 //
 // Validation (parity with Linux): unknown keys are rejected at load
 // (rules/rule/match levels), and an empty `match_all` (no selector and
@@ -106,6 +107,12 @@ struct Rules: Sendable {
             if let all = rule.matchAll, !all.hasSelectors, all.uid == nil {
                 throw MerlinError.plain("rule '\(rule.name)': match_all must list at least one selector or uid")
             }
+            for block in [rule.match, rule.matchAll, rule.not].compactMap({ $0 }) {
+                for (key, value) in [("dns_contains", block.dnsContains), ("dns_suffix", block.dnsSuffix)]
+                where value.map({ $0.trimmingCharacters(in: .whitespaces).isEmpty }) == true {
+                    throw MerlinError.plain("rule '\(rule.name)': \(key) must not be empty")
+                }
+            }
         }
         return rules
     }
@@ -170,6 +177,14 @@ struct Rule: Decodable, Sendable {
         match.sha256 != nil || matchAll?.sha256 != nil
     }
 
+    /// Names `dns_contains` or `dns_suffix` in `match` or `match_all`
+    /// (Linux: `Rule::has_dns_selector`). Only such rules are logged on
+    /// `dns` events, so a plain program rule never tags every lookup.
+    var hasDnsSelector: Bool {
+        let blocks: [Match?] = [match, matchAll]
+        return blocks.contains { $0?.dnsContains != nil || $0?.dnsSuffix != nil }
+    }
+
     var hasSigningSelector: Bool {
         let blocks: [Match?] = [match, matchAll]
         return blocks.contains {
@@ -221,6 +236,7 @@ struct Match: Decodable, Sendable {
     var daddr: String? = nil
     var dport: UInt16? = nil
     var dnsContains: String? = nil
+    var dnsSuffix: String? = nil
     var teamId: String? = nil
     var signingId: String? = nil
     var isPlatformBinary: Bool? = nil
@@ -242,6 +258,7 @@ struct Match: Decodable, Sendable {
         case daddr
         case dport
         case dnsContains = "dns_contains"
+        case dnsSuffix = "dns_suffix"
         case teamId = "team_id"
         case signingId = "signing_id"
         case isPlatformBinary = "is_platform_binary"
@@ -254,7 +271,7 @@ struct Match: Decodable, Sendable {
     init(from decoder: Decoder) throws {
         try rejectUnknownKeys(decoder, allowed: [
             "sha256", "path_basename", "path_prefix", "cmdline_contains", "cmdline_regex", "uid",
-            "cdhash", "daddr", "dport", "dns_contains", "team_id", "signing_id",
+            "cdhash", "daddr", "dport", "dns_contains", "dns_suffix", "team_id", "signing_id",
             "is_platform_binary", "unsigned", "parent_basename", "ancestor_comm_contains", "comm"
         ], type: "match")
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -268,6 +285,7 @@ struct Match: Decodable, Sendable {
         daddr = try c.decodeIfPresent(String.self, forKey: .daddr)
         dport = try c.decodeIfPresent(UInt16.self, forKey: .dport)
         dnsContains = try c.decodeIfPresent(String.self, forKey: .dnsContains)
+        dnsSuffix = try c.decodeIfPresent(String.self, forKey: .dnsSuffix)
         teamId = try c.decodeIfPresent(String.self, forKey: .teamId)
         signingId = try c.decodeIfPresent(String.self, forKey: .signingId)
         isPlatformBinary = try c.decodeIfPresent(Bool.self, forKey: .isPlatformBinary)
@@ -331,7 +349,7 @@ extension Match {
     var hasSelectors: Bool {
         sha256 != nil || pathBasename != nil || pathPrefix != nil
             || cmdlineContains != nil || cmdlineRegex != nil || cdhash != nil
-            || daddr != nil || dport != nil || dnsContains != nil
+            || daddr != nil || dport != nil || dnsContains != nil || dnsSuffix != nil
             || teamId != nil || signingId != nil || isPlatformBinary != nil
             || parentBasename != nil || ancestorCommContains != nil || comm != nil || unsigned != nil
     }
@@ -380,6 +398,15 @@ extension Match {
         dnsContains.map { c.dns?.range(of: $0, options: .caseInsensitive) != nil } ?? false
     }
 
+    /// Label-boundary domain suffix (Linux: `ends_with_domain`): the name
+    /// equals the suffix, the suffix starts with a dot, or a dot precedes it.
+    private func dnsSuffixHit(_ c: MatchCtx) -> Bool {
+        guard let suffix = dnsSuffix, !suffix.isEmpty, let name = c.dns,
+              let range = name.range(of: suffix, options: [.caseInsensitive, .anchored, .backwards]) else { return false }
+        return range.lowerBound == name.startIndex || suffix.hasPrefix(".")
+            || name[name.index(before: range.lowerBound)] == "."
+    }
+
     private func teamIdHit(_ c: MatchCtx) -> Bool {
         teamId.map { $0 == c.teamId } ?? false
     }
@@ -414,7 +441,7 @@ extension Match {
     func anyHit(_ c: MatchCtx) -> Bool {
         sha256Hit(c) || basenameHit(c) || prefixHit(c) || cmdlineHit(c)
             || regexHit(c) || cdhashHit(c) || daddrHit(c) || dportHit(c)
-            || dnsHit(c) || teamIdHit(c) || signingIdHit(c) || platformHit(c)
+            || dnsHit(c) || dnsSuffixHit(c) || teamIdHit(c) || signingIdHit(c) || platformHit(c)
             || parentHit(c) || ancestorHit(c) || commHit(c) || unsignedHit(c)
     }
 
@@ -429,6 +456,7 @@ extension Match {
         if daddr != nil, !daddrHit(c) { return false }
         if dport != nil, !dportHit(c) { return false }
         if dnsContains != nil, !dnsHit(c) { return false }
+        if dnsSuffix != nil, !dnsSuffixHit(c) { return false }
         if teamId != nil, !teamIdHit(c) { return false }
         if signingId != nil, !signingIdHit(c) { return false }
         if isPlatformBinary != nil, !platformHit(c) { return false }

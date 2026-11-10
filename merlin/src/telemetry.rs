@@ -377,6 +377,7 @@ fn handle_exec(
         comm: Some(comm.as_str()),
         parent_basename: parent_basename.as_deref(),
         ancestors: &ancestor_comms,
+        dns: None,
     };
     let mut logged = Vec::new();
     let mut killed = Vec::new();

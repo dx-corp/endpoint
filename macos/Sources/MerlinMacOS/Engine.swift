@@ -484,6 +484,7 @@ struct Engine: Sendable {
         let killed = applyNetworkRules(ctx: ctx, pid: pid, uid: uid, comm: comm, identity: identity, via: via)
         spool.write(SpoolEvent(
             kind: .dns, source: source, pid: pid, uid: uid, comm: comm,
+            matchedRules: dnsLogMatches(ctx),
             query: msg.qname, qtype: msg.qtypeName,
             direction: msg.direction, rcode: msg.rcode,
             pidStartSec: identity?.startSec, pidStartUsec: identity?.startUsec,
@@ -594,6 +595,12 @@ struct Engine: Sendable {
             }
         }
         return killed
+    }
+
+    /// The `log` rules that name a DNS selector and match this lookup
+    /// (Linux: `dnsmon::matched_log_rules`). Detection only.
+    func dnsLogMatches(_ ctx: MatchCtx) -> [String] {
+        rules.rules.filter { $0.action == .log && $0.hasDnsSelector && $0.matches(ctx) }.map(\.name)
     }
 
     private func spoolKills(_ killed: [String], pid: Int32?, uid: UInt32?, comm: String?, identity: ProcessIdentity?) {

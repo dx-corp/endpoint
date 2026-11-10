@@ -23,9 +23,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod check_in_wire;
+mod container_discovery;
 use check_in_wire::DeviceCheckInRequest;
 
 mod project_discovery;
+use container_discovery::collect_container_agent_discovery;
+pub(crate) use container_discovery::scan_ai_locations_in_root;
 use project_discovery::{collect_project_agent_discovery, configured_agent_workspace_roots};
 
 use anyhow::{Context, Result};
@@ -54,6 +57,7 @@ pub(crate) const CHECK_IN_CAPABILITIES: &[&str] = &[
     "cloud_inventory",
     "posture_reporting",
     "linux_boot_trust_posture",
+    "policy_dns",
 ];
 
 /// Everything this build announces at check-in: the collection capabilities
@@ -258,6 +262,7 @@ fn decode_policy_envelope(
         "rootcheck",
         "container_inventory",
         "cloud_inventory",
+        "policy_dns",
         "desired_state.v1",
         "executor.apt",
         "executor.systemd",
@@ -452,25 +457,31 @@ struct DeviceInventory {
     collection_source: String,
 }
 
-#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
 struct DeviceAgentCLI {
     name: String,
 }
 
-#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+// `location` is empty on the device itself (the server reads absent as host)
+// and container:<image> for a finding inside a running container.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
 struct DeviceMCPServer {
     client: String,
     name: String,
     source: String,
     transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    location: String,
 }
 
-#[derive(Serialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
 struct DeviceAgentAsset {
     client: String,
     kind: String,
     name: String,
     source: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    location: String,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -528,6 +539,10 @@ struct DeviceContainer {
     state: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     runtime: String,
+    /// The container's init process on this host while it runs; used to read
+    /// its file system for AI tools, never sent.
+    #[serde(skip)]
+    init_pid: u32,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -1728,6 +1743,7 @@ fn collect_containers() -> Vec<DeviceContainer> {
             image: String::new(),
             state: "running".into(),
             runtime: "container".into(),
+            init_pid: 0,
         })
         .collect::<Vec<_>>();
     // Docker's metadata directory is readable by some root-installed agents
@@ -1765,11 +1781,13 @@ fn collect_containers() -> Vec<DeviceContainer> {
                 .and_then(|value| value.get("Status"))
                 .and_then(|value| value.as_str())
                 .unwrap_or("unknown");
+            let init_pid = docker_running_init_pid(&value);
             if let Some(container) = containers.iter_mut().find(|container| container.id == id) {
                 container.name = inventory_text(name, 256);
                 container.image = inventory_text(image, 256);
                 container.state = inventory_text(state, 64);
                 container.runtime = "docker".into();
+                container.init_pid = init_pid;
             } else {
                 containers.push(DeviceContainer {
                     id,
@@ -1777,11 +1795,27 @@ fn collect_containers() -> Vec<DeviceContainer> {
                     image: inventory_text(image, 256),
                     state: inventory_text(state, 64),
                     runtime: "docker".into(),
+                    init_pid,
                 });
             }
         }
     }
     containers
+}
+
+/// Docker's `State.Pid` while `State.Running` is true; 0 otherwise.
+fn docker_running_init_pid(config: &serde_json::Value) -> u32 {
+    let state = config.get("State");
+    let running = state
+        .and_then(|state| state.get("Running"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    state
+        .and_then(|state| state.get("Pid"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| running && *pid > 1)
+        .unwrap_or(0)
 }
 
 fn collect_processes() -> Vec<DeviceProcess> {
@@ -2030,7 +2064,8 @@ fn collect_inventory() -> DeviceInventory {
     let (package_manager, packages) = collect_packages();
     let (users, groups) = collect_users_groups();
     let (cloud_provider, cloud_instance_id, cloud_region) = cloud_metadata();
-    let (agent_clis, mcp_servers, agent_assets) = collect_agent_discovery();
+    let containers = collect_containers();
+    let (agent_clis, mcp_servers, agent_assets) = collect_agent_discovery(&containers);
     DeviceInventory {
         collected_at: format!("{:.3}", spool::now_ts()),
         package_manager,
@@ -2042,7 +2077,7 @@ fn collect_inventory() -> DeviceInventory {
         users,
         groups,
         listening_ports: collect_listening_ports(),
-        containers: collect_containers(),
+        containers,
         processes: collect_processes(),
         fim: collect_fim(),
         sca: collect_sca(),
@@ -2056,33 +2091,20 @@ fn collect_inventory() -> DeviceInventory {
 
 // Probe only fixed executable names and fixed configuration locations. Never
 // execute a CLI or include configuration values in a managed heartbeat.
-fn collect_agent_discovery() -> (
+fn collect_agent_discovery(
+    containers: &[DeviceContainer],
+) -> (
     Vec<DeviceAgentCLI>,
     Vec<DeviceMCPServer>,
     Vec<DeviceAgentAsset>,
 ) {
-    let mut homes = vec![PathBuf::from("/root")];
-    if let Ok(entries) = fs::read_dir("/home") {
-        let mut candidates: Vec<_> = entries
-            .take(256)
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-            .map(|entry| entry.path())
-            .collect();
-        candidates.sort();
-        homes.extend(candidates.into_iter().take(64));
-    }
-    let mut discovery = collect_agent_discovery_from(
-        &homes,
-        &[
-            "/usr/local/bin",
-            "/usr/bin",
-            "/home/linuxbrew/.linuxbrew/bin",
-        ],
-    );
+    let mut discovery = collect_agent_discovery_from(&agent_homes(), AGENT_SYSTEM_BINS);
     let roots = configured_agent_workspace_roots();
     let (project_servers, project_assets) = collect_project_agent_discovery(&roots);
+    let (container_servers, container_assets) = collect_container_agent_discovery(containers);
     discovery.1.extend(project_servers);
+    discovery.1.extend(container_servers);
+    discovery.2.extend(container_assets);
     discovery.1.sort();
     discovery.1.dedup();
     discovery.1.truncate(128);
@@ -2091,6 +2113,79 @@ fn collect_agent_discovery() -> (
     discovery.2.dedup();
     discovery.2.truncate(128);
     discovery
+}
+
+const AGENT_SYSTEM_BINS: &[&str] = &[
+    "/usr/local/bin",
+    "/usr/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+];
+
+/// The homes to scan, as this process sees `/`: `/root`, then the login
+/// homes in `/etc/passwd`, then the directories in `/home` (which also
+/// covers directory-service accounts that `/etc/passwd` does not list). At
+/// most `MAX_AGENT_HOMES`.
+fn agent_homes() -> Vec<PathBuf> {
+    let passwd = bounded_read("/etc/passwd", 1 << 20)
+        .map(|body| String::from_utf8_lossy(&body).into_owned())
+        .unwrap_or_default();
+    let mut listed = Vec::new();
+    if let Ok(entries) = fs::read_dir("/home") {
+        listed = entries
+            .take(256)
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.path())
+            .collect();
+    }
+    agent_homes_from(&passwd, listed)
+}
+
+/// Homes scanned per device (or per container root).
+const MAX_AGENT_HOMES: usize = 65;
+
+fn agent_homes_from(passwd: &str, mut listed: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut homes = vec![PathBuf::from("/root")];
+    let mut from_passwd: Vec<PathBuf> = passwd
+        .lines()
+        .take(4096)
+        .filter_map(passwd_login_home)
+        .filter(|home| home.is_dir())
+        .collect();
+    from_passwd.sort();
+    listed.sort();
+    for home in from_passwd.into_iter().chain(listed) {
+        if homes.len() >= MAX_AGENT_HOMES {
+            break;
+        }
+        if !homes.contains(&home) {
+            homes.push(home);
+        }
+    }
+    homes
+}
+
+/// The home of an `/etc/passwd` line for root or a person's account: uid 0
+/// or at least 1000 (not `nobody`), an absolute home other than `/`, and a
+/// shell that allows login.
+fn passwd_login_home(line: &str) -> Option<PathBuf> {
+    let fields: Vec<&str> = line.split(':').collect();
+    let [_, _, uid, _, _, home, shell] = fields[..] else {
+        return None;
+    };
+    let uid: u32 = uid.parse().ok()?;
+    let person = uid == 0 || (uid >= 1000 && uid != 65534);
+    let login = !shell.ends_with("/nologin") && !shell.ends_with("/false");
+    let home = Path::new(home);
+    let plain = home.is_absolute()
+        && home.parent().is_some()
+        && home.components().all(|part| {
+            matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        });
+    (person && login && plain).then(|| home.to_path_buf())
 }
 
 fn collect_agent_discovery_from(
@@ -2130,7 +2225,7 @@ fn collect_agent_discovery_from(
             clis.insert(DeviceAgentCLI { name: name.into() });
         }
     }
-    for home in homes.iter().take(65) {
+    for home in homes.iter().take(MAX_AGENT_HOMES) {
         for location in AiLocation::linux(Scope::User)
             .filter(|location| !matches!(location.kind, "cli" | "config"))
         {
@@ -2166,6 +2261,7 @@ fn collect_agent_discovery_from(
                 continue;
             };
             assets.insert(DeviceAgentAsset {
+                location: String::new(),
                 client: location.client.into(),
                 kind: "config".into(),
                 name: "user".into(),
@@ -2174,6 +2270,7 @@ fn collect_agent_discovery_from(
             if !location.plugins_key.is_empty() {
                 for name in json_enabled_plugin_names(&body, location.plugins_key) {
                     assets.insert(DeviceAgentAsset {
+                        location: String::new(),
                         client: location.client.into(),
                         kind: "plugin".into(),
                         name,
@@ -2190,6 +2287,7 @@ fn collect_agent_discovery_from(
                         break;
                     }
                     assets.insert(DeviceAgentAsset {
+                        location: String::new(),
                         client: location.client.into(),
                         kind: "plugin".into(),
                         name,
@@ -2200,6 +2298,7 @@ fn collect_agent_discovery_from(
             for (name, transport) in config_mcp_entries(location, &body) {
                 if safe_agent_asset_name(&name) {
                     servers.insert(DeviceMCPServer {
+                        location: String::new(),
                         client: location.client.into(),
                         name,
                         source: source.clone(),
@@ -2304,6 +2403,7 @@ fn collect_user_asset_directory(
             continue;
         };
         assets.insert(DeviceAgentAsset {
+            location: String::new(),
             client: location.client.into(),
             kind: location.kind.into(),
             name: name.into(),
@@ -2316,6 +2416,7 @@ fn collect_user_asset_directory(
                 for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
                     if safe_agent_asset_name(&server) {
                         servers.insert(DeviceMCPServer {
+                            location: String::new(),
                             client: location.client.into(),
                             name: server,
                             source: format!("{}/*/gemini-extension.json", location.label()),
@@ -2334,6 +2435,7 @@ fn collect_user_asset_directory(
                 for (server, transport) in json_mcp_entries(&body, location.mcp_keys) {
                     if safe_agent_asset_name(&server) {
                         servers.insert(DeviceMCPServer {
+                            location: String::new(),
                             client: location.client.into(),
                             name: server,
                             source: format!("{}/*/{config}", location.label()),
@@ -2387,6 +2489,23 @@ fn open_agent_child_dir(parent: &fs::File, name: &[u8]) -> Option<fs::File> {
 
 fn open_agent_regular_file_at(parent: &fs::File, name: &str) -> Option<fs::File> {
     let name = CString::new(name).ok()?;
+    // Refuse a device node before opening it: inside a container, its root
+    // can create one, and opening some devices (a watchdog) has effects.
+    // SAFETY: `parent` is open, `name` is NUL terminated and `stat` is a
+    // valid out pointer for the call.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            &mut stat,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+        || stat.st_mode & libc::S_IFMT != libc::S_IFREG
+    {
+        return None;
+    }
     // O_NONBLOCK prevents an attacker from stalling a root collector with a FIFO.
     // SAFETY: `parent` is open during the call and `name` is NUL terminated.
     let fd = unsafe {
@@ -2424,8 +2543,26 @@ fn read_agent_config_beneath(home: &Path, relative: &str) -> Option<String> {
     read_agent_file_at(&directory, file)
 }
 
-fn read_agent_dir_entries(directory: &fs::File) -> Option<fs::ReadDir> {
-    fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd())).ok()
+/// The first 256 entry names of an open directory. Reads the descriptor
+/// itself, so it works without `/proc` (inside a container's root).
+fn read_agent_dir_entries(directory: &fs::File) -> Option<Vec<std::ffi::OsString>> {
+    let mut entries = nix::dir::Dir::openat(
+        Some(directory.as_raw_fd()),
+        ".",
+        nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .ok()?;
+    Some(
+        entries
+            .iter()
+            .take(258)
+            .filter_map(Result::ok)
+            .map(|entry| std::ffi::OsStr::from_bytes(entry.file_name().to_bytes()).to_os_string())
+            .filter(|name| name != "." && name != "..")
+            .take(256)
+            .collect(),
+    )
 }
 
 /// Cursor agent files: regular `*.md` of at most 64 KiB, opened with no
@@ -2441,11 +2578,11 @@ fn collect_cursor_agents(
     let Some(entries) = read_agent_dir_entries(&directory) else {
         return;
     };
-    for entry in entries.take(256).flatten() {
+    for entry in entries {
         if assets.len() >= 128 {
             break;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.to_string_lossy().into_owned();
         let Some(name) = name
             .strip_suffix(".md")
             .filter(|name| safe_agent_asset_name(name))
@@ -2454,6 +2591,7 @@ fn collect_cursor_agents(
         };
         if open_agent_regular_file_at(&directory, &format!("{name}.md")).is_some() {
             assets.insert(DeviceAgentAsset {
+                location: String::new(),
                 client: location.client.into(),
                 kind: location.kind.into(),
                 name: name.into(),
@@ -2477,11 +2615,11 @@ fn collect_cursor_plugins(
     let Some(entries) = read_agent_dir_entries(&directory) else {
         return;
     };
-    for entry in entries.take(256).flatten() {
+    for entry in entries {
         if assets.len() >= 128 || *manifest_reads >= 256 {
             break;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.to_string_lossy().into_owned();
         if !safe_agent_asset_name(&name) {
             continue;
         }
@@ -2502,6 +2640,7 @@ fn collect_cursor_plugins(
             .is_some_and(|manifest_name| safe_agent_asset_name(&manifest_name));
         if valid_name {
             assets.insert(DeviceAgentAsset {
+                location: String::new(),
                 client: location.client.into(),
                 kind: location.kind.into(),
                 name,
@@ -2530,6 +2669,11 @@ fn codex_enabled_plugin_names(body: &str) -> Vec<String> {
 }
 
 fn read_agent_config(path: &std::path::Path) -> Option<String> {
+    // Refuse a device node or FIFO before opening it (see
+    // open_agent_regular_file_at).
+    if !path.symlink_metadata().is_ok_and(|meta| meta.is_file()) {
+        return None;
+    }
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

@@ -1,0 +1,22 @@
+title: Local Model Server - vLLM
+id: 7953020b-e484-44df-87e5-fe0917333682
+status: experimental
+description: vLLM started on this computer. It serves a language model locally, which keeps prompts off the network and outside provider logs. Detection only.
+references:
+    - https://docs.vllm.ai/en/latest/cli/serve.html
+author: Deixic
+date: 2026-11-09
+tags:
+    - detection.threat-hunting
+logsource:
+    category: process_creation
+detection:
+    selection_cli:
+        Image|endswith: /vllm
+        CommandLine|contains: ' serve'
+    selection_module:
+        CommandLine|contains: vllm.entrypoints.openai.api_server
+    condition: 1 of selection_*
+falsepositives:
+    - Sanctioned local model use
+level: informational

@@ -108,36 +108,42 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
         servers,
         vec![
             DeviceMCPServer {
+                location: String::new(),
                 client: "amp".into(),
                 name: "db".into(),
                 source: ".config/amp/settings.json".into(),
                 transport: "stdio".into()
             },
             DeviceMCPServer {
+                location: String::new(),
                 client: "codex".into(),
                 name: "github".into(),
                 source: ".codex/config.toml".into(),
                 transport: "remote".into()
             },
             DeviceMCPServer {
+                location: String::new(),
                 client: "cursor".into(),
                 name: "docs".into(),
                 source: ".cursor/mcp.json".into(),
                 transport: "stdio".into()
             },
             DeviceMCPServer {
+                location: String::new(),
                 client: "gemini".into(),
                 name: "search".into(),
                 source: ".gemini/extensions/*/gemini-extension.json".into(),
                 transport: "unknown".into()
             },
             DeviceMCPServer {
+                location: String::new(),
                 client: "maestro".into(),
                 name: "managed".into(),
                 source: ".maestro/config.toml".into(),
                 transport: "remote".into()
             },
             DeviceMCPServer {
+                location: String::new(),
                 client: "maestro".into(),
                 name: "pluginsearch".into(),
                 source: ".maestro/plugins/*/mcp.json".into(),
@@ -357,6 +363,48 @@ fn every_declared_linux_location_is_read() {
     let payload =
         serde_json::to_string(&(servers, assets, project_servers, project_assets)).unwrap();
     assert!(!payload.contains("private-secret"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn homes_come_from_passwd_login_accounts_and_the_home_directory() {
+    let root = tmpdir("passwd-homes");
+    let alice = root.join("srv/people/alice");
+    let bob = root.join("home/bob");
+    let service = root.join("var/lib/service");
+    for dir in [&alice, &bob, &service] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let passwd = format!(
+        "root:x:0:0:root:/root:/bin/bash\n\
+         daemon:x:1:1::{service}:/bin/sh\n\
+         alice:x:1000:1000:Alice:{alice}:/bin/zsh\n\
+         bob:x:1001:1001::{bob}:/bin/bash\n\
+         nobody:x:65534:65534::{alice}:/bin/sh\n\
+         locked:x:1002:1002::{service}:/usr/sbin/nologin\n\
+         gone:x:1003:1003::{missing}:/bin/bash\n\
+         relative:x:1004:1004::home/rel:/bin/bash\n\
+         climb:x:1005:1005::{alice}/../alice:/bin/bash\n\
+         slash:x:1006:1006::/:/bin/bash\n\
+         short:x:1007\n",
+        service = service.display(),
+        alice = alice.display(),
+        bob = bob.display(),
+        missing = root.join("missing").display(),
+    );
+    // bob is in both lists; `listed` also holds a directory-service account
+    // that /etc/passwd does not name.
+    let carol = root.join("home/carol");
+    fs::create_dir_all(&carol).unwrap();
+    let homes = agent_homes_from(&passwd, vec![carol.clone(), bob.clone()]);
+    // Root first, then /etc/passwd homes in path order, then the rest of /home.
+    assert_eq!(homes, vec![PathBuf::from("/root"), bob, alice, carol]);
+
+    // The cap holds however many accounts there are.
+    let many: Vec<PathBuf> = (0..100)
+        .map(|i| root.join(format!("home/u{i:03}")))
+        .collect();
+    assert_eq!(agent_homes_from("", many).len(), MAX_AGENT_HOMES);
     fs::remove_dir_all(root).unwrap();
 }
 

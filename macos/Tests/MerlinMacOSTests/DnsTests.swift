@@ -139,7 +139,9 @@ struct DnsEventEncodingTests {
         )
         let data = try JSONEncoder().encode(e)
         let d = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        #expect(Set(d?.keys ?? Dictionary<String, Any>().keys) == ["ts", "kind", "source", "source_seq", "pid", "uid", "comm", "query", "qtype", "direction", "rcode", "pid_start_sec", "pid_start_usec", "schema_version", "boot_id", "event_id", "process_key", "signals", "spooled_ts"])
+        #expect(Set(d?.keys ?? Dictionary<String, Any>().keys) == ["ts", "kind", "source", "source_seq", "pid", "uid", "comm", "query", "qtype", "direction", "rcode", "matched_rules", "pid_start_sec", "pid_start_usec", "schema_version", "boot_id", "event_id", "process_key", "signals", "spooled_ts"])
+        // No matched rules spool as an empty list, as on Linux.
+        #expect(d?["matched_rules"] as? [String] == [])
         #expect(d?["query"] as? String == "exfil.example.com")
         #expect(d?["direction"] as? String == "response")
         #expect(d?["rcode"] as? Int == 3)
