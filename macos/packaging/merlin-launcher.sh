@@ -9,7 +9,7 @@ export PATH
 
 BASE_DIR=${MERLIN_BASE_DIR:-/Library/Application Support/Merlin}
 CONFIG_PATH=${MERLIN_CONFIG_PATH:-$BASE_DIR/config.plist}
-BIN_PATH=${MERLIN_BIN_PATH:-$BASE_DIR/bin/merlin-macos}
+BIN_PATH=${MERLIN_BIN_PATH:-$BASE_DIR/MerlinCollector.app/Contents/MacOS/merlin-macos}
 RULES_PATH=${MERLIN_RULES_PATH:-$BASE_DIR/rules/rules.yaml}
 SPOOL_PATH=${MERLIN_SPOOL_PATH:-$BASE_DIR/spool/merlin-events.jsonl}
 EXPECTED_OWNER_UID=${MERLIN_CONFIG_OWNER_UID:-0}

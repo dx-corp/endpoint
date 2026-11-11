@@ -5,7 +5,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::{agent_entry_type, open_agent_child_dir, open_agent_directory, read_agent_dir_entries};
+use super::agent_discovery::{
+    agent_entry_type, open_agent_child_dir, open_agent_directory, read_agent_dir_entries,
+};
 use crate::ai_discovery::{
     DeviceAgentAsset, MAX_BROWSER_PROFILES, chromium_extension_id, chromium_profile,
     editor_extension_id,

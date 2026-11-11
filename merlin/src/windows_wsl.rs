@@ -16,7 +16,8 @@ use serde::Deserialize;
 
 pub(crate) use crate::ai_discovery::DeviceAiLocationCoverage;
 use crate::ai_discovery::{
-    DeviceAgentAsset, DeviceMCPServer, keep_valid_content_facts, safe_agent_asset_name,
+    DeviceAgentAsset, DeviceMCPServer, keep_valid_content_facts, keep_valid_mcp_facts,
+    safe_agent_asset_name,
 };
 use crate::windows_discovery::ContainedFs;
 
@@ -226,6 +227,11 @@ pub(crate) fn collect(
                     record(not_scanned(location, SCAN_FAILED, state.observed_at));
                     continue;
                 }
+                // MCP servers keep only declared gitleaks rule ids.
+                findings
+                    .mcp_servers
+                    .iter_mut()
+                    .for_each(keep_valid_mcp_facts);
                 result.mcp_servers.extend(findings.mcp_servers);
                 // The skill and plugin file hashes and matched rule ids the
                 // scanner reported, kept only when they are well formed.

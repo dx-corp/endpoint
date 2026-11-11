@@ -26,6 +26,12 @@ struct PostureSnapshot: Equatable {
     var values: [String: String] = [:]
     /// check → finding detail (only entries that ARE findings).
     var findings: [String: String] = [:]
+    /// check → severity, for checks whose severity comes with the result
+    /// (the AI agent approval rules); others use the per-check default.
+    var severities: [String: String] = [:]
+    /// check → reason for a check that is not a finding (a pass or not
+    /// checked), sent as its detail.
+    var reasons: [String: String] = [:]
     /// Duration is a local collection-health signal; raw command output is
     /// never retained in the report.
     var collectionDurationMs: Int? = nil
@@ -450,6 +456,9 @@ func capturePosture(expectedSysexTeams: [String] = []) -> PostureSnapshot {
         let comm = procInfo(tap.tappingPid)?.comm ?? "?"
         snap.findings["eventtaps/\(tap.tappingPid)"] = "modifying event tap: \(comm) (pid \(tap.tappingPid), mask 0x\(String(tap.eventsMask, radix: 16)))"
     }
+
+    // AI agents running without approval (ai-agent-approval.toml).
+    addAIApprovalChecks(collectAIApproval(homes: macAgentHomes()), to: &snap)
 
     snap.collectionDurationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
     return snap

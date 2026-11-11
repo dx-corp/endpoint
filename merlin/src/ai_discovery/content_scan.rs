@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use super::DeviceAgentAsset;
 #[cfg(test)]
 use super::keep_valid_content_facts;
+use super::{DeviceAgentAsset, MAX_MATCHED_RULES, secret_rule_ids};
 use crate::manifest::AI_CONTENT_SOURCES;
 
 /// Largest file checked. Skill files are prose of a few KiB.
@@ -134,8 +134,10 @@ impl ContentScan {
             .matching_rules()
             .map(|rule| rule.identifier().to_string())
             .collect();
+        matched_rules.extend(secret_rule_ids(body));
         matched_rules.sort();
         matched_rules.dedup();
+        matched_rules.truncate(MAX_MATCHED_RULES);
         let sha256 = Sha256::digest(body)
             .iter()
             .map(|byte| format!("{byte:02x}"))

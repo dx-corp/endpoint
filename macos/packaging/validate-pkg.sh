@@ -25,6 +25,7 @@ PAYLOAD_ROOT=$(find "$EXPAND_DIR/expanded" -type d -name Payload -print | head -
 [ -n "$PAYLOAD_ROOT" ] || { printf '%s\n' 'expanded package has no payload' >&2; exit 65; }
 
 BIN="$PAYLOAD_ROOT/Library/Application Support/Merlin/bin/merlin-macos"
+COLLECTOR_APP="$PAYLOAD_ROOT/Library/Application Support/Merlin/MerlinCollector.app"
 LAUNCHER="$PAYLOAD_ROOT/Library/Application Support/Merlin/bin/merlin-launcher"
 RULES="$PAYLOAD_ROOT/Library/Application Support/Merlin/rules/rules.yaml"
 PLIST="$PAYLOAD_ROOT/Library/LaunchDaemons/com.evalops.merlin.plist"
@@ -40,7 +41,18 @@ APP="$PAYLOAD_ROOT/Applications/Deixic Endpoint.app"
 [ "$(plutil -extract LSUIElement raw "$APP/Contents/Info.plist")" = true ]
 [ -d "$APP/Contents/Frameworks/Sparkle.framework" ]
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign --verify --strict --verbose=2 "$BIN"
+if [ ! -L "$BIN" ] || [ "$(readlink "$BIN")" != ../MerlinCollector.app/Contents/MacOS/merlin-macos ]; then
+  printf '%s\n' 'bin/merlin-macos must link to the collector bundle' >&2
+  exit 65
+fi
+[ "$(plutil -extract CFBundleIdentifier raw "$COLLECTOR_APP/Contents/Info.plist")" = com.evalops.merlin.collector ]
+codesign --verify --strict --verbose=2 "$COLLECTOR_APP"
+if [ "${MERLIN_REQUIRE_COLLECTOR_PROFILE:-0}" = "1" ]; then
+  [ -f "$COLLECTOR_APP/Contents/embedded.provisionprofile" ] ||
+    { printf '%s\n' 'collector bundle has no embedded provisioning profile' >&2; exit 65; }
+  codesign -d --entitlements :- "$COLLECTOR_APP" 2>/dev/null | grep -q com.apple.developer.endpoint-security.client ||
+    { printf '%s\n' 'collector is not signed with the Endpoint Security entitlement' >&2; exit 65; }
+fi
 plutil -lint "$PLIST" >/dev/null
 sh -n "$LAUNCHER" "$CONFIGURE"
 

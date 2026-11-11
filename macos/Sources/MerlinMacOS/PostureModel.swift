@@ -109,7 +109,7 @@ private func postureStatus(value: String, isFinding: Bool) -> String {
     let normalized = value.lowercased()
     if normalized == "unavailable" { return "unavailable" }
     if normalized == "requires root" || normalized == "requires_root" { return "requires_root" }
-    if normalized == "unknown" { return "unknown" }
+    if normalized == "unknown" || normalized == "not_checked" { return "unknown" }
     return "pass"
 }
 
@@ -149,6 +149,9 @@ private func postureEvidenceSource(for check: String) -> String {
     case "endpoint_protection", "password_manager", "remote_access":
         return "product_inventory"
     default:
+        if check.hasPrefix("ai_agent_approval_") {
+            return "ai_agent_settings"
+        }
         if check.hasPrefix("launchd/") || check.hasPrefix("launchd@") {
             return "launchd_inventory"
         }
@@ -173,6 +176,8 @@ private func postureRedactions(for source: String) -> [String] {
         return ["app_paths", "account_names", "raw_command_output"]
     case "screen_lock_settings":
         return ["account_names", "raw_command_output"]
+    case "ai_agent_settings":
+        return ["setting_values", "file_paths", "account_names"]
     default:
         return ["raw_command_output"]
     }
@@ -198,7 +203,7 @@ private func postureEvidence(
         privilege = root ? "root" : "user"
     }
     let confidence: String
-    if normalizedValue == "unavailable" || normalizedValue == "unknown" {
+    if normalizedValue == "unavailable" || normalizedValue == "unknown" || normalizedValue == "not_checked" {
         confidence = "low"
     } else if privilege == "root" && !root {
         confidence = "medium"
@@ -233,17 +238,18 @@ func makeDevicePostureReport(
     for key in keys {
         let value = snapshot.values[key] ?? snapshot.findings[key] ?? "unknown"
         let findingDetail = snapshot.findings[key]
-        let severity = postureSeverity(for: key)
+        let severity = snapshot.severities[key] ?? postureSeverity(for: key)
         let status = postureStatus(value: value, isFinding: findingDetail != nil)
+        let detail = findingDetail ?? snapshot.reasons[key] ?? ""
         let evidence = postureEvidence(
-            check: key, value: value, detail: findingDetail ?? "",
+            check: key, value: value, detail: detail,
             collectedAt: collectedAt, root: root
         )
         checks[key] = DevicePostureCheck(
             status: status,
             value: String(value.prefix(512)),
             severity: findingDetail == nil ? "" : severity,
-            detail: String((findingDetail ?? "").prefix(512)),
+            detail: String(detail.prefix(512)),
             evidence: evidence
         )
         if let findingDetail {

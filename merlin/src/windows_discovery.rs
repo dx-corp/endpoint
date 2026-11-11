@@ -21,7 +21,7 @@ use crate::ai_discovery::{
     ConfigRead, DeviceAgentAsset, DeviceAgentCLI, DeviceAiLocationCoverage, DeviceMCPServer,
     DeviceProcess, MAX_BROWSER_PROFILES, McpEntry, add_coverage, chromium_extension_id,
     chromium_profile, codex_enabled_plugin_names, config_mcp_entries, editor_extension_id,
-    json_enabled_plugin_names, json_mcp_entries, safe_agent_asset_name,
+    json_enabled_plugin_names, json_mcp_entries, json_project_mcp_entries, safe_agent_asset_name,
 };
 use crate::manifest::{AiLocation, Format, Scope};
 
@@ -44,7 +44,7 @@ const MAX_PROFILES: usize = 64;
 /// Plugin and extension manifests read per collection.
 const MAX_MANIFEST_READS: usize = 32;
 /// Findings of each kind reported.
-const MAX_FINDINGS: usize = 128;
+const MAX_FINDINGS: usize = crate::ai_discovery::MAX_AGENT_FINDINGS;
 /// Directories below a workspace root visited, and how deep.
 const MAX_PROJECT_DESCENDANTS: usize = 32;
 const MAX_PROJECT_DEPTH: usize = 2;
@@ -145,6 +145,11 @@ pub(crate) fn merge_off_host(
     let assets: BTreeSet<_> = discovery.agent_assets.drain(..).chain(assets).collect();
     discovery.mcp_servers = servers.into_iter().take(MAX_FINDINGS).collect();
     discovery.agent_assets = assets.into_iter().take(MAX_FINDINGS).collect();
+    crate::ai_discovery::add_truncation(
+        &mut discovery.coverage,
+        discovery.mcp_servers.len(),
+        discovery.agent_assets.len(),
+    );
 }
 
 /// User-level discovery under every profile plus project discovery under the
@@ -161,14 +166,23 @@ pub(crate) fn collect(fs: &impl ContainedFs, roots: &DiscoveryRoots) -> WindowsD
     let mut project = collect_projects(fs, &roots.workspaces);
     found.servers.append(&mut project.servers);
     found.assets.append(&mut project.assets);
-    WindowsDiscovery {
+    for entry in project.coverage {
+        add_coverage(&mut found.coverage, entry);
+    }
+    let mut discovery = WindowsDiscovery {
         agent_clis,
         agent_apps,
         mcp_servers: found.servers.into_iter().take(MAX_FINDINGS).collect(),
         agent_assets: found.assets.into_iter().take(MAX_FINDINGS).collect(),
         processes: Vec::new(),
         coverage: found.coverage,
-    }
+    };
+    crate::ai_discovery::add_truncation(
+        &mut discovery.coverage,
+        discovery.mcp_servers.len(),
+        discovery.agent_assets.len(),
+    );
+    discovery
 }
 
 #[derive(Default)]
@@ -321,6 +335,10 @@ fn collect_user_configs(fs: &impl ContainedFs, profile: &Path, found: &mut Findi
             }
         }
         found.servers(location, config_mcp_entries(location, &body), &source);
+        if !location.projects_key.is_empty() {
+            let entries = json_project_mcp_entries(&body, location.projects_key, location.mcp_keys);
+            found.servers(location, entries, &location.projects_label());
+        }
     }
 }
 
@@ -550,8 +568,17 @@ fn collect_project(
         if Instant::now() >= deadline {
             return;
         }
-        let Some(body) = read_text(fs, root, &join_relative(project, location.path)) else {
-            continue;
+        let path = join_relative(project, location.path);
+        let body = match read_config(fs, root, &path, location.max_bytes) {
+            Some(ConfigRead::Body(body)) => body,
+            Some(ConfigRead::TooLarge) => {
+                add_coverage(
+                    &mut found.coverage,
+                    DeviceAiLocationCoverage::too_large(location),
+                );
+                continue;
+            }
+            None => continue,
         };
         let source = location.label();
         found.asset(location, "config", "project", source.clone());

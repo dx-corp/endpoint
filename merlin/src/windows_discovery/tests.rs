@@ -881,6 +881,7 @@ fn off_host_findings_merge_deduplicated_and_capped() {
         location: location.into(),
         package: String::new(),
         host: String::new(),
+        matched_rules: Vec::new(),
     };
     let mut discovery = WindowsDiscovery {
         mcp_servers: vec![server("docs", "")],
@@ -1042,6 +1043,104 @@ fn a_config_is_read_up_to_its_own_limit_and_a_larger_one_is_reported_not_scanned
             .coverage
             .iter()
             .any(|c| c.source == ".claude.json" && c.reason == "too_large")
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn a_profile_with_more_skills_than_the_cap_reports_the_list_truncated() {
+    let base = tempdir("truncated");
+    let profile = base.join("Users/private-account");
+    for index in 0..MAX_FINDINGS + 20 {
+        write(
+            &profile.join(format!(".claude/skills/s{index:04}/SKILL.md")),
+            "x",
+        );
+    }
+    let (found, _) = discover(&roots(&base));
+    assert!(found.agent_assets.len() <= MAX_FINDINGS);
+    assert_eq!(
+        found
+            .coverage
+            .iter()
+            .map(|c| (c.state.as_str(), c.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [("truncated", "agent_assets")]
+    );
+    let inventory =
+        crate::windows_checkin::Inventory::new(found, std::time::SystemTime::UNIX_EPOCH);
+    assert_eq!(
+        serde_json::to_value(&inventory).unwrap()["ai_location_coverage"],
+        serde_json::json!([{"state": "truncated", "reason": "agent_assets"}])
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn codex_configs_are_read_up_to_their_own_limit_in_profiles_and_projects() {
+    let codex = |scope: Scope| {
+        windows_locations(scope)
+            .find(|l| l.path == ".codex/config.toml")
+            .unwrap()
+    };
+    let (user, project_row) = (codex(Scope::User), codex(Scope::Project));
+    let pad = |server: &str, size: u64| {
+        let head = format!(
+            "[mcp_servers.{server}]\ncommand = \"npx\"\nargs = [\"-y\", \"{server}-mcp\"]\n# "
+        );
+        format!("{head}{}\n", "x".repeat(size as usize - head.len() - 1))
+    };
+    let base = tempdir("codex-limit");
+    let profile = base.join("Users/private-account");
+    write(
+        &profile.join(".codex/config.toml"),
+        &pad("homebig", MAX_CONFIG_BYTES + 1024),
+    );
+    let (found, _) = discover(&roots(&base));
+    assert!(found.mcp_servers.iter().any(|s| s.name == "homebig"));
+    assert!(found.coverage.is_empty());
+    assert!(user.max_bytes > MAX_CONFIG_BYTES);
+
+    let workspace = tempdir("codex-limit-workspace");
+    write(
+        &workspace.join("within/.codex/config.toml"),
+        &pad("projectbig", MAX_CONFIG_BYTES + 1024),
+    );
+    write(
+        &workspace.join("over/.codex/config.toml"),
+        &pad("toolarge", project_row.max_bytes + 1),
+    );
+    let (found, encoded) = projects(&[&workspace]);
+    assert!(found.mcp_servers.iter().any(|s| s.name == "projectbig"));
+    assert!(!found.mcp_servers.iter().any(|s| s.name == "toolarge"));
+    assert_eq!(
+        found
+            .coverage
+            .iter()
+            .map(|c| (c.source.as_str(), c.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [("project/.codex/config.toml", "too_large")]
+    );
+    assert_absent(&encoded, &["private-account", "codex-limit-workspace"]);
+    fs::remove_dir_all(base).unwrap();
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn claude_code_project_mcp_servers_are_read_without_their_project_paths() {
+    let base = tempdir("claude-project-mcp");
+    let profile = base.join("Users/private-account");
+    write(
+        &profile.join(".claude.json"),
+        r#"{"projects":{"C:/Users/private-account/customer-private":{"mcpServers":{"granola":{"url":"https://mcp.granola.ai/mcp?key=private-secret"}}}}}"#,
+    );
+    let (found, encoded) = discover(&roots(&base));
+    assert!(found.mcp_servers.iter().any(|s| s.name == "granola"
+        && s.source == ".claude.json/projects/*"
+        && s.host == "mcp.granola.ai"));
+    assert_absent(
+        &encoded,
+        &["customer-private", "private-secret", "private-account"],
     );
     fs::remove_dir_all(base).unwrap();
 }

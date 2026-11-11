@@ -12,9 +12,10 @@ use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 
 use super::{
-    DeviceAgentAsset, DeviceMCPServer, config_mcp_entries, json_enabled_plugin_names,
-    json_mcp_entries, safe_agent_asset_name,
+    DeviceAgentAsset, DeviceAiLocationCoverage, DeviceMCPServer, config_mcp_entries,
+    json_enabled_plugin_names, json_mcp_entries, safe_agent_asset_name,
 };
+use crate::ai_discovery::{ConfigRead, add_coverage};
 use crate::manifest::{AiLocation, Format, Scope};
 
 // MDM supplies a JSON array in the root-owned service configuration. No default
@@ -101,6 +102,15 @@ fn open_regular_file_at(directory: &Dir, name: &OsStr) -> Option<File> {
 }
 
 fn read_agent_config_at(project: &Dir, relative: &str) -> Option<String> {
+    match read_agent_config_limited_at(project, relative, 64 << 10)? {
+        ConfigRead::Body(body) => Some(body),
+        ConfigRead::TooLarge => None,
+    }
+}
+
+/// `relative` in a project read up to `limit` bytes (the row's `max_bytes`);
+/// a larger file is `TooLarge` and not read.
+fn read_agent_config_limited_at(project: &Dir, relative: &str, limit: u64) -> Option<ConfigRead> {
     let (parent, filename) = relative.rsplit_once('/').unwrap_or(("", relative));
     let directory = if parent.is_empty() {
         None
@@ -113,12 +123,17 @@ fn read_agent_config_at(project: &Dir, relative: &str) -> Option<String> {
         directory.as_ref()?
     };
     let file = open_regular_file_at(base, OsStr::new(filename))?;
-    if file.metadata().ok()?.len() > 64 << 10 {
-        return None;
+    if file.metadata().ok()?.len() > limit {
+        return Some(ConfigRead::TooLarge);
     }
     let mut body = String::new();
-    file.take((64 << 10) + 1).read_to_string(&mut body).ok()?;
-    (body.len() <= 64 << 10).then_some(body)
+    file.take(limit + 1).read_to_string(&mut body).ok()?;
+    // The file can grow between the size check and the read.
+    Some(if body.len() as u64 > limit {
+        ConfigRead::TooLarge
+    } else {
+        ConfigRead::Body(body)
+    })
 }
 
 fn first_entries(directory: &mut Dir) -> Vec<OsString> {
@@ -171,8 +186,11 @@ pub(super) fn project_directory_count(root: &Path, deadline: Instant) -> usize {
     open_project_root(root).map_or(0, |dir| project_directories(dir, deadline).len())
 }
 
+/// Project MCP servers and assets under the workspace roots; a declared
+/// config over its read limit is added to `coverage` as not scanned.
 pub(super) fn collect_project_agent_discovery(
     roots: &[PathBuf],
+    coverage: &mut Vec<DeviceAiLocationCoverage>,
 ) -> (Vec<DeviceMCPServer>, Vec<DeviceAgentAsset>) {
     let mut servers = BTreeSet::new();
     let mut assets = BTreeSet::new();
@@ -195,9 +213,16 @@ pub(super) fn collect_project_agent_discovery(
                 if Instant::now() >= deadline {
                     break;
                 }
-                let Some(body) = read_agent_config_at(&project, location.path) else {
-                    continue;
-                };
+                let body =
+                    match read_agent_config_limited_at(&project, location.path, location.max_bytes)
+                    {
+                        Some(ConfigRead::Body(body)) => body,
+                        Some(ConfigRead::TooLarge) => {
+                            add_coverage(coverage, DeviceAiLocationCoverage::too_large(location));
+                            continue;
+                        }
+                        None => continue,
+                    };
                 let source = location.label();
                 assets.insert(DeviceAgentAsset {
                     location: String::new(),

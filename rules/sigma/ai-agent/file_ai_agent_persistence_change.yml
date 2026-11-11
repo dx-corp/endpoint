@@ -1,0 +1,44 @@
+title: AI Agent - Persistence Location Changed
+id: a0928744-50cb-4122-8fb6-3298f7fbaad2
+status: experimental
+description: A program that an AI coding agent started, or the agent itself, changed a place that runs code later on its own (cron, systemd units, shell startup files, SSH authorized keys, the dynamic linker preload list). The agent is the event's agent attribution. Detection only.
+references:
+    - https://attack.mitre.org/techniques/T1053/003/
+    - https://attack.mitre.org/techniques/T1543/002/
+    - https://attack.mitre.org/techniques/T1546/004/
+    - https://attack.mitre.org/techniques/T1098/004/
+    - https://attack.mitre.org/techniques/T1574/006/
+author: Deixic
+date: 2026-11-10
+tags:
+    - attack.persistence
+    - attack.t1053.003
+    - attack.t1543.002
+    - attack.t1546.004
+    - attack.t1098.004
+    - attack.t1574.006
+logsource:
+    category: file_event
+    product: linux
+detection:
+    selection_agent:
+        Agent|exists: true
+    selection_path:
+        - TargetFilename|startswith:
+              - /etc/cron
+              - /var/spool/cron/
+              - /etc/systemd/
+              - /etc/profile
+              - /etc/bash.bashrc
+              - /etc/ld.so.preload
+        - TargetFilename|endswith:
+              - /.bashrc
+              - /.zshrc
+              - /.profile
+              - /authorized_keys
+        - TargetFilename|contains:
+              - /.config/systemd/user/
+    condition: selection_agent and selection_path
+falsepositives:
+    - A person asked the agent to set up a scheduled job, a service or their shell
+level: medium

@@ -7,7 +7,7 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use super::{
+use super::agent_discovery::{
     agent_regular_file_exists_at, checked_content, open_agent_child_dir, open_agent_directory,
     read_agent_dir_entries, read_agent_file_at,
 };

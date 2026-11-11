@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     AGENT_SYSTEM_BINS, DeviceAgentAsset, DeviceAgentCLI, DeviceAiLocationCoverage, DeviceContainer,
-    DeviceMCPServer, MAX_COVERAGE, add_coverage, agent_homes, collect_agent_discovery_from,
-    collect_system_agent_configs,
+    DeviceMCPServer, agent_homes, collect_agent_discovery_from, collect_system_agent_configs,
 };
+use crate::ai_discovery::{MAX_COVERAGE, add_coverage};
 
 /// Containers scanned per inventory, in collector order.
 const MAX_CONTAINERS: usize = 16;
@@ -273,6 +273,7 @@ fn tagged(mut scan: RootScan, location: &str) -> RootScan {
     }
     for server in &mut scan.mcp_servers {
         server.location = location.to_string();
+        crate::ai_discovery::keep_valid_mcp_facts(server);
     }
     for asset in &mut scan.agent_assets {
         asset.location = location.to_string();
@@ -299,9 +300,16 @@ pub(crate) fn scan_ai_locations_in_root(root: &Path, location: &str) -> Result<(
     let mut scan = collect_agent_discovery_from(&agent_homes(), AGENT_SYSTEM_BINS);
     let (system_servers, system_assets) = collect_system_agent_configs(Path::new("/"));
     scan.mcp_servers.extend(system_servers);
-    scan.mcp_servers.truncate(128);
+    scan.mcp_servers
+        .truncate(crate::ai_discovery::MAX_AGENT_FINDINGS);
     scan.agent_assets.extend(system_assets);
-    scan.agent_assets.truncate(128);
+    scan.agent_assets
+        .truncate(crate::ai_discovery::MAX_AGENT_FINDINGS);
+    crate::ai_discovery::add_truncation(
+        &mut scan.coverage,
+        scan.mcp_servers.len(),
+        scan.agent_assets.len(),
+    );
     let scan = tagged(scan, location);
     println!("{}", serde_json::to_string(&scan)?);
     Ok(())
@@ -343,7 +351,7 @@ mod tests {
 
     #[test]
     fn only_a_running_docker_container_yields_an_init_pid() {
-        use super::super::docker_running_init_pid;
+        use super::super::containers::docker_running_init_pid;
         let config = |running: bool, pid: u64| serde_json::json!({"State": {"Running": running, "Pid": pid, "Status": "running"}});
         assert_eq!(docker_running_init_pid(&config(true, 4242)), 4242);
         assert_eq!(docker_running_init_pid(&config(false, 4242)), 0);
@@ -358,6 +366,7 @@ mod tests {
         let server = DeviceMCPServer {
             package: String::new(),
             host: String::new(),
+            matched_rules: Vec::new(),
             location: "host".into(),
             client: "claude".into(),
             name: "github".into(),

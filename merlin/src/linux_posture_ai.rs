@@ -52,6 +52,8 @@ struct Source {
     scope: Scope,
     format: Format,
     linux: Option<String>,
+    /// The path on macOS, read by the Swift collector.
+    macos: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +196,7 @@ fn validate(declaration: &Declaration) -> Result<(), String> {
             return Err(format!("{id}: docs must be https URLs"));
         }
         for source in &client.sources {
-            if let Some(path) = &source.linux {
+            for path in source.linux.iter().chain(&source.macos) {
                 let absolute = path.starts_with('/');
                 let valid = !path.contains("..")
                     && path.contains('/')
@@ -487,6 +489,107 @@ mod tests {
             assert!(risk_weight(&client.check) > 0);
         }
         assert_eq!(risk_weight("secure_boot"), 0);
+    }
+
+    /// The Swift declaration of `client.rules`/`locks` conditions.
+    fn swift_conditions(conditions: &[Condition]) -> String {
+        let rendered: Vec<String> = conditions
+            .iter()
+            .map(|condition| {
+                let any_of: Vec<String> = condition
+                    .any_of
+                    .iter()
+                    .map(|scalar| match scalar {
+                        Scalar::Bool(flag) => format!(".bool({flag})"),
+                        Scalar::Text(text) => format!(".text({text:?})"),
+                    })
+                    .collect();
+                format!(
+                    "AIApprovalCondition(key: {:?}, anyOf: [{}], lacks: {:?})",
+                    condition.key,
+                    any_of.join(", "),
+                    condition.lacks
+                )
+            })
+            .collect();
+        format!("[{}]", rendered.join(", "))
+    }
+
+    /// The macOS collector's copy of the declaration, as the Swift source
+    /// between the BEGIN and END markers of AIAgentApproval.swift: every
+    /// client with its macOS sources, rules and locks, and the two fixed
+    /// reasons.
+    fn swift_table(declared: &Declaration) -> String {
+        let mut out = format!(
+            "let aiApprovalUnreadable = {UNREADABLE:?}\nlet aiApprovalAsks = {ASKS:?}\n\nlet aiApprovalClients: [AIApprovalClient] = [\n"
+        );
+        for client in &declared.clients {
+            out.push_str(&format!(
+                "    AIApprovalClient(\n        id: {:?}, check: {:?}, name: {:?},\n        sources: [\n",
+                client.id, client.check, client.name
+            ));
+            for source in &client.sources {
+                let Some(path) = &source.macos else { continue };
+                let scope = match source.scope {
+                    Scope::User => "user",
+                    Scope::Managed => "managed",
+                };
+                let format = match source.format {
+                    Format::Json => "json",
+                    Format::Toml => "toml",
+                };
+                out.push_str(&format!(
+                    "            AIApprovalSource(scope: .{scope}, format: .{format}, path: {path:?}),\n"
+                ));
+            }
+            out.push_str("        ],\n        rules: [\n");
+            for rule in &client.rules {
+                out.push_str(&format!(
+                    "            AIApprovalRule(id: {:?}, severity: {:?}, reason: {:?}, when: {}),\n",
+                    rule.id,
+                    rule.severity.as_str(),
+                    rule.reason,
+                    swift_conditions(&rule.when)
+                ));
+            }
+            out.push_str("        ],\n        locks: [\n");
+            for lock in &client.locks {
+                out.push_str(&format!(
+                    "            AIApprovalLock(id: {:?}, reason: {:?}, when: {}, neutralizes: {:?}),\n",
+                    lock.id,
+                    lock.reason,
+                    swift_conditions(&lock.when),
+                    lock.neutralizes
+                ));
+            }
+            out.push_str("        ]\n    ),\n");
+        }
+        out.push_str("]\n");
+        out
+    }
+
+    #[test]
+    fn swift_table_matches_the_declaration() {
+        let declared = declaration().expect("ai-agent-approval.toml is valid");
+        for client in &declared.clients {
+            assert!(
+                client.sources.iter().any(|source| source.macos.is_some()),
+                "{} has a macOS source",
+                client.id
+            );
+        }
+        let swift_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/Sources/MerlinMacOS/AIAgentApproval.swift");
+        let swift = fs::read_to_string(&swift_path).expect("AIAgentApproval.swift is readable");
+        let begin = "// BEGIN ai-agent-approval.toml\n";
+        let end = "// END ai-agent-approval.toml\n";
+        let start = swift.find(begin).expect("BEGIN marker") + begin.len();
+        let stop = swift.find(end).expect("END marker");
+        let expected = swift_table(declared);
+        assert!(
+            swift[start..stop] == expected,
+            "AIAgentApproval.swift drifted from ai-agent-approval.toml; the block between the markers must be:\n{expected}"
+        );
     }
 
     #[test]

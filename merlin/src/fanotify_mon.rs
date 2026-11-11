@@ -281,6 +281,10 @@ fn handle_event(
         parent_basename: None,
         ancestors: &[],
         dns: None,
+        // Agent attribution needs the lineage this point lacks; agent
+        // selectors never match a fanotify decision, like ancestor ones.
+        agent: None,
+        credential: None,
     };
     let mut matched: Vec<String> = rules
         .rules

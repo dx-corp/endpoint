@@ -90,6 +90,7 @@ fn generate(m: &toml::Table) -> String {
             "collectors",
             "never_collected",
             "local",
+            "credential_files",
         ],
         "the manifest",
     );
@@ -171,6 +172,73 @@ fn generate(m: &toml::Table) -> String {
     out.push_str(&ai_agent_processes(m));
     out.push_str(&ai_extensions(m));
     out.push_str(&ai_content_rules(m));
+    out.push_str(&credential_files(m));
+    out
+}
+
+/// The `credential_files` rows as `CREDENTIAL_FILES`. An unknown key, a name
+/// that is not a short snake_case word or is declared twice, a path that is
+/// not plain and relative, or `not_suffix` without `prefix` fails the build.
+fn credential_files(m: &toml::Table) -> String {
+    let mut out = String::from("pub const CREDENTIAL_FILES: &[CredentialFile] = &[\n");
+    let mut names = Vec::new();
+    for row in tables(m, "credential_files") {
+        for key in row.keys() {
+            assert!(
+                ["name", "path", "prefix", "not_suffix"].contains(&key.as_str()),
+                "credential_files: unknown key {key:?}"
+            );
+        }
+        let text = |key: &str| -> String {
+            row.get(key).map_or_else(String::new, |value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("credential_files: {key} must be a string"))
+                    .to_owned()
+            })
+        };
+        let (name, path, prefix, not_suffix) = (
+            text("name"),
+            text("path"),
+            text("prefix"),
+            text("not_suffix"),
+        );
+        assert!(
+            !name.is_empty()
+                && name.len() <= 32
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "credential_files: {name:?} must be at most 32 of a-z, 0-9 or _"
+        );
+        assert!(
+            !names.contains(&name),
+            "credential_files: {name} is declared twice"
+        );
+        names.push(name.clone());
+        assert!(
+            !path.is_empty()
+                && !path.contains('\\')
+                && path
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != ".."),
+            "credential_files: {name}: {path:?} must be a plain relative path"
+        );
+        assert!(
+            !prefix.contains('/') && !not_suffix.contains('/'),
+            "credential_files: {name}: prefix and not_suffix are file name parts"
+        );
+        assert!(
+            not_suffix.is_empty() || !prefix.is_empty(),
+            "credential_files: {name}: not_suffix needs prefix"
+        );
+        writeln!(
+            out,
+            "    CredentialFile {{ name: {name:?}, path: {path:?}, prefix: {prefix:?}, not_suffix: {not_suffix:?} }},"
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
     out
 }
 
@@ -282,7 +350,21 @@ fn ai_content_rules(m: &toml::Table) -> String {
     let mut sources = String::from("pub const AI_CONTENT_SOURCES: &[(&str, &str)] = &[\n");
     let mut ids = Vec::new();
     let mut files = Vec::new();
+    let mut gitleaks = None;
     for row in tables(m, "ai_content_rules") {
+        if row.get("engine").and_then(toml::Value::as_str) == Some("gitleaks") {
+            let row = exact(row, &["engine", "file"], "a gitleaks ai_content_rules row");
+            let file = row["file"]
+                .as_str()
+                .expect("ai_content_rules: file must be a string")
+                .to_string();
+            assert!(
+                gitleaks.is_none(),
+                "ai_content_rules: one gitleaks file at most"
+            );
+            gitleaks = Some(file);
+            continue;
+        }
         let row = exact(row, &["id", "engine", "file"], "an ai_content_rules row");
         let text = |key: &str| {
             row[key]
@@ -329,9 +411,214 @@ fn ai_content_rules(m: &toml::Table) -> String {
             .unwrap();
         }
     }
+    let declared: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    let gitleaks_rules = match &gitleaks {
+        Some(file) => gitleaks_file(file, &mut rules, &declared),
+        None => "pub const GITLEAKS_RULES: &[GitleaksRule] = &[];\n\
+                 pub const GITLEAKS_ALLOWLIST: GitleaksAllowlist = GitleaksAllowlist { regexes: &[], stopwords: &[], target: \"secret\", all: false, has_paths: false };\n"
+            .to_string(),
+    };
     rules.push_str("];\n");
     sources.push_str("];\n");
-    rules + &sources
+    rules + &sources + &gitleaks_rules
+}
+
+/// A vendored gitleaks configuration as `GITLEAKS_RULES` and
+/// `GITLEAKS_ALLOWLIST`, and each rule it runs as an `AI_CONTENT_RULES` row.
+/// Rules scoped to a repository `path`, or with no regex, do not run here.
+fn gitleaks_file(file: &str, rules: &mut String, yara_ids: &[String]) -> String {
+    assert!(
+        file.ends_with(".toml")
+            && file
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != ".."),
+        "ai_content_rules: gitleaks file {file:?} must be a .toml path under rules/ai/"
+    );
+    let path = format!("{}/../rules/ai/{file}", env!("CARGO_MANIFEST_DIR"));
+    println!("cargo:rerun-if-changed=../rules/ai/{file}");
+    let config: toml::Table = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+        .parse()
+        .unwrap_or_else(|error| panic!("{path}: {error}"));
+    let mut out = String::from("pub const GITLEAKS_RULES: &[GitleaksRule] = &[\n");
+    let mut seen = Vec::new();
+    for rule in config["rules"].as_array().expect("gitleaks rules") {
+        let rule = rule.as_table().expect("a gitleaks rule");
+        let id = rule["id"].as_str().expect("a gitleaks rule id");
+        let Some(regex) = rule.get("regex").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if rule.contains_key("path") {
+            continue;
+        }
+        assert!(
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+            "gitleaks: {id:?} must be at most 64 letters, digits, _ or -"
+        );
+        assert!(
+            !seen.contains(&id) && !yara_ids.iter().any(|yara| yara == id),
+            "gitleaks: {id} is declared twice"
+        );
+        seen.push(id);
+        let secret_group = rule
+            .get("secretGroup")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or(0);
+        let entropy = rule
+            .get("entropy")
+            .map(|value| value.as_float().or(value.as_integer().map(|n| n as f64)))
+            .map(|value| value.expect("gitleaks entropy is a number"))
+            .unwrap_or(0.0);
+        let keywords: Vec<String> = rule
+            .get("keywords")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let allowlists: Vec<String> = rule
+            .get("allowlists")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|list| gitleaks_allowlist(list.as_table().expect("a gitleaks allowlist")))
+            .collect();
+        writeln!(
+            rules,
+            "    AiContentRule {{ id: {id:?}, engine: \"gitleaks\", file: {file:?} }},"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    GitleaksRule {{ id: {id:?}, regex: {:?}, secret_group: {secret_group}, entropy: {entropy:?}, keywords: &{keywords:?}, allowlists: &[{}] }},",
+            rust_regex(regex),
+            allowlists.join(", "),
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
+    let global = config
+        .get("allowlist")
+        .and_then(toml::Value::as_table)
+        .map(gitleaks_allowlist)
+        .unwrap_or_else(|| gitleaks_allowlist(&toml::Table::new()));
+    writeln!(
+        out,
+        "pub const GITLEAKS_ALLOWLIST: GitleaksAllowlist = {global};"
+    )
+    .unwrap();
+    out
+}
+
+/// One gitleaks allowlist as a `GitleaksAllowlist` literal.
+fn gitleaks_allowlist(list: &toml::Table) -> String {
+    let strings = |key: &str| -> Vec<String> {
+        list.get(key)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    let regexes: Vec<String> = strings("regexes").iter().map(|r| rust_regex(r)).collect();
+    let stopwords: Vec<String> = strings("stopwords")
+        .iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    let target = list
+        .get("regexTarget")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("secret");
+    assert!(
+        ["secret", "match", "line"].contains(&target),
+        "gitleaks: unknown regexTarget {target:?}"
+    );
+    let condition = list
+        .get("condition")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("OR");
+    assert!(
+        ["OR", "AND"].contains(&condition),
+        "gitleaks: unknown condition {condition:?}"
+    );
+    format!(
+        "GitleaksAllowlist {{ regexes: &{regexes:?}, stopwords: &{stopwords:?}, target: {target:?}, all: {}, has_paths: {} }}",
+        condition == "AND",
+        list.contains_key("paths") || list.contains_key("commits"),
+    )
+}
+
+/// A Go RE2 pattern for Rust's `regex`: Go reads a `{` that starts no
+/// repetition (`{n}`, `{n,}`, `{n,m}`) as a literal; Rust needs it escaped.
+fn rust_regex(go: &str) -> String {
+    let chars: Vec<char> = go.chars().collect();
+    let mut out = String::with_capacity(go.len());
+    let mut in_class = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' {
+            out.push(c);
+            if let Some(next) = chars.get(i + 1) {
+                out.push(*next);
+            }
+            i += 2;
+            continue;
+        }
+        if in_class {
+            if c == '[' && chars.get(i + 1) == Some(&':') {
+                // A POSIX class such as [:alpha:] inside a bracket expression.
+                let end = (i + 2..chars.len().saturating_sub(1))
+                    .find(|&j| chars[j] == ':' && chars[j + 1] == ']')
+                    .expect("gitleaks: an unclosed POSIX class");
+                out.extend(&chars[i..=end + 1]);
+                i = end + 2;
+                continue;
+            }
+            in_class = c != ']';
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '[' {
+            in_class = true;
+            out.push(c);
+            i += 1;
+            for leading in ['^', ']'] {
+                if chars.get(i) == Some(&leading) {
+                    out.push(leading);
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if c == '{' && !repetition(&chars[i..]) {
+            out.push_str("\\{");
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// `{n}`, `{n,}` or `{n,m}` at the start of `rest`.
+fn repetition(rest: &[char]) -> bool {
+    let Some(close) = rest.iter().position(|&c| c == '}') else {
+        return false;
+    };
+    let body: String = rest[1..close].iter().collect();
+    let (low, high) = body.split_once(',').unwrap_or((&body, ""));
+    !low.is_empty()
+        && low.bytes().all(|b| b.is_ascii_digit())
+        && high.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Formats the Linux collector reads; `Format::<PascalCase>` in manifest.rs.
@@ -373,6 +660,7 @@ fn ai_location(l: &toml::Table) -> String {
         "plugins_key",
         "mcp_files",
         "max_bytes",
+        "projects_key",
     ];
     for key in l.keys() {
         assert!(
@@ -515,8 +803,8 @@ fn ai_location(l: &toml::Table) -> String {
             .as_integer()
             .unwrap_or_else(|| panic!("ai_locations: {path}: max_bytes must be an integer"));
         assert!(
-            kind == "config" && scope == "user",
-            "ai_locations: {path}: only a user config row sets max_bytes"
+            kind == "config" && (scope == "user" || scope == "project"),
+            "ai_locations: {path}: only a user or project config row sets max_bytes"
         );
         assert!(
             (64 << 10..=16 << 20).contains(&bytes),
@@ -524,13 +812,23 @@ fn ai_location(l: &toml::Table) -> String {
         );
         bytes
     });
+    assert!(
+        !has("projects_key")
+            || (format == "json" && scope == "user" && !list("mcp_keys").is_empty()),
+        "ai_locations: {path}: only a user json row with mcp_keys reads projects_key"
+    );
+    let projects_key = if has("projects_key") {
+        text("projects_key")
+    } else {
+        ""
+    };
     let plugins_key = if has("plugins_key") {
         text("plugins_key")
     } else {
         ""
     };
     format!(
-        "    AiLocation {{ client: {client:?}, kind: {kind:?}, path: {path:?}, format: Format::{}, scope: Scope::{}, platforms: {}, mcp_keys: {}, plugins_key: {plugins_key:?}, mcp_files: {}, max_bytes: {max_bytes} }},\n",
+        "    AiLocation {{ client: {client:?}, kind: {kind:?}, path: {path:?}, format: Format::{}, scope: Scope::{}, platforms: {}, mcp_keys: {}, plugins_key: {plugins_key:?}, mcp_files: {}, max_bytes: {max_bytes}, projects_key: {projects_key:?} }},\n",
         pascal(format),
         pascal(scope),
         strs(platforms),
