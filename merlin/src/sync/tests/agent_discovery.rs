@@ -1023,13 +1023,29 @@ fn a_list_at_its_cap_is_reported_truncated_and_a_shorter_one_is_not() {
     use crate::ai_discovery::{MAX_AGENT_FINDINGS, add_truncation};
     let root = tmpdir("truncated-assets");
     let home = root.join("home");
+    // A directory walk reads at most 256 entries; reach the inventory cap
+    // across declared locations rather than filling one directory.
+    let directories = [".agents/skills", ".codex/skills", ".claude/skills"];
+    let first = home.join(directories[0]).join("s0000");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(first.join("SKILL.md"), "x").unwrap();
+    let mut short_scan = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
+    assert_eq!(short_scan.agent_assets.len(), 1);
+    add_truncation(
+        &mut short_scan.coverage,
+        short_scan.mcp_servers.len(),
+        short_scan.agent_assets.len(),
+    );
+    assert!(short_scan.coverage.is_empty());
     for index in 0..MAX_AGENT_FINDINGS + 20 {
-        let skill = home.join(format!(".claude/skills/s{index:04}"));
+        let skill = home
+            .join(directories[index % directories.len()])
+            .join(format!("s{index:04}"));
         fs::create_dir_all(&skill).unwrap();
         fs::write(skill.join("SKILL.md"), "x").unwrap();
     }
     let mut scan = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
-    assert!(scan.agent_assets.len() <= MAX_AGENT_FINDINGS);
+    assert_eq!(scan.agent_assets.len(), MAX_AGENT_FINDINGS);
     add_truncation(
         &mut scan.coverage,
         scan.mcp_servers.len(),
