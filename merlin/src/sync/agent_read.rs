@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::ai_discovery::ConfigRead;
 
-use super::{agent_regular_file_exists_at, open_agent_directory};
+use super::agent_discovery::{agent_regular_file_exists_at, open_agent_directory};
 
 /// A regular file in `parent`, never through a link, with its size.
 pub(super) fn open_agent_regular_file_sized_at(

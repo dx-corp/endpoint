@@ -19,6 +19,8 @@ mod bpfcheck;
 #[cfg(target_os = "linux")]
 mod check;
 #[cfg(target_os = "linux")]
+mod credential_files;
+#[cfg(target_os = "linux")]
 mod desired_state;
 #[cfg(target_os = "linux")]
 mod dnsmon;

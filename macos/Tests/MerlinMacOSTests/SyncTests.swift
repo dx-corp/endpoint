@@ -328,6 +328,66 @@ struct SyncTests {
         #expect(!String(decoding: try JSONEncoder().encode(discovered.clis), as: UTF8.self).contains("versions"))
     }
 
+    @Test("a list at its cap is reported truncated and a shorter one is not")
+    func truncatedCoverage() throws {
+        let home = NSTemporaryDirectory() + "merlin-truncated-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        for index in 0..<(macAgentFindingLimit + 20) {
+            let skill = home + String(format: "/.claude/skills/s%04d", index)
+            try FileManager.default.createDirectory(atPath: skill, withIntermediateDirectories: true)
+            try "x".write(toFile: skill + "/SKILL.md", atomically: true, encoding: .utf8)
+        }
+        let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(discovered.assets.count <= macAgentFindingLimit)
+        #expect(discovered.coverage == [.truncated("agent_assets")])
+        let wire = String(decoding: try JSONEncoder().encode(discovered.coverage), as: UTF8.self)
+        #expect(!wire.contains("source"))
+        #expect(macCoverageWithTruncation([], servers: 1, assets: macAgentFindingLimit - 1).isEmpty)
+        #expect(macCoverageWithTruncation(discovered.coverage, servers: 0, assets: macAgentFindingLimit).count == 1)
+    }
+
+    @Test("Codex configs are read up to their own limit in homes and projects")
+    func codexReadLimit() throws {
+        let root = NSTemporaryDirectory() + "merlin-codex-limit-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        func padded(_ server: String, _ size: Int) -> String {
+            let head = "[mcp_servers.\(server)]\ncommand = \"npx\"\nargs = [\"-y\", \"\(server)-mcp\"]\n# "
+            return head + String(repeating: "x", count: size - head.utf8.count - 1) + "\n"
+        }
+        let userLimit = try #require(macUserAgentConfigReadLimits[".codex/config.toml"])
+        let projectLimit = try #require(macProjectAgentConfigReadLimits[".codex/config.toml"])
+        let home = root + "/home"
+        try FileManager.default.createDirectory(atPath: home + "/.codex", withIntermediateDirectories: true)
+        try padded("homebig", macAgentConfigReadLimit + 1024).write(toFile: home + "/.codex/config.toml", atomically: true, encoding: .utf8)
+        let user = collectMacAgentDiscovery(homes: [home], systemBins: [])
+        #expect(userLimit > macAgentConfigReadLimit)
+        #expect(user.servers.contains { $0.name == "homebig" && $0.package == "homebig-mcp" })
+        #expect(user.coverage.isEmpty)
+
+        let workspace = root + "/workspace"
+        for project in ["within", "over"] {
+            try FileManager.default.createDirectory(atPath: workspace + "/\(project)/.codex", withIntermediateDirectories: true)
+        }
+        try padded("projectbig", macAgentConfigReadLimit + 1024).write(toFile: workspace + "/within/.codex/config.toml", atomically: true, encoding: .utf8)
+        try padded("toolarge", projectLimit + 1).write(toFile: workspace + "/over/.codex/config.toml", atomically: true, encoding: .utf8)
+        let project = collectMacProjectAgentDiscovery(roots: [workspace])
+        #expect(project.servers.contains { $0.name == "projectbig" })
+        #expect(!project.servers.contains { $0.name == "toolarge" })
+        #expect(project.coverage == [.tooLarge("project/.codex/config.toml")])
+    }
+
+    @Test("Claude Code project MCP servers are read without their project paths")
+    func claudeProjectServers() throws {
+        let home = NSTemporaryDirectory() + "merlin-claude-projects-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        try #"{"mcpServers":{"deixic":{"type":"http","url":"https://mcp.deixic.com/mcp"}},"projects":{"/Users/alice/customer-private":{"mcpServers":{"granola":{"url":"https://mcp.granola.ai/mcp?key=private-secret"}},"allowedTools":["private-secret"]},"/Users/alice/other-private":{"mcpServers":{"fli":{"command":"uvx","args":["flights-mcp","--token","private-secret"]},"/Users/alice/bad":{"command":"x"}}}}}"#.write(toFile: home + "/.claude.json", atomically: true, encoding: .utf8)
+        let servers = collectMacAgentDiscovery(homes: [home], systemBins: []).servers
+        #expect(Set(servers.map { "\($0.name) \($0.source)" }) == ["deixic .claude.json", "granola .claude.json/projects/*", "fli .claude.json/projects/*"])
+        let payload = String(decoding: try JSONEncoder().encode(servers), as: UTF8.self)
+        #expect(!payload.contains("private"))
+    }
+
     @Test("project discovery reports fixed labels and ignores linked configs")
     func projectAgentDiscovery() throws {
         let root = NSTemporaryDirectory() + "merlin-project-discovery-\(UUID().uuidString)"

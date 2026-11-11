@@ -5,8 +5,9 @@ BASE_DIR=/Library/Application Support/Merlin
 CONFIG_PATH=$BASE_DIR/config.plist
 LABEL=com.evalops.merlin
 
-/usr/sbin/chown -R root:wheel "$BASE_DIR/bin" "$BASE_DIR/rules"
+/usr/sbin/chown -R root:wheel "$BASE_DIR/bin" "$BASE_DIR/rules" "$BASE_DIR/MerlinCollector.app"
 /bin/chmod 755 "$BASE_DIR" "$BASE_DIR/bin" "$BASE_DIR/rules"
+/bin/chmod -R go-w "$BASE_DIR/MerlinCollector.app"
 /bin/chmod 755 "$BASE_DIR/bin/merlin-macos" "$BASE_DIR/bin/merlin-launcher"
 /bin/chmod 644 "$BASE_DIR/rules/rules.yaml"
 /usr/sbin/chown root:wheel /Library/LaunchDaemons/com.evalops.merlin.plist /usr/local/sbin/merlin-configure

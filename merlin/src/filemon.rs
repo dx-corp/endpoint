@@ -46,6 +46,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
 use crate::agent_session;
+use crate::credential_files;
 use crate::proctree::ProcTable;
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::{spool, telemetry};
@@ -56,6 +57,7 @@ const FAN_REPORT_FID: u32 = 0x200;
 const FAN_REPORT_DIR_FID: u32 = 0x400;
 const FAN_REPORT_NAME: u32 = 0x800;
 const FAN_MARK_ADD: u32 = 0x1;
+const FAN_OPEN: u64 = 0x20;
 const FAN_CLOSE_WRITE: u64 = 0x8;
 const FAN_MOVED_FROM: u64 = 0x40;
 const FAN_MOVED_TO: u64 = 0x80;
@@ -323,6 +325,24 @@ pub fn spawn(
     }
     log::info!("filemon: {cw_marks} close_write marks");
 
+    // Opens of the declared credential files, in the same fd-carrying group.
+    let (credentials, credential_marks) = credential_files::places(&crate::sync::agent_homes());
+    let mut open_marks = 0;
+    for mark in &credential_marks {
+        let (mask, path) = match mark {
+            credential_files::Mark::Dir(dir) => (FAN_OPEN | FAN_EVENT_ON_CHILD, dir),
+            credential_files::Mark::File(file) => (FAN_OPEN, file),
+        };
+        match fanotify_mark(cw_fd, mask, path) {
+            Ok(()) => open_marks += 1,
+            Err(e) => log::warn!("open mark on {}: {e:#}", path.display()),
+        }
+    }
+    log::info!(
+        "filemon: {open_marks} credential open marks for {} credential files",
+        credentials.len()
+    );
+
     // --- group 2: dirent events via FID ---
     let fid_fd = fanotify_init(
         FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME,
@@ -351,7 +371,7 @@ pub fn spawn(
         let rules = rules.clone();
         let table = Arc::clone(&table);
         let tx = tx.clone();
-        move || cw_loop(cw_fd, rules, table, tx)
+        move || cw_loop(cw_fd, rules, table, tx, credentials)
     })?;
     spawn_thread("filemon-fid", move || {
         fid_loop(fid_fd, dirs, rules, table, tx)
@@ -395,27 +415,57 @@ fn read_events(fd: i32, buf: &mut [u8], on_meta: &mut impl FnMut(&Metadata, &[u8
     }
 }
 
-fn cw_loop(fd: i32, rules: RulesHandle, table: Arc<Mutex<ProcTable>>, tx: Sender<Value>) {
+fn cw_loop(
+    fd: i32,
+    rules: RulesHandle,
+    table: Arc<Mutex<ProcTable>>,
+    tx: Sender<Value>,
+    credentials: Vec<credential_files::Place>,
+) {
     let mut buf = vec![0u8; 64 * 1024];
     let mut dedupe = Dedupe::new(Duration::from_millis(1500));
     read_events(fd, &mut buf, &mut |meta, _records| {
-        if meta.fd < 0 || meta.mask & FAN_CLOSE_WRITE == 0 {
+        if meta.fd < 0 {
             return;
         }
+        // The event's fd is only resolved to a path, never read.
         let path = std::fs::read_link(format!("/proc/self/fd/{}", meta.fd))
             .ok()
             .map(|p| p.display().to_string());
         unsafe { libc::close(meta.fd) };
         let Some(path) = path else { return };
-        emit(
-            &tx,
-            &rules.get(),
-            &table,
-            &mut dedupe,
-            &path,
-            "modify",
-            meta.pid,
-        );
+        if meta.mask & FAN_CLOSE_WRITE != 0 {
+            emit(
+                &tx,
+                &rules.get(),
+                &table,
+                &mut dedupe,
+                Touch {
+                    path: &path,
+                    op: "modify",
+                    pid: meta.pid,
+                    credential: None,
+                },
+            );
+        }
+        // A credential's directory reports opens of all its files; only the
+        // credential's own are kept.
+        if meta.mask & FAN_OPEN != 0 {
+            if let Some(name) = credential_files::name_for(&credentials, &path) {
+                emit(
+                    &tx,
+                    &rules.get(),
+                    &table,
+                    &mut dedupe,
+                    Touch {
+                        path: &path,
+                        op: "open",
+                        pid: meta.pid,
+                        credential: Some(name),
+                    },
+                );
+            }
+        }
     });
 }
 
@@ -439,7 +489,18 @@ fn fid_loop(
         }
         let path = format!("{}/{}", dir.path.display(), name);
         for op in ops_for_mask(meta.mask) {
-            emit(&tx, &rules.get(), &table, &mut dedupe, &path, op, meta.pid);
+            emit(
+                &tx,
+                &rules.get(),
+                &table,
+                &mut dedupe,
+                Touch {
+                    path: &path,
+                    op,
+                    pid: meta.pid,
+                    credential: None,
+                },
+            );
         }
     });
 }
@@ -483,15 +544,29 @@ fn parse_dfid_name<'a>(records: &'a [u8], dirs: &'a [DirEntry]) -> Option<(&'a D
     None
 }
 
+/// What one file event is about.
+struct Touch<'a> {
+    path: &'a str,
+    op: &'a str,
+    /// The acting pid as fanotify reports it; 0 when not visible here.
+    pid: i32,
+    /// The declared name of the credential file an `open` touched.
+    credential: Option<&'static str>,
+}
+
 fn emit(
     tx: &Sender<Value>,
     rules: &Rules,
     table: &Arc<Mutex<ProcTable>>,
     dedupe: &mut Dedupe,
-    path: &str,
-    op: &str,
-    pid: i32,
+    touch: Touch,
 ) {
+    let Touch {
+        path,
+        op,
+        pid,
+        credential,
+    } = touch;
     if !dedupe.allow(path, op, Instant::now()) {
         return;
     }
@@ -511,6 +586,7 @@ fn emit(
         })
         .unwrap_or_default();
 
+    let agent = agent_session::agent_for(table, pid_u32);
     let basename = path.rsplit('/').next();
     let ctx = MatchCtx {
         sha256: None,
@@ -522,6 +598,8 @@ fn emit(
         parent_basename: parent_basename.as_deref(),
         ancestors: &ancestor_comms,
         dns: None,
+        agent: agent.map(|a| a.client),
+        credential,
     };
     // Only log rules apply to file events: kill/block are exec-context
     // actions (documented in linux-sensor.md).
@@ -541,7 +619,10 @@ fn emit(
         "comm": comm,
         "matched_rules": matched,
     });
-    agent_session::stamp(&mut event, agent_session::agent_for(table, pid_u32));
+    if let Some(name) = credential {
+        event["credential"] = Value::from(name);
+    }
+    agent_session::stamp(&mut event, agent);
     spool::try_send(tx, event);
 }
 

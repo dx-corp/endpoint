@@ -212,6 +212,10 @@ fn signals_for(object: &Map<String, Value>) -> Vec<&'static str> {
             }
         }
         "memfd" => signals.push("memfd_create"),
+        // An open of a declared credential file is access, not a change.
+        "file" if object.get("credential").is_some_and(|c| !c.is_null()) => {
+            signals.push("credential_access");
+        }
         "file" => signals.push("persistence_change"),
         "socket" if object.get("state").and_then(Value::as_str) == Some("listen") => {
             signals.push("network_listener");
@@ -761,6 +765,21 @@ mod tests {
             event["signals"],
             serde_json::json!(["w_x_transition", "process_injection"])
         );
+    }
+
+    #[test]
+    fn a_credential_open_is_access_and_a_watched_change_is_persistence() {
+        let mut open = serde_json::json!({
+            "kind": "file", "path": "/home/u/.aws/credentials", "op": "open",
+            "credential": "aws",
+        });
+        decorate_event(&mut open);
+        assert_eq!(open["signals"], serde_json::json!(["credential_access"]));
+        let mut change = serde_json::json!({
+            "kind": "file", "path": "/etc/cron.d/job", "op": "modify",
+        });
+        decorate_event(&mut change);
+        assert_eq!(change["signals"], serde_json::json!(["persistence_change"]));
     }
 
     #[test]

@@ -13,6 +13,9 @@ case "${MERLIN_RELEASE_MODE:-development}" in
     [ -n "${MERLIN_NOTARY_PROFILE:-}" ] || fail 'Production requires MERLIN_NOTARY_PROFILE.'
     [ "${MERLIN_CODESIGN_TIMESTAMP:-1}" = 1 ] || fail 'Production requires secure timestamps.'
     [ -n "${MERLIN_UPDATE_FEED_URL:-}" ] && [ -n "${MERLIN_UPDATE_PUBLIC_KEY:-}" ] || fail 'Production requires an approved update feed and public EdDSA key.'
+    if [ "${MERLIN_ENDPOINT_SECURITY_ENTITLEMENT:-0}" = 1 ]; then
+      [ -r "${MERLIN_COLLECTOR_PROVISIONING_PROFILE:-}" ] || fail 'Production Endpoint Security requires MERLIN_COLLECTOR_PROVISIONING_PROFILE.'
+    fi
     ;;
   *) fail 'MERLIN_RELEASE_MODE must be development or production.' ;;
 esac

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Deixic Endpoint network filter profile. It pre-approves the filter system
+  extension (team 7BPHA88333, com.merlin.agent.filter) and turns the content
+  filter on, so users see neither the "System Extension Blocked" prompt nor
+  the "would like to filter network content" prompt.
+
+  Hold this profile until a release ships the filter extension. Current
+  packages contain no system extension, and a content filter payload whose
+  extension is missing leaves an inactive filter in Network settings.
+  See macos/docs/mdm-deployment.md.
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadDisplayName</key>
+  <string>Deixic Endpoint Network Filter</string>
+  <key>PayloadDescription</key>
+  <string>Allows the Deixic Endpoint network filter system extension and enables its content filter.</string>
+  <key>PayloadIdentifier</key>
+  <string>com.evalops.merlin.mdm.network-filter</string>
+  <key>PayloadOrganization</key>
+  <string>Deixic</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>4E84D260-EA32-47C0-8423-EDD2429908AD</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadRemovalDisallowed</key>
+  <true/>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadDisplayName</key>
+      <string>Deixic Endpoint System Extension</string>
+      <key>PayloadIdentifier</key>
+      <string>com.evalops.merlin.mdm.system-extension</string>
+      <key>PayloadType</key>
+      <string>com.apple.system-extension-policy</string>
+      <key>PayloadUUID</key>
+      <string>7EAC08A8-3974-49BF-BF75-F8A99BDC285E</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>AllowUserOverrides</key>
+      <false/>
+      <key>AllowedSystemExtensions</key>
+      <dict>
+        <key>7BPHA88333</key>
+        <array>
+          <string>com.merlin.agent.filter</string>
+        </array>
+      </dict>
+      <key>AllowedSystemExtensionTypes</key>
+      <dict>
+        <key>7BPHA88333</key>
+        <array>
+          <string>NetworkExtension</string>
+        </array>
+      </dict>
+      <key>NonRemovableFromUISystemExtensions</key>
+      <dict>
+        <key>7BPHA88333</key>
+        <array>
+          <string>com.merlin.agent.filter</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>PayloadDisplayName</key>
+      <string>Deixic Endpoint Content Filter</string>
+      <key>PayloadIdentifier</key>
+      <string>com.evalops.merlin.mdm.content-filter</string>
+      <key>PayloadType</key>
+      <string>com.apple.webcontent-filter</string>
+      <key>PayloadUUID</key>
+      <string>2FDE32B8-F7AA-480E-A13E-A7091A77F079</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>UserDefinedName</key>
+      <string>Deixic Endpoint</string>
+      <key>FilterType</key>
+      <string>Plugin</string>
+      <key>PluginBundleID</key>
+      <string>com.merlin.agent</string>
+      <key>FilterGrade</key>
+      <string>firewall</string>
+      <key>FilterSockets</key>
+      <true/>
+      <key>FilterPackets</key>
+      <false/>
+      <key>FilterDataProviderBundleIdentifier</key>
+      <string>com.merlin.agent.filter</string>
+      <key>FilterDataProviderDesignatedRequirement</key>
+      <string>identifier "com.merlin.agent.filter" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "7BPHA88333"</string>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -35,12 +35,21 @@ if grep -Eq 'SyncKey|DeviceToken|MERLIN_SYNC_KEY|MERLIN_DEVICE_TOKEN' "$SCRIPT_D
   exit 1
 fi
 
-plutil -lint "$SCRIPT_DIR/EndpointApp.Info.plist" "$SCRIPT_DIR/EndpointApp.component.plist" >/dev/null
+plutil -lint "$SCRIPT_DIR/EndpointApp.Info.plist" "$SCRIPT_DIR/EndpointApp.component.plist" "$SCRIPT_DIR/Collector.Info.plist" >/dev/null
+plutil -lint "$SCRIPT_DIR/mdm/deixic-endpoint.mobileconfig" "$SCRIPT_DIR/mdm/deixic-endpoint-network-filter.mobileconfig" >/dev/null
+[ "$(plutil -extract CFBundleIdentifier raw "$SCRIPT_DIR/Collector.Info.plist")" = com.evalops.merlin.collector ]
 sh -n "$SCRIPT_DIR/build-app.sh" "$SCRIPT_DIR/validate-release-config.sh"
 [ "$(plutil -extract MachServices.com\.evalops\.merlin\.status raw "$SCRIPT_DIR/com.evalops.merlin.plist" 2>/dev/null || true)" = true ] ||
   /usr/libexec/PlistBuddy -c 'Print :MachServices:com.evalops.merlin.status' "$SCRIPT_DIR/com.evalops.merlin.plist" | grep -q true
 if MERLIN_RELEASE_MODE=production MERLIN_CODE_SIGN_IDENTITY=- "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
   printf '%s\n' 'Production accepted ad-hoc signing' >&2; exit 1
+fi
+if MERLIN_RELEASE_MODE=production MERLIN_CODE_SIGN_IDENTITY='Developer ID Application: Test (TEAMID0000)' \
+  MERLIN_INSTALLER_SIGN_IDENTITY='Developer ID Installer: Test (TEAMID0000)' MERLIN_NOTARY_PROFILE=test \
+  MERLIN_UPDATE_FEED_URL=https://updates.invalid/appcast.xml MERLIN_UPDATE_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+  MERLIN_ENDPOINT_SECURITY_ENTITLEMENT=1 MERLIN_COLLECTOR_PROVISIONING_PROFILE='' \
+  "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
+  printf '%s\n' 'Production accepted Endpoint Security without a provisioning profile' >&2; exit 1
 fi
 if MERLIN_UPDATE_FEED_URL=http://invalid.test MERLIN_UPDATE_PUBLIC_KEY=bad "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
   printf '%s\n' 'Updates accepted insecure feed/key' >&2; exit 1

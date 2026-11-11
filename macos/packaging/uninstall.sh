@@ -14,7 +14,7 @@ fi
 
 launchctl bootout system/com.evalops.merlin >/dev/null 2>&1 || true
 rm -f /Library/LaunchDaemons/com.evalops.merlin.plist /usr/local/sbin/merlin-configure
-rm -rf '/Library/Application Support/Merlin/bin' '/Library/Application Support/Merlin/rules'
+rm -rf '/Library/Application Support/Merlin/bin' '/Library/Application Support/Merlin/rules' '/Library/Application Support/Merlin/MerlinCollector.app'
 rm -rf "/Applications/Deixic Endpoint.app"
 if [ "$purge" = true ]; then
   rm -rf '/Library/Application Support/Merlin' '/Library/Logs/Merlin'

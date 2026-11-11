@@ -79,7 +79,7 @@ struct CollectionManifest: Encodable, Sendable {
     static let collectors: [ManifestCollector] = [
         ManifestCollector(
             id: "posture_checks", group: .checks, title: "Security settings",
-            what: "Whether FileVault, screen lock, macOS and automatic updates, the firewall, remote access, endpoint protection and a password manager are in place, each as pass, fail or unknown with a short reason and a hash of the evidence read. Settings are read; their contents are not copied.",
+            what: "Whether FileVault, screen lock, macOS and automatic updates, the firewall, remote access, endpoint protection and a password manager are in place, and whether AI coding agents (Claude Code, Codex, Gemini CLI, Cursor CLI) are set to act without asking, each as pass, fail or unknown with a short reason and a hash of the evidence read. For AI agents the reason names the setting (from ai-agent-approval.toml); the setting's value, the file's path and the account are not sent. AI agent results are reported and do not affect secure-device access unless the workspace policy turns that on. Settings are read; their contents are not copied.",
             why: "Workstation controls in SOC 2 and ISO 27001 ask that company computers are encrypted, locked, patched and protected.",
             records: ["posture.checks", "posture.findings", "posture.coverage"],
             capabilities: ["posture_reporting"], retention: .whileEnrolled),

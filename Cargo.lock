@@ -1507,6 +1507,7 @@ dependencies = [
 name = "merlin"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "aya",
  "base64",
@@ -1519,6 +1520,7 @@ dependencies = [
  "merlin-common",
  "nix",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "serde_norway",

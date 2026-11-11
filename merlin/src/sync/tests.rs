@@ -1,6 +1,12 @@
-use super::plugin_cache::MAX_CLAUDE_CACHE_DIRS;
+use super::agent_discovery::{
+    AGENT_FILE_LIMIT, MAX_AGENT_HOMES, agent_homes_from, collect_cursor_plugins,
+};
+use super::container_discovery::RootScan;
+use super::plugin_cache::{MAX_CLAUDE_CACHE_DIRS, collect_claude_plugin_cache};
 use super::*;
-use crate::manifest::AI_LOCATIONS;
+use crate::ai_discovery::ContentScan;
+use crate::manifest::{AI_LOCATIONS, AiLocation, Format, Scope};
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -228,6 +234,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: "node".into(),
                 host: String::new(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "amp".into(),
                 name: "db".into(),
@@ -237,6 +244,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: String::new(),
                 host: "mcp.example".into(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "codex".into(),
                 name: "github".into(),
@@ -246,6 +254,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: "node".into(),
                 host: String::new(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "cursor".into(),
                 name: "docs".into(),
@@ -255,6 +264,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: String::new(),
                 host: String::new(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "gemini".into(),
                 name: "search".into(),
@@ -264,6 +274,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: String::new(),
                 host: "mcp.example".into(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "maestro".into(),
                 name: "managed".into(),
@@ -273,6 +284,7 @@ fn agent_discovery_reports_names_without_config_values_or_symlinks() {
             DeviceMCPServer {
                 package: "node".into(),
                 host: String::new(),
+                matched_rules: Vec::new(),
                 location: String::new(),
                 client: "maestro".into(),
                 name: "pluginsearch".into(),
@@ -789,7 +801,7 @@ fn every_declared_linux_location_is_read() {
         write_declared_location(&project, location);
     }
     let (project_servers, project_assets) =
-        collect_project_agent_discovery(std::slice::from_ref(&project));
+        collect_project_agent_discovery(std::slice::from_ref(&project), &mut Vec::new());
     let system = root.join("system");
     for location in AiLocation::linux(Scope::System) {
         write_declared_location(&system, location);
@@ -1221,7 +1233,8 @@ fn project_discovery_is_bounded_and_hides_paths_and_values() {
         "private-secret",
     )
     .unwrap();
-    let (servers, assets) = collect_project_agent_discovery(std::slice::from_ref(&root));
+    let (servers, assets) =
+        collect_project_agent_discovery(std::slice::from_ref(&root), &mut Vec::new());
     assert!(servers.iter().any(|item| item.name == "docs"
         && item.source == "project/.cursor/mcp.json"
         && item.transport == "stdio"));
@@ -1262,7 +1275,7 @@ fn project_discovery_is_bounded_and_hides_paths_and_values() {
     )
     .unwrap();
     assert!(
-        !collect_project_agent_discovery(std::slice::from_ref(&root))
+        !collect_project_agent_discovery(std::slice::from_ref(&root), &mut Vec::new())
             .0
             .iter()
             .any(|item| item.name == "docs")
@@ -1277,13 +1290,13 @@ fn project_discovery_is_bounded_and_hides_paths_and_values() {
     std::os::unix::fs::symlink(&outside, root.join("linked-project")).unwrap();
     std::os::unix::fs::symlink(&project, root.join("linked-team")).unwrap();
     assert!(
-        !collect_project_agent_discovery(std::slice::from_ref(&root))
+        !collect_project_agent_discovery(std::slice::from_ref(&root), &mut Vec::new())
             .0
             .iter()
             .any(|item| item.name == "outside")
     );
     assert!(
-        collect_project_agent_discovery(&[root.join("linked-team")])
+        collect_project_agent_discovery(&[root.join("linked-team")], &mut Vec::new())
             .0
             .is_empty()
     );
@@ -1317,7 +1330,8 @@ fn project_discovery_caps_descendants_and_depth() {
         project_discovery::project_directory_count(&root, Instant::now() + Duration::from_secs(5),),
         33
     );
-    let (servers, _) = collect_project_agent_discovery(std::slice::from_ref(&root));
+    let (servers, _) =
+        collect_project_agent_discovery(std::slice::from_ref(&root), &mut Vec::new());
     assert!(servers.iter().any(|item| item.name == "within-cap"));
     assert!(!servers.iter().any(|item| item.name == "past-cap"));
     assert!(!servers.iter().any(|item| item.name == "past-depth"));
@@ -2175,5 +2189,154 @@ fn a_planted_malicious_skill_is_reported_with_its_hash_and_matched_rules_only() 
     ] {
         assert!(!wire.contains(leaked), "{leaked} in {wire}");
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_list_at_its_cap_is_reported_truncated_and_a_shorter_one_is_not() {
+    use crate::ai_discovery::{MAX_AGENT_FINDINGS, add_truncation};
+    let root = tmpdir("truncated-assets");
+    let home = root.join("home");
+    for index in 0..MAX_AGENT_FINDINGS + 20 {
+        let skill = home.join(format!(".claude/skills/s{index:04}"));
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "x").unwrap();
+    }
+    let mut scan = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
+    assert!(scan.agent_assets.len() <= MAX_AGENT_FINDINGS);
+    add_truncation(
+        &mut scan.coverage,
+        scan.mcp_servers.len(),
+        scan.agent_assets.len(),
+    );
+    assert_eq!(
+        scan.coverage,
+        vec![DeviceAiLocationCoverage::truncated("agent_assets")]
+    );
+    assert_eq!(
+        serde_json::to_value(&scan.coverage[0]).unwrap(),
+        serde_json::json!({"state": "truncated", "reason": "agent_assets"})
+    );
+    // Reported once, and never for a list under the cap.
+    add_truncation(&mut scan.coverage, 0, MAX_AGENT_FINDINGS);
+    let mut short = Vec::new();
+    add_truncation(&mut short, 1, MAX_AGENT_FINDINGS - 1);
+    assert_eq!(scan.coverage.len(), 1);
+    assert!(short.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A Codex TOML config of `size` bytes: one MCP server plus a comment.
+fn padded_codex_config(server: &str, size: u64) -> String {
+    let head =
+        format!("[mcp_servers.{server}]\ncommand = \"npx\"\nargs = [\"-y\", \"{server}-mcp\"]\n# ");
+    format!("{head}{}\n", "x".repeat(size as usize - head.len() - 1))
+}
+
+#[test]
+fn codex_configs_are_read_up_to_their_own_limit_in_homes_and_projects() {
+    let root = tmpdir("codex-config-limit");
+    let codex = |scope: Scope| {
+        AI_LOCATIONS
+            .iter()
+            .find(|l| l.scope == scope && l.path == ".codex/config.toml")
+            .unwrap()
+    };
+    let (user, project_row) = (codex(Scope::User), codex(Scope::Project));
+    assert!(user.max_bytes > AGENT_FILE_LIMIT && project_row.max_bytes > AGENT_FILE_LIMIT);
+
+    // A user config over the default limit, within its own: read.
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(
+        home.join(".codex/config.toml"),
+        padded_codex_config("homebig", AGENT_FILE_LIMIT + 1024),
+    )
+    .unwrap();
+    let scan = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
+    assert!(
+        scan.mcp_servers
+            .iter()
+            .any(|s| s.name == "homebig" && s.package == "homebig-mcp")
+    );
+    assert!(scan.coverage.is_empty());
+
+    // Projects: one over the default limit is read; one over its own limit
+    // is reported once, by its project label, and not read.
+    let workspace = root.join("workspace");
+    let within = workspace.join("within");
+    let over = workspace.join("over");
+    for project in [&within, &over] {
+        fs::create_dir_all(project.join(".codex")).unwrap();
+    }
+    fs::write(
+        within.join(".codex/config.toml"),
+        padded_codex_config("projectbig", AGENT_FILE_LIMIT + 1024),
+    )
+    .unwrap();
+    fs::write(
+        over.join(".codex/config.toml"),
+        padded_codex_config("toolarge", project_row.max_bytes + 1),
+    )
+    .unwrap();
+    let mut coverage = Vec::new();
+    let (servers, _) =
+        collect_project_agent_discovery(std::slice::from_ref(&workspace), &mut coverage);
+    assert!(servers.iter().any(|s| s.name == "projectbig"));
+    assert!(!servers.iter().any(|s| s.name == "toolarge"));
+    assert_eq!(
+        coverage,
+        vec![DeviceAiLocationCoverage::too_large(project_row)]
+    );
+    assert_eq!(coverage[0].source, "project/.codex/config.toml");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn claude_code_project_mcp_servers_are_read_without_their_project_paths() {
+    let root = tmpdir("claude-project-mcp");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"deixic":{"type":"http","url":"https://mcp.deixic.com/mcp"}},
+            "projects":{
+              "/home/alice/customer-private":{"mcpServers":{"granola":{"type":"http","url":"https://mcp.granola.ai/mcp?key=private-secret"}},"allowedTools":["private-secret"]},
+              "/home/alice/other-private":{"mcpServers":{"fli":{"command":"uvx","args":["flights-mcp","--token","private-secret"]},"/home/alice/bad name":{"command":"x"}}},
+              "/home/alice/empty-private":{"mcpServers":{}}
+            }}"#,
+    )
+    .unwrap();
+    let location = AI_LOCATIONS
+        .iter()
+        .find(|l| l.scope == Scope::User && l.path == ".claude.json")
+        .unwrap();
+    let project_label = location.projects_label();
+    assert_eq!(project_label, ".claude.json/projects/*");
+    let RootScan {
+        mcp_servers: servers,
+        ..
+    } = collect_agent_discovery_from(std::slice::from_ref(&home), &[]);
+    let found: BTreeSet<(&str, &str, &str, &str)> = servers
+        .iter()
+        .map(|s| {
+            (
+                s.name.as_str(),
+                s.source.as_str(),
+                s.package.as_str(),
+                s.host.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        BTreeSet::from([
+            ("deixic", ".claude.json", "", "mcp.deixic.com"),
+            ("granola", project_label.as_str(), "", "mcp.granola.ai"),
+            ("fli", project_label.as_str(), "flights-mcp", ""),
+        ])
+    );
+    let payload = serde_json::to_string(&servers).unwrap();
+    assert!(!payload.contains("private"), "{payload}");
     fs::remove_dir_all(root).unwrap();
 }

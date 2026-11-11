@@ -57,14 +57,24 @@ private func declaredMacAILocations(_ source: String) -> Set<String> {
 }
 
 /// The `max_bytes` of each user ai_locations row that sets one, by path.
-private func declaredUserReadLimits(_ source: String) -> [String: Int] {
+private func declaredReadLimits(_ source: String, scope: String) -> [String: Int] {
     var limits: [String: Int] = [:]
-    for line in source.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) where line.hasPrefix("{") && line.contains("scope = \"user\"") {
+    for line in source.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) where line.hasPrefix("{") && line.contains("scope = \"\(scope)\"") {
         guard let path = line.range(of: "path = \""), let bytes = line.range(of: "max_bytes = ") else { continue }
         let name = line[path.upperBound...].prefix { $0 != "\"" }
         limits[String(name)] = Int(line[bytes.upperBound...].prefix { $0.isNumber })
     }
     return limits
+}
+
+/// The `projects_key` of each user ai_locations row that sets one, by path.
+private func declaredUserProjectKeys(_ source: String) -> [String: String] {
+    var keys: [String: String] = [:]
+    for line in source.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }) where line.hasPrefix("{") && line.contains("scope = \"user\"") {
+        guard let path = line.range(of: "path = \""), let key = line.range(of: "projects_key = \"") else { continue }
+        keys[String(line[path.upperBound...].prefix { $0 != "\"" })] = String(line[key.upperBound...].prefix { $0 != "\"" })
+    }
+    return keys
 }
 
 @Suite("collection manifest")
@@ -127,9 +137,17 @@ struct ManifestTests {
 
     @Test("config read limits match the declared max_bytes")
     func readLimitsMatchManifest() throws {
-        let declared = declaredUserReadLimits(try declaredManifestSource())
+        let source = try declaredManifestSource()
+        #expect(!declaredReadLimits(source, scope: "user").isEmpty)
+        #expect(declaredReadLimits(source, scope: "user") == macUserAgentConfigReadLimits)
+        #expect(declaredReadLimits(source, scope: "project") == macProjectAgentConfigReadLimits)
+    }
+
+    @Test("project MCP keys match the declared projects_key")
+    func projectKeysMatchManifest() throws {
+        let declared = declaredUserProjectKeys(try declaredManifestSource())
         #expect(!declared.isEmpty)
-        #expect(declared == macUserAgentConfigReadLimits)
+        #expect(declared == macUserAgentConfigProjectKeys)
     }
 
     @Test("declared collectors follow the static build capabilities")

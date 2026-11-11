@@ -15,11 +15,25 @@ func codexEnabledPluginNames(_ data: Data) -> [String] {
 }
 
 /// Walks a TOML 1.0 document and records the full key path of every value
-/// assignment outside arrays of tables. Only boolean true is retained as a
-/// value; strings, numbers, dates, and arrays are skipped. The Linux and
-/// Windows agent applies the same rules in `merlin/src/ai_discovery.rs`.
-private struct TOMLLeafScanner {
-    struct Leaf { let path: [String]; let isTrue: Bool }
+/// assignment outside arrays of tables. Booleans, single-line strings and
+/// arrays of single-line strings keep their value; numbers, dates, multi-line
+/// strings, other arrays and inline tables are recorded as `other`. The Linux
+/// and Windows agent applies the same document rules in
+/// `merlin/src/ai_discovery.rs`. The AI agent approval checks read Codex
+/// settings with it.
+struct TOMLLeafScanner {
+    enum Value: Equatable, Sendable {
+        case bool(Bool)
+        case string(String)
+        case strings([String])
+        case other
+    }
+
+    struct Leaf {
+        let path: [String]
+        let value: Value
+        var isTrue: Bool { value == .bool(true) }
+    }
     struct Invalid: Error {}
 
     /// TOML 1.0 rejects a document that defines one path twice or reopens a
@@ -174,31 +188,40 @@ private struct TOMLLeafScanner {
         guard let byte = current else { throw Invalid() }
         if has("\"\"\"") {
             try multilineString(quote: UInt8(ascii: "\""), escapes: true)
-            leaf(path, isTrue: false)
+            leaf(path, .other)
         } else if has("'''") {
             try multilineString(quote: UInt8(ascii: "'"), escapes: false)
-            leaf(path, isTrue: false)
+            leaf(path, .other)
         } else if byte == UInt8(ascii: "\"") {
-            _ = try basicString()
-            leaf(path, isTrue: false)
+            leaf(path, .string(try basicString()))
         } else if byte == UInt8(ascii: "'") {
-            _ = try literalString()
-            leaf(path, isTrue: false)
+            leaf(path, .string(try literalString()))
         } else if byte == UInt8(ascii: "[") {
             pos += 1
+            // The elements' text while every element is a single-line string.
+            var strings: [String]? = []
             while true {
                 skipBlank(newlines: true)
                 if has("]") { pos += 1; break }
-                try value(nil)
+                if has("\"") && !has("\"\"\"") {
+                    let text = try basicString()
+                    strings?.append(text)
+                } else if has("'") && !has("'''") {
+                    let text = try literalString()
+                    strings?.append(text)
+                } else {
+                    try value(nil)
+                    strings = nil
+                }
                 skipBlank(newlines: true)
                 if has(",") { pos += 1; continue }
                 guard has("]") else { throw Invalid() }
             }
-            leaf(path, isTrue: false)
+            leaf(path, strings.map { .strings($0) } ?? .other)
         } else if byte == UInt8(ascii: "{") {
             pos += 1
             skipSpace()
-            leaf(path, isTrue: false)
+            leaf(path, .other)
             if has("}") { pos += 1; return }
             while true {
                 let child = try key()
@@ -219,18 +242,18 @@ private struct TOMLLeafScanner {
             while pos > start, bytes[pos - 1] == UInt8(ascii: " ") || bytes[pos - 1] == UInt8(ascii: "\t") { pos -= 1 }
             let token = String(decoding: bytes[start..<pos], as: UTF8.self)
             if token == "true" || token == "false" {
-                leaf(path, isTrue: token == "true")
+                leaf(path, .bool(token == "true"))
                 return
             }
             guard Self.isScalarToken(token) else { throw Invalid() }
-            leaf(path, isTrue: false)
+            leaf(path, .other)
         }
     }
 
-    private mutating func leaf(_ path: [String]?, isTrue: Bool) {
+    private mutating func leaf(_ path: [String]?, _ value: Value) {
         guard let path else { return }
         kinds[path] = .value
-        leaves.append(Leaf(path: path, isTrue: isTrue))
+        leaves.append(Leaf(path: path, value: value))
     }
 
     private static func only(_ text: Substring, _ allowed: String) -> Bool {

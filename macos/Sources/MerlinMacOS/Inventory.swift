@@ -61,6 +61,31 @@ struct DeviceAILocationCoverage: Encodable, Sendable, Equatable {
     static func tooLarge(_ source: String) -> DeviceAILocationCoverage {
         DeviceAILocationCoverage(source: source, state: "not_scanned", reason: "too_large")
     }
+
+    /// A list (`mcp_servers` or `agent_assets`) that reached its cap and so
+    /// may have been cut: its count is "at least".
+    static func truncated(_ list: String) -> DeviceAILocationCoverage {
+        DeviceAILocationCoverage(source: "", state: "truncated", reason: list)
+    }
+
+    enum CodingKeys: String, CodingKey { case source, state, reason }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if !source.isEmpty { try container.encode(source, forKey: .source) }
+        try container.encode(state, forKey: .state)
+        try container.encode(reason, forKey: .reason)
+    }
+}
+
+/// `coverage` plus a truncated entry for each list at `macAgentFindingLimit`.
+func macCoverageWithTruncation(_ coverage: [DeviceAILocationCoverage], servers: Int, assets: Int) -> [DeviceAILocationCoverage] {
+    var result = coverage
+    for (list, count) in [("mcp_servers", servers), ("agent_assets", assets)] where count >= macAgentFindingLimit {
+        let entry = DeviceAILocationCoverage.truncated(list)
+        if !result.contains(entry) && result.count < 32 { result.append(entry) }
+    }
+    return result
 }
 struct DeviceAgentApp: Encodable, Sendable { let name: String }
 /// One MCP server finding. `package` is what a local server runs (a package
@@ -234,23 +259,31 @@ func collectDeviceInventory() -> DeviceInventory {
     )
 }
 
-func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], apps: [DeviceAgentApp], servers: [DeviceMCPServer], assets: [DeviceAgentAsset], coverage: [DeviceAILocationCoverage]) {
+/// The home directories the AI tool inventory and the AI agent approval
+/// checks read: root's, then each directory under /Users (at most 64).
+func macAgentHomes() -> [String] {
     let root = "/Users"
     let users = ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).sorted().prefix(64)
-    let homes = ["/var/root"] + users.map { "\(root)/\($0)" }.filter { path in
+    return ["/var/root"] + users.map { "\(root)/\($0)" }.filter { path in
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
+}
+
+func collectMacAgentDiscovery() -> (clis: [DeviceAgentCLI], apps: [DeviceAgentApp], servers: [DeviceMCPServer], assets: [DeviceAgentAsset], coverage: [DeviceAILocationCoverage]) {
+    let homes = macAgentHomes()
     let base = collectMacAgentDiscovery(homes: homes, systemBins: ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"])
     let project = collectMacProjectAgentDiscovery(roots: configuredMacAgentWorkspaceRoots())
     let system = collectMacSystemAgentConfigs()
-    let servers = Array(Set((base.servers + project.servers + system.servers).map(\.key))).sorted().prefix(128).compactMap(DeviceMCPServer.init(key:))
-    let assets = Array(Set((base.assets + project.assets + system.assets).map { "\($0.client)\u{0}\($0.kind)\u{0}\($0.name)\u{0}\($0.source)" })).sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
+    let servers = Array(Set((base.servers + project.servers + system.servers).map(\.key))).sorted().prefix(macAgentFindingLimit).compactMap(DeviceMCPServer.init(key:))
+    let assets = Array(Set((base.assets + project.assets + system.assets).map { "\($0.client)\u{0}\($0.kind)\u{0}\($0.name)\u{0}\($0.source)" })).sorted().prefix(macAgentFindingLimit).compactMap { entry -> DeviceAgentAsset? in
         let parts = entry.split(separator: "\u{0}")
         guard parts.count == 4 else { return nil }
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
     }
-    return (base.clis, base.apps, servers, assets, base.coverage)
+    var coverage = base.coverage
+    for entry in project.coverage where !coverage.contains(entry) && coverage.count < 32 { coverage.append(entry) }
+    return (base.clis, base.apps, servers, assets, macCoverageWithTruncation(coverage, servers: servers.count, assets: assets.count))
 }
 
 /// The system-scope configs beneath `root` (empty for `/`), each opened with
@@ -343,28 +376,39 @@ private func macProjectEntryType(_ fd: Int32, _ name: String) -> mode_t? {
 }
 
 private func readMacProjectFile(_ fd: Int32, _ name: String) -> Data? {
+    if case .body(let data) = readMacProjectFile(fd, name, limit: macAgentConfigReadLimit) { return data }
+    return nil
+}
+
+/// `name` in an open project directory, never through a link, read up to
+/// `limit` bytes; a larger file is `.tooLarge` and not read.
+private func readMacProjectFile(_ fd: Int32, _ name: String, limit: Int) -> MacConfigRead? {
     let fileFD = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
     guard fileFD >= 0 else { return nil }
     defer { close(fileFD) }
     var info = stat()
     guard fstat(fileFD, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-          info.st_size >= 0, info.st_size <= 64 << 10 else { return nil }
+          info.st_size >= 0 else { return nil }
+    guard info.st_size <= limit else { return .tooLarge }
     var bytes = [UInt8](repeating: 0, count: Int(info.st_size) + 1)
     let capacity = bytes.count
     let count = read(fileFD, &bytes, capacity)
-    guard count >= 0, count <= 64 << 10 else { return nil }
-    return Data(bytes.prefix(count))
+    guard count >= 0 else { return nil }
+    // The file can grow between the size check and the read.
+    guard count <= limit else { return .tooLarge }
+    return .body(Data(bytes.prefix(count)))
 }
 
-func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+func collectMacProjectAgentDiscovery(roots: [String]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset], coverage: [DeviceAILocationCoverage]) {
     let rootFDs = roots.prefix(8).compactMap(openMacProjectRoot)
     return collectMacProjectAgentDiscovery(rootFDs: rootFDs)
 }
 
 // Takes ownership of rootFDs. Kept internal so tests can replace a root path
 // after opening it and prove subsequent probes stay bound to that directory.
-func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset]) {
+func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPServer], assets: [DeviceAgentAsset], coverage: [DeviceAILocationCoverage]) {
     defer { rootFDs.forEach { close($0) } }
+    var coverage: [DeviceAILocationCoverage] = []
     let configs = macProjectAgentConfigs
     let assetDirs = macProjectAgentAssetDirs
     var found = Set<String>()
@@ -384,9 +428,17 @@ func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPSe
                 let parts = relative.split(separator: "/").map(String.init)
                 let parentFD = parts.count == 1 ? dup(project.fd) : openMacProjectSubdirectory(project.fd, parts.dropLast().joined(separator: "/"))
                 guard let parentFD else { continue }
-                let data = readMacProjectFile(parentFD, parts.last!)
+                let read = readMacProjectFile(parentFD, parts.last!, limit: macProjectAgentConfigReadLimits[relative] ?? macAgentConfigReadLimit)
                 close(parentFD)
-                guard let data else { continue }
+                let data: Data
+                switch read {
+                case .body(let body): data = body
+                case .tooLarge:
+                    let entry = DeviceAILocationCoverage.tooLarge("project/\(relative)")
+                    if !coverage.contains(entry) && coverage.count < 32 { coverage.append(entry) }
+                    continue
+                case nil: continue
+                }
                 assets.insert("\(client)\u{0}config\u{0}project\u{0}project/\(relative)")
                 if relative == ".claude/settings.json",
                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -453,11 +505,15 @@ func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPSe
     return (found.sorted().prefix(128).compactMap(DeviceMCPServer.init(key:)), assets.sorted().prefix(128).compactMap { entry in
         let parts = entry.split(separator: "\u{0}")
         return parts.count == 4 ? DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3])) : nil
-    })
+    }, coverage)
 }
 
 // Where the macOS collector looks. collection-manifest.toml ai_locations
 // declares these; ManifestTests keeps them equal.
+/// MCP servers, and agent assets, reported per inventory (each); a list that
+/// reaches it is reported as truncated (the Linux and Windows
+/// `MAX_AGENT_FINDINGS`).
+let macAgentFindingLimit = 128
 let macAgentCLINames = ["cursor", "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
 let macCursorAgentsDirectory = ".cursor/agents"
 let macCursorLocalPluginsDirectory = ".cursor/plugins/local"
@@ -481,7 +537,12 @@ let macClaudePluginCacheDirectoryLimit = 256
 let macAgentConfigReadLimit = 64 << 10
 /// User configs with their own read limit (collection-manifest.toml
 /// `max_bytes`; ManifestTests checks they match).
-let macUserAgentConfigReadLimits: [String: Int] = [".claude.json": 4 << 20]
+let macUserAgentConfigReadLimits: [String: Int] = [".claude.json": 4 << 20, ".codex/config.toml": 4 << 20]
+/// Project configs with their own read limit (`max_bytes` on project rows).
+let macProjectAgentConfigReadLimits: [String: Int] = [".codex/config.toml": 4 << 20]
+/// User configs that keep per-project MCP servers under a key
+/// (collection-manifest.toml `projects_key`; ManifestTests checks they match).
+let macUserAgentConfigProjectKeys: [String: String] = [".claude.json": "projects"]
 let macUserAgentConfigs: [(String, String, Bool)] = [
     ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
     ("claude", ".claude.json", false),
@@ -688,6 +749,18 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 found.insert(DeviceMCPServer(client: client, entry: entry, source: relative).key)
                 if found.count >= 128 { break }
             }
+            // Project MCP servers kept in this file (Claude Code's
+            // projects.<path>.mcpServers), labelled without the project path.
+            if let projectsKey = macUserAgentConfigProjectKeys[relative],
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let projects = object[projectsKey] as? [String: Any] {
+                for project in projects.values {
+                    let settings = project as? [String: Any]
+                    for entry in mcpEntries(settings?["mcpServers"] ?? settings?["servers"]) where safeAgentAssetName(entry.name) && found.count < 128 {
+                        found.insert(DeviceMCPServer(client: client, entry: entry, source: "\(relative)/\(projectsKey)/*").key)
+                    }
+                }
+            }
             if found.count >= 128 { break }
         }
         if found.count >= 128 { break }
@@ -698,7 +771,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         guard parts.count == 4 else { return nil }
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
     }
-    return (clis, apps, servers, assets, coverage)
+    return (clis, apps, servers, assets, macCoverageWithTruncation(coverage, servers: servers.count, assets: assets.count))
 }
 
 /// Claude Code's plugin cache, `<marketplace>/<plugin>/<version>/` (the
@@ -821,7 +894,7 @@ private func collectAIExtensions(home: String, assets: inout Set<String>) {
     }
 }
 
-private func openAgentDirectoryNoFollow(home: String, relative: String) -> Int32? {
+func openAgentDirectoryNoFollow(home: String, relative: String) -> Int32? {
     var directory = open(home, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
     guard directory >= 0 else { return nil }
     for segment in relative.split(separator: "/") {
@@ -848,7 +921,7 @@ private func boundedAgentDirectoryEntries(descriptor: Int32) -> [String] {
     return names.sorted()
 }
 
-private func readAgentConfigNoFollow(descriptor: Int32, name: String) -> Data? {
+func readAgentConfigNoFollow(descriptor: Int32, name: String) -> Data? {
     let file = openat(descriptor, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
     guard file >= 0 else { return nil }
     defer { close(file) }

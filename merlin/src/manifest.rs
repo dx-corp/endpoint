@@ -130,6 +130,17 @@ pub struct AiLocation {
     /// The most bytes of this file read; a larger file is reported as not
     /// scanned (`too_large`) instead.
     pub max_bytes: u64,
+    /// JSON object key of per-project settings whose `mcp_keys` entries are
+    /// project MCP servers (label `<path>/<projects_key>/*`); empty when the
+    /// file has none.
+    pub projects_key: &'static str,
+}
+
+impl AiLocation {
+    /// The source label of the project MCP servers this config holds.
+    pub fn projects_label(&self) -> String {
+        format!("{}/{}/*", self.label(), self.projects_key)
+    }
 }
 
 impl AiLocation {
@@ -208,16 +219,60 @@ impl AiAgentProcess {
     }
 }
 
+/// One vendored gitleaks rule (see `rules/ai/gitleaks/README.md`).
+#[derive(Clone, Copy, Debug)]
+pub struct GitleaksRule {
+    pub id: &'static str,
+    /// Go RE2 syntax, with a `{` that starts no repetition escaped.
+    pub regex: &'static str,
+    /// The capture group that is the secret; 0 is the first non-empty one.
+    pub secret_group: i64,
+    /// A secret at or below this Shannon entropy is not a finding; 0 is none.
+    pub entropy: f64,
+    /// Lowercased; content holding none of them is not matched.
+    pub keywords: &'static [&'static str],
+    pub allowlists: &'static [GitleaksAllowlist],
+}
+
+/// A gitleaks allowlist: a finding it allows is not reported.
+#[derive(Clone, Copy, Debug)]
+pub struct GitleaksAllowlist {
+    pub regexes: &'static [&'static str],
+    /// Lowercased.
+    pub stopwords: &'static [&'static str],
+    /// What the regexes test: secret, match or line.
+    pub target: &'static str,
+    /// condition = "AND": every check the allowlist sets must hold.
+    pub all: bool,
+    /// It sets paths or commits, which never hold here.
+    pub has_paths: bool,
+}
+
 /// One rule run on the content of AI skill, agent and plugin files, from
 /// `ai_content_rules`.
 #[derive(Serialize, Clone, Copy, Debug)]
 pub struct AiContentRule {
     /// The rule name findings report.
     pub id: &'static str,
-    /// yara.
+    /// yara or gitleaks.
     pub engine: &'static str,
     /// The rule file under `rules/ai/`.
     pub file: &'static str,
+}
+
+/// A credential file, from `credential_files`: the file_events collector
+/// reports opens of it by name, never its contents.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct CredentialFile {
+    /// The name events report.
+    pub name: &'static str,
+    /// Relative to each user's home.
+    pub path: &'static str,
+    /// When not empty, `path` is a directory and the credential is each file
+    /// in it whose name starts with this.
+    pub prefix: &'static str,
+    /// With `prefix`: a file whose name ends with this is not the credential.
+    pub not_suffix: &'static str,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -249,6 +304,9 @@ pub struct Manifest {
     /// The AI editor and browser extensions reported by id, from
     /// `ai_extensions`; no other extension is named.
     pub ai_extensions: Vec<AiExtension>,
+    /// The credential files whose opens are reported by name, from
+    /// `credential_files`.
+    pub credential_files: Vec<CredentialFile>,
 }
 
 // MANIFEST_VERSION (set by the release, 0 in a development build), JOURNAL,
@@ -278,6 +336,7 @@ pub fn manifest() -> Manifest {
         ai_agent_processes: AiAgentProcess::all().collect(),
         ai_content_rules: AI_CONTENT_RULES.to_vec(),
         ai_extensions: AI_EXTENSIONS.to_vec(),
+        credential_files: CREDENTIAL_FILES.to_vec(),
     }
 }
 
@@ -356,8 +415,31 @@ pub fn render_text() -> String {
         out.push_str(&format!("  {} (process {})\n", p.client, p.name));
     }
     out.push_str("\nRules run on AI skill, agent and plugin files (ids reported, never content)\n");
-    for r in &m.ai_content_rules {
+    for r in m.ai_content_rules.iter().filter(|r| r.engine == "yara") {
         out.push_str(&format!("  {} ({})\n", r.id, r.file));
+    }
+    let gitleaks: Vec<_> = m
+        .ai_content_rules
+        .iter()
+        .filter(|r| r.engine == "gitleaks")
+        .collect();
+    if let Some(first) = gitleaks.first() {
+        out.push_str(&format!(
+            "  {} gitleaks secret rules ({}), also on MCP server entries\n",
+            gitleaks.len(),
+            first.file
+        ));
+    }
+    out.push_str(
+        "\nCredential files whose opens are reported (path and program, never contents)\n",
+    );
+    for c in &m.credential_files {
+        let place = if c.prefix.is_empty() {
+            c.path.to_string()
+        } else {
+            format!("{}/{}*", c.path, c.prefix)
+        };
+        out.push_str(&format!("  {}: {place} in each home\n", c.name));
     }
     out.push_str("\nOn this computer\n");
     for l in &m.local {
@@ -378,6 +460,7 @@ mod tests {
     const SOURCES: &[(&str, &str)] = &[
         ("telemetry.rs", include_str!("telemetry.rs")),
         ("filemon.rs", include_str!("filemon.rs")),
+        ("credential_files.rs", include_str!("credential_files.rs")),
         ("fanotify_mon.rs", include_str!("fanotify_mon.rs")),
         ("dnsmon.rs", include_str!("dnsmon.rs")),
         ("netifmon.rs", include_str!("netifmon.rs")),
@@ -538,7 +621,8 @@ mod tests {
                 "transport",
                 "location",
                 "package",
-                "host"
+                "host",
+                "matched_rules"
             ]
         );
         assert_eq!(
@@ -613,8 +697,13 @@ mod tests {
         // The Linux walkers take every location from AI_LOCATIONS: no
         // hand-kept list of clients, configs or asset directories remains.
         let sync = SYNC.split("#[cfg(test)]").next().unwrap_or("");
+        let user = include_str!("sync/agent_discovery.rs");
         let project = include_str!("sync/project_discovery.rs");
-        for (name, source) in [("sync.rs", sync), ("project_discovery.rs", project)] {
+        for (name, source) in [
+            ("sync.rs", sync),
+            ("agent_discovery.rs", user),
+            ("project_discovery.rs", project),
+        ] {
             for needle in [
                 "const CLIS",
                 "const CONFIGS",
@@ -624,7 +713,7 @@ mod tests {
                 assert!(!source.contains(needle), "{name} still hand-lists {needle}");
             }
         }
-        assert!(sync.contains("AiLocation::linux(Scope::User)"));
+        assert!(user.contains("AiLocation::linux(Scope::User)"));
         assert!(project.contains("AiLocation::linux(Scope::Project)"));
     }
 

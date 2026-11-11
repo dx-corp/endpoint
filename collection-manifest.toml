@@ -14,6 +14,25 @@ manifest_version = 0
 # The system journal's share; per-event details are debug level and off by default.
 journal = "The system journal (journalctl -u merlin) carries health and errors only: starts, sensor attach, upload results, enforcement actions by rule name. Per-event details are debug level and off by default."
 
+# Credential files, by name. The file_events collector reports when a program
+# opens one: the path, the program and this name, never the contents. The
+# agent never reads them: an open is resolved to its path and closed. A file is watched through its directory, so
+# a file replaced or created later is still seen while that directory exists;
+# a file directly in the home is watched itself when it exists at start.
+#
+# name: the credential's name, as events report it.
+# path: relative to each user's home.
+# prefix: when set, path is a directory and the credential is each file in it
+#   whose name starts with prefix and does not end with not_suffix.
+credential_files = [
+  { name = "aws", path = ".aws/credentials" },
+  { name = "ssh_key", path = ".ssh", prefix = "id_", not_suffix = ".pub" },
+  { name = "kube", path = ".kube/config" },
+  { name = "gh", path = ".config/gh/hosts.yml" },
+  { name = "netrc", path = ".netrc" },
+  { name = "gcloud_adc", path = ".config/gcloud/application_default_credentials.json" },
+]
+
 # Inventory record kinds, as the check-in's `inventory` object names them
 # (field names of DeviceInventory in merlin/src/sync.rs; a test checks this).
 inventory_fields = [
@@ -124,9 +143,14 @@ event_kinds = [
 #   (and once per container root), opened with no symlink anywhere on it;
 #   system rows are json configs and name linux or macos platforms.
 # platforms: where the location applies; all three when absent.
-# max_bytes: a user config row's read limit in bytes, 64 KiB when absent. A
-#   file over its limit is not read; the inventory's ai_location_coverage
-#   lists it (its source label) as not_scanned with reason too_large.
+# projects_key: for a user json row, the object of per-project settings whose
+#   mcp_keys entries are project MCP servers (Claude Code keeps
+#   projects.<path>.mcpServers in ~/.claude.json); their label is
+#   <path>/<projects_key>/*. The project paths are never reported.
+# max_bytes: a user or project config row's read limit in bytes, 64 KiB when
+#   absent. A file over its limit is not read; the inventory's
+#   ai_location_coverage lists it (its source label) as not_scanned with
+#   reason too_large.
 ai_locations = [
   { client = "codex", kind = "cli", path = "codex", format = "executable", scope = "user" },
   { client = "claude", kind = "cli", path = "claude", format = "executable", scope = "user" },
@@ -167,13 +191,13 @@ ai_locations = [
   { client = "claude", kind = "config", path = ".config/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
   { client = "claude", kind = "config", path = "Library/Application Support/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
   { client = "claude", kind = "config", path = "AppData/Roaming/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
-  { client = "claude", kind = "config", path = ".claude.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"], max_bytes = 4194304 },
+  { client = "claude", kind = "config", path = ".claude.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"], max_bytes = 4194304, projects_key = "projects" },
   { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
   { client = "gemini", kind = "config", path = ".gemini/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
   { client = "vscode", kind = "config", path = ".config/Code/User/mcp.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
   { client = "vscode", kind = "config", path = "Library/Application Support/Code/User/mcp.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
   { client = "vscode", kind = "config", path = "AppData/Roaming/Code/User/mcp.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
-  { client = "codex", kind = "config", path = ".codex/config.toml", format = "codex-toml", scope = "user" },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "codex-toml", scope = "user", max_bytes = 4194304 },
   { client = "opencode", kind = "config", path = ".config/opencode/opencode.json", format = "json", scope = "user", mcp_keys = ["mcp"] },
   { client = "opencode", kind = "config", path = "AppData/Roaming/opencode/opencode.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcp"] },
   { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "user", mcp_keys = [], plugins_key = "enabledPlugins" },
@@ -209,7 +233,7 @@ ai_locations = [
   { client = "claude", kind = "config", path = ".mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
   { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"], plugins_key = "enabledPlugins" },
   { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
-  { client = "codex", kind = "config", path = ".codex/config.toml", format = "toml", scope = "project" },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "toml", scope = "project", max_bytes = 4194304 },
   { client = "opencode", kind = "config", path = ".opencode/opencode.json", format = "json", scope = "project", mcp_keys = ["mcp"] },
   { client = "agents", kind = "config", path = ".agents/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
   { client = "agents", kind = "skill", path = ".agents/skills", format = "skill-dir", scope = "project" },
@@ -281,6 +305,11 @@ ai_extensions = [
 # README.md beside them), unchanged. Its LLM, Cisco API, signature and Python
 # analyzers are not run.
 ai_content_rules = [
+  # gitleaks/: the default rules of gitleaks v8.30.1 (MIT; LICENSE and
+  # README.md beside them), unchanged. A gitleaks row names the file and no
+  # id: every rule in it that runs is declared, by its gitleaks id. They
+  # run on the same files and also on each MCP server entry of a config.
+  { engine = "gitleaks", file = "gitleaks/gitleaks.toml" },
   { id = "autonomy_abuse_generic", engine = "yara", file = "skill-scanner/autonomy_abuse_generic.yara" },
   { id = "SUSP_Lnx_EncodedShell_DecodeExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
   { id = "SUSP_Win_EncodedPowerShell_Exec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
@@ -392,7 +421,7 @@ retention = "while_enrolled"
 id = "ai_tools"
 group = "ai_tools"
 title = "AI coding tools and MCP servers"
-what = "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), which agent skills or instructions exist (client, kind, name, source), and which declared AI editor and browser extensions (ai_extensions) are installed in VS Code and Chrome, by id, on this computer, inside up to 16 running containers (Docker, podman including rootless, containerd, CRI-O), each read through its own root and marked with its image name when Docker records one, and on Windows inside WSL distributions as they start, marked with the distribution name. A WSL distribution that has not been read is reported as not scanned, with why, and so is a declared config file over its read limit (by its fixed label). For each MCP server, what it runs: for a local server the package or image a known runner starts (npx, bunx, pnpm dlx, npm exec, uvx, pipx run, docker run) or else the program's file name; for a remote server only the URL's host name. AI tool configuration files and plugin manifests on each root are read locally, up to 64 KiB each, to derive these fields (MCP entries, enabled plugin names, package and host); their bodies are not sent. On Linux, each skill's SKILL.md, custom agent file and plugin manifest is read on the computer and checked against the declared ai_content_rules; only its SHA-256 and the ids of the rules it matched are sent. Arguments beyond that package name, environment variables, headers, URL paths, query strings, tokens and file bodies are never sent."
+what = "Which AI coding tools are installed (names), which MCP servers each client has configured (client, server name, where it is configured, transport), which agent skills or instructions exist (client, kind, name, source), and which declared AI editor and browser extensions (ai_extensions) are installed in VS Code and Chrome, by id, on this computer, inside up to 16 running containers (Docker, podman including rootless, containerd, CRI-O), each read through its own root and marked with its image name when Docker records one, and on Windows inside WSL distributions as they start, marked with the distribution name. A WSL distribution that has not been read is reported as not scanned, with why, and so is a declared config file over its read limit (by its fixed label). For each MCP server, what it runs: for a local server the package or image a known runner starts (npx, bunx, pnpm dlx, npm exec, uvx, pipx run, docker run) or else the program's file name; for a remote server only the URL's host name. AI tool configuration files and plugin manifests on each root are read locally, up to 64 KiB each, to derive these fields (MCP entries, enabled plugin names, package and host); their bodies are not sent. On Linux, each skill's SKILL.md, custom agent file and plugin manifest is read on the computer and checked against the declared ai_content_rules; only its SHA-256 and the ids of the rules it matched are sent. Each MCP server entry of a config is also checked against the vendored gitleaks secret rules, on Linux, Windows and in WSL and containers; only the ids of the rules it matched are sent, never the value. Arguments beyond that package name, environment variables, headers, URL paths, query strings, tokens and file bodies are never sent."
 why = "AI tool governance: knowing which agents and servers run on company machines."
 records = ["inventory.agent_clis", "inventory.mcp_servers", "inventory.agent_assets", "inventory.ai_location_coverage"]
 capabilities = []
@@ -404,7 +433,7 @@ title = "Program starts, scripts and exits"
 what = "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events. Scripts record the interpreter, script path and SHA-256 of the script body read locally; the raw script body is not uploaded. A program that runs under a declared AI agent (ai_agent_processes), or is one, also records the agent's name and its session id (the agent process's key: boot id, process id and start time)."
 why = "Detecting and investigating attacks (endpoint detection)."
 records = ["exec", "script", "fork", "exit", "task_exit"]
-capabilities = ["segment_upload"]
+capabilities = ["segment_upload", "policy_agent"]
 retention = "telemetry_window"
 [[collectors]]
 id = "network_events"
@@ -419,8 +448,8 @@ retention = "telemetry_window"
 id = "file_events"
 group = "security_events"
 title = "Changes in watched system locations"
-what = "The path, operation and program for changes under a fixed list of persistence and configuration locations, and the AI agent's name and session id when the program runs under a declared one. File bodies are not uploaded."
-why = "Detecting persistence (startup items, cron, shell profiles) and tampering."
+what = "The path, operation and program for changes under a fixed list of persistence and configuration locations, and for opens of the declared credential files (credential_files: cloud, SSH, Kubernetes, GitHub CLI, netrc and Google Cloud credentials), with the credential's name, and the AI agent's name and session id when the program runs under a declared one. The agent never reads a credential file; file bodies are not uploaded."
+why = "Detecting persistence (startup items, cron, shell profiles), tampering and credential theft."
 records = ["file"]
 capabilities = ["segment_upload"]
 retention = "telemetry_window"
@@ -457,11 +486,11 @@ retention = "while_enrolled"
 claim = "Command lines and arguments in recorded process events, including what an AI agent was asked or ran (attributing an event to an agent adds only the agent's name and session id)"
 proof = "spool::write_value omits cmdline (test serialized_exec_omits_commands_even_when_a_rule_matched); inventory DeviceProcess has no cmdline or args field; agent_session::stamp adds only agent, a declared client name, and agent_session, a process key (tests a_script_an_agent_ran_adds_only_the_agent_and_its_session and a_program_outside_any_agent_is_not_attributed_and_gains_no_keys)"
 [[never_collected]]
-claim = "Raw file, document, message, skill, agent or plugin bodies in uploaded records"
-proof = "file events contain metadata and selected derived fields; FIM and script monitoring read bounded bodies locally for DeviceFIMEntry.sha256 and script_sha256; AI skill, agent and plugin manifest files are read on the computer (up to 256 KiB each) to hash and check, and only the SHA-256 and matched rule ids are kept (ai_discovery/content_scan.rs; test a_planted_malicious_skill_is_flagged_by_rule_id_and_hash_only); raw bodies are not serialized"
+claim = "Raw file, document, message, skill, agent or plugin bodies, and credential file contents, in uploaded records"
+proof = "file events contain metadata and selected derived fields; a credential file open is resolved from the fanotify event's descriptor to its path and the descriptor is closed unread, and credential_files finds the declared files with metadata calls only (filemon.rs cw_loop; credential_files.rs; tests every_declared_credential_is_named_by_its_path_and_a_near_miss_is_not and a_credential_open_is_access_and_a_watched_change_is_persistence); FIM and script monitoring read bounded bodies locally for DeviceFIMEntry.sha256 and script_sha256; AI skill, agent and plugin manifest files are read on the computer (up to 256 KiB each) to hash and check, and only the SHA-256 and matched rule ids are kept (ai_discovery/content_scan.rs; test a_planted_malicious_skill_is_flagged_by_rule_id_and_hash_only); raw bodies are not serialized"
 [[never_collected]]
 claim = "MCP server arguments beyond the package name, environment variables, headers, URL paths, query strings and tokens; skill, agent or plugin file contents (only their SHA-256 and the ids of declared rules they matched); AI agent settings values; and installed editor or browser extensions other than the declared ai_extensions ids, in uploaded records"
-proof = "bounded local config and plugin manifest reads derive DeviceMCPServer client, name, source, transport, location, package, host; package is a package spec, image reference or program file name and host a URL host name (ai_discovery/mcp_identity.rs stdio_package and remote_host, and on macOS MCPIdentity.swift with the same cases; tests a_known_runner_reports_only_its_package_spec, an_mcp_identity_never_carries_a_secret and MCPIdentityTests discoveryCarriesIdentityWithoutSecrets); DeviceAgentAsset is client, kind, name, source, location, sha256, matched_rules, where matched_rules are declared ai_content_rules ids and a container or WSL scan's are filtered to them (ai_discovery.rs keep_valid_content_facts; test a_skill_hash_and_its_matched_rule_ids_reach_the_check_in_and_forged_ones_do_not; test a_child_scan_keeps_only_a_hex_hash_and_declared_rule_ids); collect_agent_discovery never executes a CLI; linux_posture_ai reports only declared reasons, rule ids and an observation hash (test claude_code_bypass_mode_and_allow_all_shell_are_findings); every location is opened with no symlink anywhere below the home and a linked home is not scanned (sync.rs open_agent_directory, read_agent_config_beneath; tests a_linked_parent_below_the_home_is_never_followed and a_linked_home_is_not_scanned); an editor or browser extension is named only when its directory matches a declared ai_extensions id (ai_discovery/extensions.rs; tests an_editor_extension_is_named_by_its_declared_id_and_no_other_is and only_declared_ai_extensions_are_named_and_a_linked_profile_is_not_followed)"
+proof = "bounded local config and plugin manifest reads derive DeviceMCPServer client, name, source, transport, location, package, host, matched_rules, where matched_rules are the ids of declared gitleaks ai_content_rules the entry's own text matched and never the value or a hash of it (ai_discovery/secret_rules.rs; tests a_token_in_an_mcp_entry_is_reported_by_rule_id_only and a_forged_mcp_rule_id_from_a_child_scan_is_dropped); package is a package spec, image reference or program file name and host a URL host name (ai_discovery/mcp_identity.rs stdio_package and remote_host, and on macOS MCPIdentity.swift with the same cases; tests a_known_runner_reports_only_its_package_spec, an_mcp_identity_never_carries_a_secret and MCPIdentityTests discoveryCarriesIdentityWithoutSecrets); DeviceAgentAsset is client, kind, name, source, location, sha256, matched_rules, where matched_rules are declared ai_content_rules ids and a container or WSL scan's are filtered to them (ai_discovery.rs keep_valid_content_facts; test a_skill_hash_and_its_matched_rule_ids_reach_the_check_in_and_forged_ones_do_not; test a_child_scan_keeps_only_a_hex_hash_and_declared_rule_ids); collect_agent_discovery never executes a CLI; linux_posture_ai reports only declared reasons, rule ids and an observation hash (test claude_code_bypass_mode_and_allow_all_shell_are_findings); every location is opened with no symlink anywhere below the home and a linked home is not scanned (sync.rs open_agent_directory, read_agent_config_beneath; tests a_linked_parent_below_the_home_is_never_followed and a_linked_home_is_not_scanned); an editor or browser extension is named only when its directory matches a declared ai_extensions id (ai_discovery/extensions.rs; tests an_editor_extension_is_named_by_its_declared_id_and_no_other_is and only_declared_ai_extensions_are_named_and_a_linked_profile_is_not_followed)"
 [[never_collected]]
 claim = "Password and password-hash fields from account records"
 proof = "DeviceUser is name, uid, admin, shell, source; posture evidence is a hash of what was read, with redactions declared"

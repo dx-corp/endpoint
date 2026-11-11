@@ -12,6 +12,9 @@ use crate::manifest::{AI_CONTENT_RULES, AiLocation, Format};
 mod content_scan;
 mod extensions;
 mod mcp_identity;
+mod secret_rules;
+
+pub(crate) use secret_rules::{MAX_MATCHED_RULES, secret_rule_ids};
 
 pub(crate) use extensions::{
     MAX_BROWSER_PROFILES, chromium_extension_id, chromium_profile, editor_extension_id,
@@ -40,6 +43,21 @@ pub(crate) fn keep_valid_content_facts(asset: &mut DeviceAgentAsset) {
         .retain(|id| AI_CONTENT_RULES.iter().any(|rule| rule.id == id));
     asset.matched_rules.sort();
     asset.matched_rules.dedup();
+    asset.matched_rules.truncate(MAX_MATCHED_RULES);
+}
+
+/// Keep only the MCP facts this agent could have produced: declared
+/// gitleaks rule ids, sorted, distinct and at most `MAX_MATCHED_RULES`. A
+/// container or WSL scan's are filtered with this before they are sent.
+pub(crate) fn keep_valid_mcp_facts(server: &mut DeviceMCPServer) {
+    server.matched_rules.retain(|id| {
+        AI_CONTENT_RULES
+            .iter()
+            .any(|rule| rule.engine == "gitleaks" && rule.id == id)
+    });
+    server.matched_rules.sort();
+    server.matched_rules.dedup();
+    server.matched_rules.truncate(MAX_MATCHED_RULES);
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Ord, PartialOrd, Eq, Clone)]
@@ -66,6 +84,10 @@ pub(crate) struct DeviceMCPServer {
     /// For a remote server, its URL host name only.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) host: String,
+    /// Ids of the declared gitleaks rules its config entry matched: a rule
+    /// name only, never the value, the line or a hash of either.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) matched_rules: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Ord, PartialOrd, Eq, Clone)]
@@ -111,7 +133,23 @@ fn is_zero(value: &i64) -> bool {
 /// Coverage entries a collector reports (the server's limit).
 pub(crate) const MAX_COVERAGE: usize = 32;
 
+/// MCP servers, and agent assets, reported per inventory (each); a list that
+/// reaches it is reported as truncated.
+pub(crate) const MAX_AGENT_FINDINGS: usize = 128;
+
 impl DeviceAiLocationCoverage {
+    /// A list (`mcp_servers` or `agent_assets`) that reached its cap and so
+    /// may have been cut: its count is "at least".
+    pub(crate) fn truncated(records: &str) -> Self {
+        Self {
+            location: String::new(),
+            source: String::new(),
+            state: "truncated".into(),
+            reason: records.into(),
+            observed_at: 0,
+        }
+    }
+
     /// `location`'s declared file, over its read limit and so not read.
     pub(crate) fn too_large(location: &AiLocation) -> Self {
         Self {
@@ -124,17 +162,40 @@ impl DeviceAiLocationCoverage {
     }
 }
 
-/// Add `entry` unless an entry for the same place and file is there, keeping
-/// at most `MAX_COVERAGE`.
+/// Add `entry` unless an entry for the same place and file (or, for a
+/// truncated list, the same list) is there, keeping at most `MAX_COVERAGE`.
 pub(crate) fn add_coverage(
     coverage: &mut Vec<DeviceAiLocationCoverage>,
     entry: DeviceAiLocationCoverage,
 ) {
-    let known = coverage
-        .iter()
-        .any(|known| known.location == entry.location && known.source == entry.source);
+    let key = |c: &DeviceAiLocationCoverage| {
+        let list = if c.state == "truncated" {
+            c.reason.clone()
+        } else {
+            String::new()
+        };
+        (c.location.clone(), c.source.clone(), list)
+    };
+    let known = coverage.iter().any(|known| key(known) == key(&entry));
     if !known && coverage.len() < MAX_COVERAGE {
         coverage.push(entry);
+    }
+}
+
+/// Report each list that reached `MAX_AGENT_FINDINGS` as truncated.
+pub(crate) fn add_truncation(
+    coverage: &mut Vec<DeviceAiLocationCoverage>,
+    servers: usize,
+    assets: usize,
+) {
+    if servers >= MAX_AGENT_FINDINGS {
+        add_coverage(coverage, DeviceAiLocationCoverage::truncated("mcp_servers"));
+    }
+    if assets >= MAX_AGENT_FINDINGS {
+        add_coverage(
+            coverage,
+            DeviceAiLocationCoverage::truncated("agent_assets"),
+        );
     }
 }
 
@@ -210,6 +271,8 @@ pub(crate) struct McpEntry {
     pub(crate) transport: String,
     pub(crate) package: String,
     pub(crate) host: String,
+    /// Gitleaks rule ids the entry's own text matched.
+    pub(crate) matched_rules: Vec<String>,
 }
 
 impl McpEntry {
@@ -230,7 +293,14 @@ impl McpEntry {
                 ("remote", Some(url)) => remote_host(url),
                 _ => String::new(),
             },
+            matched_rules: Vec::new(),
         }
+    }
+
+    /// This entry with the gitleaks rules its own config text matched.
+    fn with_secret_rules(mut self, text: &str) -> Self {
+        self.matched_rules = secret_rule_ids(text.as_bytes());
+        self
     }
 
     /// The inventory row for this server, found by `client` at `source`.
@@ -243,6 +313,7 @@ impl McpEntry {
             location: String::new(),
             package: self.package,
             host: self.host,
+            matched_rules: self.matched_rules,
         }
     }
 }
@@ -263,6 +334,31 @@ pub(crate) fn json_mcp_entries(body: &str, keys: &[&str]) -> Vec<McpEntry> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
     };
+    mcp_entries_in(&value, keys)
+}
+
+/// MCP servers of the projects a config keeps under `projects_key` (Claude
+/// Code's `~/.claude.json` keeps `projects.<path>.mcpServers`): the entries
+/// under `keys` of every project. The project paths are never returned.
+pub(crate) fn json_project_mcp_entries(
+    body: &str,
+    projects_key: &str,
+    keys: &[&str],
+) -> Vec<McpEntry> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    value
+        .get(projects_key)
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|projects| projects.values())
+        .flat_map(|project| mcp_entries_in(project, keys))
+        .collect()
+}
+
+/// The MCP servers under `keys` of one JSON object.
+fn mcp_entries_in(value: &serde_json::Value, keys: &[&str]) -> Vec<McpEntry> {
     keys.iter()
         .filter_map(|key| value.get(key)?.as_object())
         .flat_map(|object| {
@@ -281,7 +377,9 @@ pub(crate) fn json_mcp_entries(body: &str, keys: &[&str]) -> Vec<McpEntry> {
                     .take(MAX_ARGS)
                     .filter_map(serde_json::Value::as_str)
                     .collect();
-                McpEntry::new(name, command, &args, url)
+                McpEntry::new(name, command, &args, url).with_secret_rules(
+                    &serde_json::to_string_pretty(definition).unwrap_or_default(),
+                )
             })
         })
         .collect()
@@ -313,7 +411,11 @@ pub(crate) fn codex_mcp_entries(body: &str) -> Vec<McpEntry> {
             // supplies values.
             let command = has_command.then(|| text("command").unwrap_or_default());
             let url = has_url.then(|| text("url").or_else(|| text("http_url")).unwrap_or_default());
-            McpEntry::new(&name, command, &args, url)
+            let entry = McpEntry::new(&name, command, &args, url);
+            match server.and_then(|server| toml::to_string(server).ok()) {
+                Some(text) => entry.with_secret_rules(&text),
+                None => entry,
+            }
         })
         .collect()
 }

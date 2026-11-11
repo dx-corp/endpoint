@@ -389,6 +389,8 @@ fn handle_exec(
         }
     }
 
+    // After the upsert above, so an agent's own exec is its session.
+    let agent = agent_session::agent_for(table, pid);
     let path = exe.as_deref().unwrap_or(filename.as_str());
     let basename = path.rsplit('/').next();
     let cgroup = pid.and_then(proc_cgroup);
@@ -403,6 +405,8 @@ fn handle_exec(
         parent_basename: parent_basename.as_deref(),
         ancestors: &ancestor_comms,
         dns: None,
+        agent: agent.map(|a| a.client),
+        credential: None,
     };
     let mut logged = Vec::new();
     let mut killed = Vec::new();
@@ -443,8 +447,6 @@ fn handle_exec(
         }
     }
 
-    // After the upsert above, so an agent's own exec is its session.
-    let agent = agent_session::agent_for(table, pid);
     let mut event = serde_json::json!({
         "ts": spool::now_ts(),
         "source": "linux-ebpf",

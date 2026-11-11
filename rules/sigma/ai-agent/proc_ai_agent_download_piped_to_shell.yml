@@ -1,0 +1,34 @@
+title: AI Agent - Download Piped Into A Shell
+id: 5d9d8bf4-1fab-4b85-933c-779a43ded201
+status: experimental
+description: A shell that an AI coding agent started ran a command that downloads with curl or wget and pipes the download into sh or bash, so code from the network ran without being saved or reviewed. The agent is the event's agent attribution. Detection only.
+references:
+    - https://attack.mitre.org/techniques/T1105/
+    - https://attack.mitre.org/techniques/T1059/004/
+author: Deixic
+date: 2026-11-10
+tags:
+    - attack.command-and-control
+    - attack.t1105
+    - attack.execution
+    - attack.t1059.004
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    selection_agent:
+        Agent|exists: true
+    selection_download:
+        CommandLine|contains:
+            - 'curl '
+            - 'wget '
+    selection_pipe:
+        CommandLine|contains:
+            - '| sh'
+            - '|sh'
+            - '| bash'
+            - '|bash'
+    condition: all of selection_*
+falsepositives:
+    - A person asked the agent to run a vendor's install script
+level: high

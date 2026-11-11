@@ -35,14 +35,14 @@ find "$APP/Contents/Frameworks" -depth \( -type f -perm -111 -o -name '*.xpc' -o
     if [ "$IDENTITY" = - ]; then
       codesign --force --sign - --preserve-metadata=identifier,entitlements "$code"
     else
-      codesign --force --sign "$IDENTITY" --options runtime --timestamp --preserve-metadata=identifier,entitlements "$code"
+      codesign --force --sign "$IDENTITY" ${MERLIN_SIGNING_KEYCHAIN:+--keychain "$MERLIN_SIGNING_KEYCHAIN"} --options runtime --timestamp --preserve-metadata=identifier,entitlements "$code"
     fi
   fi
 done
 if [ "$IDENTITY" = - ]; then
   codesign --force --sign - --identifier com.merlin.agent "$APP"
 else
-  codesign --force --sign "$IDENTITY" --options runtime --timestamp --identifier com.merlin.agent "$APP"
+  codesign --force --sign "$IDENTITY" ${MERLIN_SIGNING_KEYCHAIN:+--keychain "$MERLIN_SIGNING_KEYCHAIN"} --options runtime --timestamp --identifier com.merlin.agent "$APP"
 fi
 codesign --verify --deep --strict --verbose=2 "$APP"
 printf 'Built Deixic Endpoint app: %s\n' "$APP"

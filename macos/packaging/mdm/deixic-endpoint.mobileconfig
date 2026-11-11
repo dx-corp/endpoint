@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Deixic Endpoint fleet profile. Deploy it to devices before or with
+  Merlin-<version>.pkg so the collector starts with Full Disk Access and its
+  launch daemon cannot be switched off in Login Items, with no user prompt.
+  It names Deixic's Developer ID team (7BPHA88333) and the collector's code
+  requirement; customers change nothing. It must be delivered by MDM: macOS
+  ignores privacy (PPPC) and managed login item payloads in a profile a user
+  installs by hand. See macos/docs/mdm-deployment.md.
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadDisplayName</key>
+  <string>Deixic Endpoint</string>
+  <key>PayloadDescription</key>
+  <string>Grants the Deixic Endpoint collector Full Disk Access and keeps its launch daemon enabled.</string>
+  <key>PayloadIdentifier</key>
+  <string>com.evalops.merlin.mdm</string>
+  <key>PayloadOrganization</key>
+  <string>Deixic</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>8AB8543A-C676-4960-A2F7-437C981590C5</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadRemovalDisallowed</key>
+  <true/>
+  <key>PayloadContent</key>
+  <array>
+    <!-- Full Disk Access for the collector. Endpoint Security refuses a
+         client without it, and the collector reads protected files for
+         posture and agent discovery. -->
+    <dict>
+      <key>PayloadDisplayName</key>
+      <string>Deixic Endpoint Full Disk Access</string>
+      <key>PayloadIdentifier</key>
+      <string>com.evalops.merlin.mdm.pppc</string>
+      <key>PayloadType</key>
+      <string>com.apple.TCC.configuration-profile-policy</string>
+      <key>PayloadUUID</key>
+      <string>2056CE69-5776-4D03-BCAF-6477EE08F256</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Services</key>
+      <dict>
+        <key>SystemPolicyAllFiles</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>com.evalops.merlin.collector</string>
+            <key>IdentifierType</key>
+            <string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>identifier "com.evalops.merlin.collector" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "7BPHA88333"</string>
+            <key>Authorization</key>
+            <string>Allow</string>
+            <key>StaticCode</key>
+            <false/>
+            <key>Comment</key>
+            <string>Deixic Endpoint collector (MerlinCollector.app)</string>
+          </dict>
+          <dict>
+            <key>Identifier</key>
+            <string>/Library/Application Support/Merlin/MerlinCollector.app/Contents/MacOS/merlin-macos</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>identifier "com.evalops.merlin.collector" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "7BPHA88333"</string>
+            <key>Authorization</key>
+            <string>Allow</string>
+            <key>StaticCode</key>
+            <false/>
+            <key>Comment</key>
+            <string>Deixic Endpoint collector executable, matched by path for the launch daemon</string>
+          </dict>
+        </array>
+      </dict>
+    </dict>
+    <!-- Managed login item: the launch daemon runs a launcher script with no
+         team signature, so it is matched by its launchd label as well as by
+         team. Users then get no "background item added" notice and cannot
+         turn the daemon off in System Settings. -->
+    <dict>
+      <key>PayloadDisplayName</key>
+      <string>Deixic Endpoint Background Service</string>
+      <key>PayloadIdentifier</key>
+      <string>com.evalops.merlin.mdm.servicemanagement</string>
+      <key>PayloadType</key>
+      <string>com.apple.servicemanagement</string>
+      <key>PayloadUUID</key>
+      <string>6690E1AA-8D98-4DEA-A89D-35B80456A63A</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Rules</key>
+      <array>
+        <dict>
+          <key>RuleType</key>
+          <string>Label</string>
+          <key>RuleValue</key>
+          <string>com.evalops.merlin</string>
+          <key>Comment</key>
+          <string>Deixic Endpoint launch daemon</string>
+        </dict>
+        <dict>
+          <key>RuleType</key>
+          <string>TeamIdentifier</string>
+          <key>RuleValue</key>
+          <string>7BPHA88333</string>
+          <key>Comment</key>
+          <string>Deixic Developer ID team</string>
+        </dict>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
