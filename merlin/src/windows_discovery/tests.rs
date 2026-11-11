@@ -1051,14 +1051,23 @@ fn a_config_is_read_up_to_its_own_limit_and_a_larger_one_is_reported_not_scanned
 fn a_profile_with_more_skills_than_the_cap_reports_the_list_truncated() {
     let base = tempdir("truncated");
     let profile = base.join("Users/private-account");
+    // Each directory walk reads at most MAX_ENTRIES entries. Spread the
+    // skills across declared locations to reach the inventory-wide cap.
+    let directories = [".agents/skills", ".codex/skills", ".claude/skills"];
+    write(&profile.join(directories[0]).join("s0000/SKILL.md"), "x");
+    let (short, _) = discover(&roots(&base));
+    assert_eq!(short.agent_assets.len(), 1);
+    assert!(short.coverage.is_empty());
     for index in 0..MAX_FINDINGS + 20 {
         write(
-            &profile.join(format!(".claude/skills/s{index:04}/SKILL.md")),
+            &profile
+                .join(directories[index % directories.len()])
+                .join(format!("s{index:04}/SKILL.md")),
             "x",
         );
     }
     let (found, _) = discover(&roots(&base));
-    assert!(found.agent_assets.len() <= MAX_FINDINGS);
+    assert_eq!(found.agent_assets.len(), MAX_FINDINGS);
     assert_eq!(
         found
             .coverage
