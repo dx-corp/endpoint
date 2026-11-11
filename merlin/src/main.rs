@@ -19,6 +19,8 @@ mod bpfcheck;
 #[cfg(target_os = "linux")]
 mod check;
 #[cfg(target_os = "linux")]
+mod contacted_hosts;
+#[cfg(target_os = "linux")]
 mod credential_files;
 #[cfg(target_os = "linux")]
 mod desired_state;
@@ -346,6 +348,8 @@ async fn main() -> Result<()> {
             // Before any producer runs: keep this boot's event sequence
             // increasing across sensor restarts.
             spool::resume_sequence(spool.parent().unwrap_or(std::path::Path::new(".")));
+            // And the hosts AI agents contacted, kept beside the sequence.
+            contacted_hosts::resume(spool.parent().unwrap_or(std::path::Path::new(".")));
             let device_id = device_id
                 .or_else(|| std::env::var("MERLIN_DEVICE_ID").ok())
                 .map(|value| value.trim().to_string())

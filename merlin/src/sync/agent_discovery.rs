@@ -250,7 +250,7 @@ pub(super) fn collect_agent_discovery_from(homes: &[PathBuf], system_bins: &[&st
             }
             if location.format == Format::CodexToml {
                 for name in codex_enabled_plugin_names(&body) {
-                    if assets.len() >= 128 {
+                    if assets.len() >= MAX_AGENT_FINDINGS {
                         break;
                     }
                     assets.insert(DeviceAgentAsset {
@@ -280,23 +280,23 @@ pub(super) fn collect_agent_discovery_from(homes: &[PathBuf], system_bins: &[&st
             for (entry, source) in entries {
                 if safe_agent_asset_name(&entry.name) {
                     servers.insert(entry.server(location.client, source.clone()));
-                    if servers.len() >= 128 {
+                    if servers.len() >= MAX_AGENT_FINDINGS {
                         break;
                     }
                 }
             }
-            if servers.len() >= 128 {
+            if servers.len() >= MAX_AGENT_FINDINGS {
                 break;
             }
         }
-        if servers.len() >= 128 {
+        if servers.len() >= MAX_AGENT_FINDINGS {
             break;
         }
     }
     RootScan {
         clis: clis.into_iter().collect(),
-        mcp_servers: servers.into_iter().take(128).collect(),
-        agent_assets: assets.into_iter().take(128).collect(),
+        mcp_servers: servers.into_iter().take(MAX_AGENT_FINDINGS).collect(),
+        agent_assets: assets.into_iter().take(MAX_AGENT_FINDINGS).collect(),
         coverage,
     }
 }
@@ -324,7 +324,7 @@ pub(crate) fn collect_system_agent_configs(
             ..Default::default()
         });
         for entry in config_mcp_entries(location, &body) {
-            if safe_agent_asset_name(&entry.name) && servers.len() < 128 {
+            if safe_agent_asset_name(&entry.name) && servers.len() < MAX_AGENT_FINDINGS {
                 servers.insert(entry.server(location.client, source.clone()));
             }
         }
@@ -390,7 +390,7 @@ pub(super) fn collect_user_asset_directory(
             continue;
         };
         // At the asset cap the entry is still read for MCP servers.
-        if assets.len() < 128 {
+        if assets.len() < MAX_AGENT_FINDINGS {
             // The skill's SKILL.md, the agent file or the extension manifest.
             let checked = match (location.format, child.as_ref()) {
                 (Format::SkillDir, Some(child)) => checked_content(child, "SKILL.md", content),
@@ -601,7 +601,7 @@ pub(super) fn collect_cursor_agents(
         return;
     };
     for entry in entries {
-        if assets.len() >= 128 {
+        if assets.len() >= MAX_AGENT_FINDINGS {
             break;
         }
         let name = entry.to_string_lossy().into_owned();
@@ -641,7 +641,7 @@ pub(super) fn collect_cursor_plugins(
         return;
     };
     for entry in entries {
-        if assets.len() >= 128 || *manifest_reads >= 256 {
+        if assets.len() >= MAX_AGENT_FINDINGS || *manifest_reads >= 256 {
             break;
         }
         let name = entry.to_string_lossy().into_owned();

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Sets the collection manifest version for a release build. The release is the
 # only writer: main keeps `manifest_version = 0` (a development build) in
-# collection-manifest.toml and `static let version = 0` in the macOS
+# collection-manifest.d/settings.toml and `static let version = 0` in the macOS
 # Manifest.swift, and pull requests never change either. A release build runs
 # this on its own checkout before compiling; nothing is committed.
 #
@@ -24,7 +24,7 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
 fi
 release=$1
 product=${2:-$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)}
-toml=$product/collection-manifest.toml
+toml=$product/collection-manifest.d/settings.toml
 swift=$product/macos/Sources/MerlinMacOS/Manifest.swift
 
 core=${release#merlin-}

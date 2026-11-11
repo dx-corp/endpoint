@@ -1,0 +1,24 @@
+# AI editor and browser extensions the editor-extensions and
+# chromium-extensions locations report, by id. Each id was checked on its
+# store page; an installed extension not listed here is never named.
+#
+# store: vscode-marketplace (id <publisher>.<name>; page
+#   https://marketplace.visualstudio.com/items?itemName=<id>) or
+#   chrome-web-store (id of 32 letters a to p; page
+#   https://chromewebstore.google.com/detail/<id>).
+# name, publisher: as the store page shows them.
+ai_extensions = [
+  { store = "vscode-marketplace", id = "Anthropic.claude-code", name = "Claude Code for VS Code", publisher = "Anthropic" },
+  { store = "vscode-marketplace", id = "openai.chatgpt", name = "Codex - OpenAI's coding agent", publisher = "OpenAI" },
+  { store = "vscode-marketplace", id = "GitHub.copilot", name = "GitHub Copilot", publisher = "GitHub" },
+  { store = "vscode-marketplace", id = "GitHub.copilot-chat", name = "GitHub Copilot Chat", publisher = "GitHub" },
+  { store = "vscode-marketplace", id = "saoudrizwan.claude-dev", name = "Cline", publisher = "Cline" },
+  { store = "vscode-marketplace", id = "Continue.continue", name = "Continue - open-source AI code agent", publisher = "Continue" },
+  { store = "vscode-marketplace", id = "Google.geminicodeassist", name = "Gemini Code Assist", publisher = "Google" },
+  { store = "vscode-marketplace", id = "AmazonWebServices.amazon-q-vscode", name = "Amazon Q", publisher = "Amazon Web Services" },
+  { store = "vscode-marketplace", id = "sourcegraph.cody-ai", name = "Cody: AI Code Assistant", publisher = "Sourcegraph" },
+  { store = "vscode-marketplace", id = "kilocode.Kilo-Code", name = "Kilo Code", publisher = "Kilo Code" },
+  { store = "vscode-marketplace", id = "augment.vscode-augment", name = "Augment", publisher = "Augment Computing" },
+  { store = "chrome-web-store", id = "fcoeoabgfenejglbffodgkkbkcdhcgfn", name = "Claude", publisher = "Anthropic" },
+  { store = "chrome-web-store", id = "ejcfepkfckglbgocfkanmcdngdijcgld", name = "ChatGPT search", publisher = "OpenAI" },
+]

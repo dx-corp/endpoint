@@ -23,7 +23,8 @@ pub(crate) use extensions::{
 #[cfg(target_os = "linux")]
 pub(crate) use content_scan::{ContentFacts, ContentScan, MAX_CONTENT_BYTES};
 
-use mcp_identity::{remote_host, stdio_package};
+use mcp_identity::remote_host;
+pub(crate) use mcp_identity::stdio_package;
 
 /// Keep only facts this agent could have produced: a lowercase hex SHA-256
 /// and declared rule ids. For findings another process printed (a
@@ -133,9 +134,10 @@ fn is_zero(value: &i64) -> bool {
 /// Coverage entries a collector reports (the server's limit).
 pub(crate) const MAX_COVERAGE: usize = 32;
 
-/// MCP servers, and agent assets, reported per inventory (each); a list that
-/// reaches it is reported as truncated.
-pub(crate) const MAX_AGENT_FINDINGS: usize = 128;
+/// MCP servers, and agent assets, reported per inventory (each; the server's
+/// limit), host and containers together; a list that reaches it is reported
+/// as truncated.
+pub(crate) const MAX_AGENT_FINDINGS: usize = 512;
 
 impl DeviceAiLocationCoverage {
     /// A list (`mcp_servers` or `agent_assets`) that reached its cap and so
@@ -251,7 +253,7 @@ pub(crate) fn codex_enabled_plugin_names(body: &str) -> Vec<String> {
                 && config.get("enabled").and_then(toml::Value::as_bool) == Some(true)
         })
         .map(|(name, _)| name.clone())
-        .take(128)
+        .take(MAX_AGENT_FINDINGS)
         .collect()
 }
 

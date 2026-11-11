@@ -1,0 +1,9 @@
+order = 140
+id = "enforcement"
+group = "agent"
+title = "What the agent blocked or stopped"
+what = "When a signed rule blocks a program from starting or stops a running one: the program, the rule name and the outcome. Nothing is blocked unless the workspace assigned a rule that blocks."
+why = "Evidence that endpoint protection acted, and a record of every action taken on this computer."
+records = ["deny", "kill"]
+capabilities = ["rules_sync"]
+retention = "telemetry_window"

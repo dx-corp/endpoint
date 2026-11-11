@@ -1,0 +1,48 @@
+# Rules run, on the computer, on the content of each AI skill (its SKILL.md),
+# custom agent file and plugin manifest the ai_tools collector finds, with
+# YARA-X. A finding carries the file's SHA-256 and the ids of the rules it
+# matched, never the content. A test compiles every rule file and checks that
+# the rules in it are exactly the ids declared for it here.
+#
+# id: the rule name, as findings report it.
+# engine: yara.
+# file: the rule file, under rules/ai/.
+#
+# skill-scanner/: the YARA rules of Cisco AI Defense skill-scanner
+# (https://github.com/cisco-ai-defense/skill-scanner, Apache-2.0; LICENSE and
+# README.md beside them), unchanged. Its LLM, Cisco API, signature and Python
+# analyzers are not run.
+ai_content_rules = [
+  # gitleaks/: the default rules of gitleaks v8.30.1 (MIT; LICENSE and
+  # README.md beside them), unchanged. A gitleaks row names the file and no
+  # id: every rule in it that runs is declared, by its gitleaks id. They
+  # run on the same files and also on each MCP server entry of a config.
+  { engine = "gitleaks", file = "gitleaks/gitleaks.toml" },
+  { id = "autonomy_abuse_generic", engine = "yara", file = "skill-scanner/autonomy_abuse_generic.yara" },
+  { id = "SUSP_Lnx_EncodedShell_DecodeExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Win_EncodedPowerShell_Exec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RawIP_DownloadExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_CredentialExfil_Chain_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_EncodedArchive_Exec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_Cryptomining_ConfigExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_Cron_C2_Persistence_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RemoteMiner_AcquireExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "SUSP_Multi_RemoteConfig_StageExec_Sep26", engine = "yara", file = "skill-scanner/behavior_chain_detection.yara" },
+  { id = "capability_inflation_generic", engine = "yara", file = "skill-scanner/capability_inflation_generic.yara" },
+  { id = "code_execution_generic", engine = "yara", file = "skill-scanner/code_execution_generic.yara" },
+  { id = "coercive_injection_generic", engine = "yara", file = "skill-scanner/coercive_injection_generic.yara" },
+  { id = "command_injection_generic", engine = "yara", file = "skill-scanner/command_injection_generic.yara" },
+  { id = "credential_harvesting_generic", engine = "yara", file = "skill-scanner/credential_harvesting_generic.yara" },
+  { id = "embedded_elf_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_pe_executable", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_macho_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "embedded_shebang_in_binary", engine = "yara", file = "skill-scanner/embedded_binary_detection.yara" },
+  { id = "indirect_prompt_injection_generic", engine = "yara", file = "skill-scanner/indirect_prompt_injection_generic.yara" },
+  { id = "jailbreak_generic", engine = "yara", file = "skill-scanner/jailbreak_generic.yara" },
+  { id = "prompt_injection_generic", engine = "yara", file = "skill-scanner/prompt_injection_generic.yara" },
+  { id = "prompt_injection_unicode_steganography", engine = "yara", file = "skill-scanner/prompt_injection_unicode_steganography.yara" },
+  { id = "script_injection_generic", engine = "yara", file = "skill-scanner/script_injection_generic.yara" },
+  { id = "sql_injection_generic", engine = "yara", file = "skill-scanner/sql_injection_generic.yara" },
+  { id = "system_manipulation_generic", engine = "yara", file = "skill-scanner/system_manipulation_generic.yara" },
+  { id = "tool_chaining_abuse_generic", engine = "yara", file = "skill-scanner/tool_chaining_abuse_generic.yara" },
+]

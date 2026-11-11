@@ -1,0 +1,9 @@
+order = 20
+id = "hardening"
+group = "checks"
+title = "System hardening facts"
+what = "Read-only facts about kernel parameters, boot settings, service configuration and Kubernetes components, taken from a fixed list of targets, reported as normalized states and hashes."
+why = "Configuration benchmarks (CIS-style) that controls reference."
+records = ["hardening.observations"]
+capabilities = ["security_configuration_assessment", "linux_boot_trust_posture"]
+retention = "while_enrolled"

@@ -1,0 +1,9 @@
+order = 60
+id = "network_exposure"
+group = "inventory"
+title = "Listening ports and containers"
+what = "Protocol, port and state of listening sockets; container ids, names, images, states and runtimes; cloud provider, instance id and region when the machine runs in a cloud."
+why = "Exposure and asset inventory controls."
+records = ["inventory.listening_ports", "inventory.containers", "inventory.cloud_provider", "inventory.cloud_instance_id", "inventory.cloud_region"]
+capabilities = ["container_inventory", "cloud_inventory"]
+retention = "while_enrolled"

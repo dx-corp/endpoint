@@ -21,6 +21,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::Sender;
 
 use crate::agent_session;
+use crate::contacted_hosts;
 use crate::fileless::{ExeClass, classify_exe, is_deleted_executable_path};
 use crate::proctree::{ProcInfo, ProcTable};
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
@@ -326,6 +327,7 @@ fn handle_exec(
                         comm: Some(stat_comm),
                         exe: exe.clone(),
                         cmdline: cmdline.clone(),
+                        mcp_package: None,
                     },
                 );
             }
@@ -447,6 +449,15 @@ fn handle_exec(
         }
     }
 
+    // A program an agent runs may be one of its configured MCP servers; the
+    // command line is read here only to recognize it, never recorded.
+    if let (Some(_), Some(p)) = (agent, pid) {
+        if let Some(package) = crate::scripts::proc_cmdline_args(p)
+            .and_then(|argv| contacted_hosts::mcp_package(&argv))
+        {
+            table.lock().unwrap().set_mcp_package(p, package);
+        }
+    }
     let mut event = serde_json::json!({
         "ts": spool::now_ts(),
         "source": "linux-ebpf",
@@ -902,7 +913,17 @@ fn handle_socket(
     }
     // Connections only: other state changes of the socket follow from it.
     if kind == "connect" {
-        agent_session::stamp(&mut event, agent_session::agent_for(table, pid));
+        let agent = agent_session::agent_for(table, pid);
+        agent_session::stamp(&mut event, agent);
+        // Observed reach: a container's processes are not the host's tools.
+        if container_id.is_none() {
+            contacted_hosts::note_attributed(
+                table,
+                agent,
+                pid,
+                contacted_hosts::address_host(&daddr),
+            );
+        }
     }
     spool::try_send(tx, event);
 }

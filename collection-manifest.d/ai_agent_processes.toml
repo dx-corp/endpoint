@@ -1,0 +1,16 @@
+# AI agents by the name their process runs under, for agent session
+# attribution. When a program's process, or its nearest ancestor that is one,
+# runs as an AI agent, its exec, script, connect, dns and file events carry
+# `agent` (the client) and `agent_session` (that agent process's process key,
+# boot id:pid:start time). Every `cli` row of ai_locations counts (its path is
+# the process name); these rows add the names a client runs under that are not
+# its command name. A name matches the kernel's process name (its first 15
+# bytes) or the executable's file name. An agent that runs as a plain
+# interpreter (node, python) under no name of its own is not attributed.
+#
+# client: a client named by ai_locations.
+# name: the process name, a bare file name.
+ai_agent_processes = [
+  { client = "cursor", name = "cursor-agent" },
+  { client = "copilot", name = "copilot" },
+]

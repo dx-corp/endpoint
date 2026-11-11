@@ -1,0 +1,9 @@
+order = 150
+id = "health"
+group = "agent"
+title = "Agent health"
+what = "How many events were kept or dropped, upload backlog and errors, and the agent version."
+why = "Knowing the evidence stream is complete; a device that stopped reporting is a finding, not a pass."
+records = ["health", "check_in.health", "check_in.capabilities"]
+capabilities = ["segment_upload"]
+retention = "while_enrolled"

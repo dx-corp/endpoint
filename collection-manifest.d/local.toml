@@ -1,0 +1,7 @@
+# What the agent keeps on the computer.
+[[local]]
+path = "/var/lib/merlin"
+holds = "The event spool: finished segments wait here until the server accepts them, then they are deleted; segments the server refuses for good move to quarantine/ and are never uploaded."
+[[local]]
+path = "/etc/merlin"
+holds = "The device credential (0600, root) and the signed rules the workspace assigned."

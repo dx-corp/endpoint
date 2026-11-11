@@ -190,7 +190,7 @@ fn safe_spec(spec: &str, lowercase_name: bool) -> bool {
 
 /// The identity of a stdio server: its package or image for a known runner,
 /// else its program's file name.
-pub(super) fn stdio_package(command: &str, args: &[&str]) -> String {
+pub(crate) fn stdio_package(command: &str, args: &[&str]) -> String {
     // Some configs put the whole command line in `command`.
     let mut words: Vec<&str> = command.split_whitespace().collect();
     let program = match words.first() {

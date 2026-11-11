@@ -1,0 +1,9 @@
+order = 120
+id = "file_events"
+group = "security_events"
+title = "Changes in watched system locations"
+what = "The path, operation and program for changes under a fixed list of persistence and configuration locations, and for opens of the declared credential files (credential_files: cloud, SSH, Kubernetes, GitHub CLI, netrc and Google Cloud credentials), with the credential's name, and the AI agent's name and session id when the program runs under a declared one. The agent never reads a credential file; file bodies are not uploaded."
+why = "Detecting persistence (startup items, cron, shell profiles), tampering and credential theft."
+records = ["file"]
+capabilities = ["segment_upload"]
+retention = "telemetry_window"

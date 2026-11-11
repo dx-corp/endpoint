@@ -9,7 +9,7 @@ the license text is in [LICENSE](LICENSE).
 
 The Deixic Endpoint agent compiles them in and runs them with YARA-X on the
 content of AI skill, custom agent and plugin manifest files it finds. Each rule
-id is declared in `ai_content_rules` of `../../../collection-manifest.toml`.
+id is declared in `ai_content_rules` of `../../../collection-manifest.d/ai_content_rules.toml`.
 Only skill-scanner's YARA rules are used: its LLM, Cisco API, signature and
 Python analyzers, and the post-filters its Python code applies to YARA matches,
 are not run.
