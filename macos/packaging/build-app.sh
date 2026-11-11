@@ -17,6 +17,7 @@ plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Inf
 if [ -n "${MERLIN_UPDATE_FEED_URL:-}" ]; then
   plutil -insert SUFeedURL -string "$MERLIN_UPDATE_FEED_URL" "$APP/Contents/Info.plist"
   plutil -insert SUPublicEDKey -string "$MERLIN_UPDATE_PUBLIC_KEY" "$APP/Contents/Info.plist"
+  plutil -insert SURequireSignedFeed -bool YES "$APP/Contents/Info.plist"
   plutil -replace SUEnableAutomaticChecks -bool YES "$APP/Contents/Info.plist"
 fi
 if [ "${MERLIN_NATIVE_SIGN_IN_ENABLED:-0}" = 1 ]; then
