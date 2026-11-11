@@ -21,15 +21,28 @@ private func c_fork() -> pid_t
 /// it) and then execs `path` with `args`. Returns the child pid.
 @discardableResult
 private func forkExec(_ path: String, _ args: [String]) -> pid_t {
-    let child = c_fork()
-    if child == 0 {
-        usleep(100_000)
-        let cargs = ([path] + args).map { strdup($0) } + [nil]
-        var va: [UnsafeMutablePointer<CChar>?] = cargs
-        execve(path, &va, nil)
-        _exit(127)
+    // Swift Testing has other threads running at fork. Allocate and resolve
+    // pointers in the parent: the child must not enter the Swift allocator or
+    // bridge a String while inherited runtime locks may be held.
+    var argv = ([path] + args).map { strdup($0) }
+    defer { argv.forEach { free($0) } }
+    precondition(argv.allSatisfy { $0 != nil })
+    argv.append(nil)
+    return argv.withUnsafeMutableBufferPointer { buffer in
+        let executable = buffer[0]!
+        let arguments = buffer.baseAddress!
+        var delay = timespec(tv_sec: 0, tv_nsec: 100_000_000)
+        var remaining = timespec()
+        let child = c_fork()
+        if child == 0 {
+            while nanosleep(&delay, &remaining) == -1 && errno == EINTR {
+                delay = remaining
+            }
+            execve(executable, arguments, nil)
+            _exit(127)
+        }
+        return child
     }
-    return child
 }
 
 private func makeProvider(rulesYAML: String, spoolPath: String) throws -> KqueueProvider {
@@ -77,6 +90,7 @@ struct KqueueProviderTests {
         // The command line is matched locally but omitted from the event.
         let marker = "0.313"
         let pid = forkExec("/bin/sleep", [marker])
+        try #require(pid > 0, "fork failed: errno \(errno)")
 
         let exec = awaitEvent(in: spool) {
             $0["kind"] as? String == "exec"
@@ -115,6 +129,7 @@ struct KqueueProviderTests {
 
         // Raw fork child: pause for registration, then exit(42).
         let pid = forkExec("/bin/sh", ["-c", "exit 42"])
+        try #require(pid > 0, "fork failed: errno \(errno)")
         var status: Int32 = 0
         waitpid(pid, &status, 0)
 
@@ -173,6 +188,7 @@ struct KqueueProviderTests {
 
         // Keep the marker in the final process argv when Bash execs sleep.
         let pid = forkExec("/bin/bash", ["-c", "exec -a \(marker) /bin/sleep 30"])
+        try #require(pid > 0, "fork failed: errno \(errno)")
 
         let kill = awaitEvent(in: spool) {
             $0["kind"] as? String == "kill"
