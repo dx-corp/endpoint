@@ -41,6 +41,7 @@ plutil -lint "$SCRIPT_DIR/mdm/deixic-endpoint.mobileconfig" "$SCRIPT_DIR/mdm/dei
 sh -n "$SCRIPT_DIR/build-app.sh" "$SCRIPT_DIR/validate-release-config.sh"
 bash -n "$SCRIPT_DIR/build-appcast.sh" "$SCRIPT_DIR/test-update-signing.sh"
 bash "$SCRIPT_DIR/test-update-signing.sh"
+python3 "$SCRIPT_DIR/../../packaging/test-universal-build.py"
 # Exercise the actual bundle writer without rebuilding or launching the GUI.
 # The Mach-O stand-in and framework copy are signed ad hoc inside this fixture.
 SPARKLE_CACHE=${EVALOPS_TOOL_CACHE:-${RUNNER_TOOL_CACHE:+${RUNNER_TOOL_CACHE}/evalops-tools}}
