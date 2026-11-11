@@ -41,6 +41,7 @@ plutil -lint "$SCRIPT_DIR/mdm/deixic-endpoint.mobileconfig" "$SCRIPT_DIR/mdm/dei
 sh -n "$SCRIPT_DIR/build-app.sh" "$SCRIPT_DIR/validate-release-config.sh"
 bash -n "$SCRIPT_DIR/build-appcast.sh" "$SCRIPT_DIR/test-update-signing.sh"
 bash "$SCRIPT_DIR/test-update-signing.sh"
+python3 "$SCRIPT_DIR/../../packaging/test-protected-notarization.py"
 python3 "$SCRIPT_DIR/../../packaging/test-universal-build.py"
 # Exercise the actual bundle writer without rebuilding or launching the GUI.
 # The Mach-O stand-in and framework copy are signed ad hoc inside this fixture.
@@ -61,6 +62,24 @@ MERLIN_UPDATE_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
 if MERLIN_RELEASE_MODE=production MERLIN_CODE_SIGN_IDENTITY=- "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
   printf '%s\n' 'Production accepted ad-hoc signing' >&2; exit 1
 fi
+if MERLIN_RELEASE_MODE=candidate MERLIN_CODE_SIGN_IDENTITY=- "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
+  printf '%s\n' 'Candidate accepted ad-hoc signing' >&2; exit 1
+fi
+# Candidate construction keeps production signing/profile requirements while
+# deferring only notarization to the separate protected consumer.
+printf 'readable configuration fixture, not an authorized profile\n' > "$TEMP_DIR/profile-fixture"
+for mode in candidate production; do
+  if MERLIN_RELEASE_MODE="$mode" MERLIN_NOTARY_PROFILE='' \
+    MERLIN_CODE_SIGN_IDENTITY='Developer ID Application: Test (TEAMID0000)' \
+    MERLIN_INSTALLER_SIGN_IDENTITY='Developer ID Installer: Test (TEAMID0000)' \
+    MERLIN_UPDATE_FEED_URL=https://updates.invalid/appcast.xml MERLIN_UPDATE_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    MERLIN_ENDPOINT_SECURITY_ENTITLEMENT=1 MERLIN_COLLECTOR_PROVISIONING_PROFILE="$TEMP_DIR/profile-fixture" \
+      "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
+    [ "$mode" = candidate ] || { echo 'Production accepted absent notary profile.' >&2; exit 1; }
+  else
+    [ "$mode" = production ] || { echo 'Candidate incorrectly required a notary credential.' >&2; exit 1; }
+  fi
+done
 if MERLIN_RELEASE_MODE=production MERLIN_CODE_SIGN_IDENTITY='Developer ID Application: Test (TEAMID0000)' \
   MERLIN_INSTALLER_SIGN_IDENTITY='Developer ID Installer: Test (TEAMID0000)' MERLIN_NOTARY_PROFILE=test \
   MERLIN_UPDATE_FEED_URL=https://updates.invalid/appcast.xml MERLIN_UPDATE_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \

@@ -7,17 +7,19 @@ case "${MERLIN_PKG_VERSION:-0.1.0}" in
 esac
 case "${MERLIN_RELEASE_MODE:-development}" in
   development) ;;
-  production)
+  production|candidate)
     case "${MERLIN_CODE_SIGN_IDENTITY:-}" in 'Developer ID Application: '*) ;; *) fail 'Production requires a Developer ID Application identity name.' ;; esac
     case "${MERLIN_INSTALLER_SIGN_IDENTITY:-}" in 'Developer ID Installer: '*) ;; *) fail 'Production requires a Developer ID Installer identity name.' ;; esac
-    [ -n "${MERLIN_NOTARY_PROFILE:-}" ] || fail 'Production requires MERLIN_NOTARY_PROFILE.'
+    if [ "${MERLIN_RELEASE_MODE:-development}" = production ]; then
+      [ -n "${MERLIN_NOTARY_PROFILE:-}" ] || fail 'Production requires MERLIN_NOTARY_PROFILE.'
+    fi
     [ "${MERLIN_CODESIGN_TIMESTAMP:-1}" = 1 ] || fail 'Production requires secure timestamps.'
     [ -n "${MERLIN_UPDATE_FEED_URL:-}" ] && [ -n "${MERLIN_UPDATE_PUBLIC_KEY:-}" ] || fail 'Production requires an approved update feed and public EdDSA key.'
     if [ "${MERLIN_ENDPOINT_SECURITY_ENTITLEMENT:-0}" = 1 ]; then
       [ -r "${MERLIN_COLLECTOR_PROVISIONING_PROFILE:-}" ] || fail 'Production Endpoint Security requires MERLIN_COLLECTOR_PROVISIONING_PROFILE.'
     fi
     ;;
-  *) fail 'MERLIN_RELEASE_MODE must be development or production.' ;;
+  *) fail 'MERLIN_RELEASE_MODE must be development, candidate or production.' ;;
 esac
 MERLIN_UPDATE_PUBLIC_KEY=${MERLIN_UPDATE_PUBLIC_KEY:-}
 if [ -n "${MERLIN_UPDATE_FEED_URL:-}${MERLIN_UPDATE_PUBLIC_KEY:-}" ]; then

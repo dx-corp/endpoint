@@ -40,7 +40,7 @@ printf 'Building Deixic Endpoint for: %s\n' "$ARCHES"
 # checkout is put back once the collector is compiled, so nothing is committed.
 MANIFEST_SWIFT=$MACOS_DIR/Sources/MerlinMacOS/Manifest.swift
 MANIFEST_TOML=$REPO_DIR/collection-manifest.d/settings.toml
-if [ "$MODE" = "production" ]; then
+if [ "$MODE" = production ] || [ "$MODE" = candidate ]; then
   MANIFEST_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/merlin-manifest.XXXXXX")
   cp "$MANIFEST_SWIFT" "$MANIFEST_BACKUP/Manifest.swift"
   cp "$MANIFEST_TOML" "$MANIFEST_BACKUP/settings.toml"
@@ -48,7 +48,7 @@ if [ "$MODE" = "production" ]; then
   "$REPO_DIR/packaging/stamp-manifest-version.sh" "$VERSION" "$REPO_DIR"
 fi
 BIN_DIR=$(sh "$SCRIPT_DIR/build-universal.sh" "$MACOS_DIR" "$@")
-if [ "$MODE" = "production" ]; then
+if [ "$MODE" = production ] || [ "$MODE" = candidate ]; then
   cp "$MANIFEST_BACKUP/Manifest.swift" "$MANIFEST_SWIFT"
   cp "$MANIFEST_BACKUP/settings.toml" "$MANIFEST_TOML"
   rm -rf "$MANIFEST_BACKUP"
@@ -104,7 +104,7 @@ if [ -n "$COLLECTOR_PROFILE" ]; then
     { printf 'collector profile is for %s, not %s.%s\n' "$PROFILE_APP_ID" "$PROFILE_TEAM" "$COLLECTOR_ID" >&2; exit 65; }
   [ "$(plutil -extract 'Entitlements.com\.apple\.developer\.endpoint-security\.client' raw "$PROFILE_PLIST" 2>/dev/null)" = true ] ||
     { printf '%s\n' 'collector profile does not grant com.apple.developer.endpoint-security.client' >&2; exit 65; }
-  if [ "$MODE" = "production" ]; then
+  if [ "$MODE" = production ] || [ "$MODE" = candidate ]; then
     [ "$(plutil -extract ProvisionsAllDevices raw "$PROFILE_PLIST" 2>/dev/null)" = true ] ||
       { printf '%s\n' 'production needs a Developer ID profile (ProvisionsAllDevices), not a development profile' >&2; exit 65; }
   fi
@@ -166,5 +166,7 @@ if [ "$MODE" = "production" ]; then
   xcrun stapler staple "$OUTPUT"
   xcrun stapler validate "$OUTPUT"
   spctl --assess --type install --verbose=2 "$OUTPUT"
+elif [ "$MODE" = candidate ]; then
+  printf '%s\n' 'Signed candidate only: not notarized and not admitted for publication.'
 fi
 printf 'Built Deixic Endpoint package: %s\n' "$OUTPUT"
