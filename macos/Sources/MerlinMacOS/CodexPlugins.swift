@@ -11,7 +11,7 @@ func codexEnabledPluginNames(_ data: Data) -> [String] {
         leaf.path.count == 3 && leaf.path[0] == "plugins" && leaf.path[2] == "enabled" && leaf.isTrue
             && safeAgentAssetName(leaf.path[1]) ? leaf.path[1] : nil
     }
-    return Array(names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }.prefix(128))
+    return Array(names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }.prefix(macAgentFindingLimit))
 }
 
 /// Walks a TOML 1.0 document and records the full key path of every value

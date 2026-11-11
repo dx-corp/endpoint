@@ -123,7 +123,8 @@ export function validateEndpointWorkspace(metadata) {
 async function validateEndpoint(root, files) {
   for (const required of ["Cargo.toml", "Cargo.lock", "merlin/Cargo.toml", "merlin-common/Cargo.toml",
     "merlin-ebpf/Cargo.toml", "packaging/linux/test-packaging.sh", "rules/block-demo.yaml",
-    "packs/sigma-linux.yaml", "macos/Package.swift", "collection-manifest.toml", "windows/wsl-plugin/Cargo.toml"]) {
+    "packs/sigma-linux.yaml", "macos/Package.swift", "collection-manifest.d/settings.toml",
+    "collection-manifest.d/ai_locations.toml", "windows/wsl-plugin/Cargo.toml"]) {
     requireValue(files.includes(required), `endpoint is missing ${required}`);
   }
   for (const path of files) requireValue(!/^(?:server|admin-ui|tools)(?:\/|$)|^Dockerfile$|^macos\/docs\//.test(path), `endpoint contains an internal surface: ${path}`);

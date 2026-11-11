@@ -32,7 +32,7 @@ const ALL_CONTAINERS_TIMEOUT: Duration = Duration::from_secs(60);
 /// Largest result a child may print.
 const MAX_CHILD_OUTPUT: u64 = 1 << 20;
 /// MCP servers and assets kept from one root, as for the host scan.
-const MAX_ROOT_FINDINGS: usize = 128;
+const MAX_ROOT_FINDINGS: usize = crate::ai_discovery::MAX_AGENT_FINDINGS;
 
 /// What one root holds, as the child prints it.
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -300,11 +300,9 @@ pub(crate) fn scan_ai_locations_in_root(root: &Path, location: &str) -> Result<(
     let mut scan = collect_agent_discovery_from(&agent_homes(), AGENT_SYSTEM_BINS);
     let (system_servers, system_assets) = collect_system_agent_configs(Path::new("/"));
     scan.mcp_servers.extend(system_servers);
-    scan.mcp_servers
-        .truncate(crate::ai_discovery::MAX_AGENT_FINDINGS);
+    scan.mcp_servers.truncate(MAX_ROOT_FINDINGS);
     scan.agent_assets.extend(system_assets);
-    scan.agent_assets
-        .truncate(crate::ai_discovery::MAX_AGENT_FINDINGS);
+    scan.agent_assets.truncate(MAX_ROOT_FINDINGS);
     crate::ai_discovery::add_truncation(
         &mut scan.coverage,
         scan.mcp_servers.len(),

@@ -1,10 +1,10 @@
 import Foundation
 
 // The collection manifest, macOS port. Same collector ids, groups, retention
-// classes and never-claims as the declared manifest (`collection-manifest.toml`,
+// classes and never-claims as the declared manifest (`collection-manifest.d/`,
 // which the Linux port compiles in), so the transparency page, the TUI and the menu bar app make one claim for both
 // operating systems; the `what` text names the macOS sources where they differ.
-// `ManifestTests` reads that file and fails when the id sets or the number
+// `ManifestTests` reads those files and fails when the id sets or the number
 // of never-claims drift apart.
 
 enum ManifestRetention: String, Encodable, Sendable {
@@ -67,7 +67,7 @@ struct CollectionManifest: Encodable, Sendable {
 
     /// Set by the release; pull requests never change it. 0 is a development
     /// build; `packaging/stamp-manifest-version.sh` writes the release's number
-    /// here and into `collection-manifest.toml` before a release build.
+    /// here and into `collection-manifest.d/settings.toml` before a release build.
     static let version = 0
 
     /// `v103` for a release, `(development build)` for 0 (merlin's

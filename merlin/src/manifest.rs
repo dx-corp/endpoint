@@ -3,7 +3,7 @@
 //! them. `merlin manifest` prints it; the transparency page, the TUI and the
 //! menu bar app render from it, so what people read is what the binary does.
 //!
-//! The manifest is declared once, in `../collection-manifest.toml`; `build.rs`
+//! The manifest is declared once, in `../collection-manifest.d/`; `build.rs`
 //! compiles it into the constants below, and the tests in this module tie it
 //! to the code: every inventory field the check-in serialises, every
 //! telemetry event kind any monitor emits, and every check-in capability must
@@ -470,6 +470,7 @@ mod tests {
         ("spool.rs", include_str!("spool.rs")),
         ("fileless.rs", include_str!("fileless.rs")),
         ("proctree.rs", include_str!("proctree.rs")),
+        ("contacted_hosts.rs", include_str!("contacted_hosts.rs")),
         ("agent_session.rs", include_str!("agent_session.rs")),
         ("linux_posture.rs", include_str!("linux_posture.rs")),
         ("linux_hardening.rs", include_str!("linux_hardening.rs")),
@@ -637,6 +638,17 @@ mod tests {
                 "matched_rules"
             ]
         );
+        // Observed reach: a host, never a URL or what was sent.
+        assert_eq!(
+            struct_fields(include_str!("contacted_hosts.rs"), "DeviceContactedHost"),
+            [
+                "client",
+                "mcp_package",
+                "host",
+                "first_seen_unix",
+                "last_seen_unix"
+            ]
+        );
         // Accounts: no secrets.
         assert_eq!(
             struct_fields(SYNC, "DeviceUser"),
@@ -740,7 +752,7 @@ mod tests {
         }
     }
 
-    /// The product directory: collection-manifest.toml, macos/ and packaging/.
+    /// The product directory: collection-manifest.d/, macos/ and packaging/.
     fn product_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
     }
@@ -752,7 +764,7 @@ mod tests {
     fn main_carries_the_development_manifest_version() {
         assert_eq!(
             MANIFEST_VERSION, 0,
-            "manifest_version in collection-manifest.toml is set by the release; keep it 0"
+            "manifest_version in collection-manifest.d/settings.toml is set by the release; keep it 0"
         );
         let swift =
             std::fs::read_to_string(product_dir().join("macos/Sources/MerlinMacOS/Manifest.swift"))
@@ -780,10 +792,12 @@ mod tests {
                 .as_nanos()
         ));
         let swift = "macos/Sources/MerlinMacOS/Manifest.swift";
+        let settings = "collection-manifest.d/settings.toml";
         let fresh = || {
             let _ = std::fs::remove_dir_all(&scratch);
             std::fs::create_dir_all(scratch.join("macos/Sources/MerlinMacOS")).unwrap();
-            for file in ["collection-manifest.toml", swift] {
+            std::fs::create_dir_all(scratch.join("collection-manifest.d")).unwrap();
+            for file in [settings, swift] {
                 std::fs::copy(product.join(file), scratch.join(file)).unwrap();
             }
         };
@@ -796,11 +810,10 @@ mod tests {
                 .unwrap()
         };
         let versions = || {
-            let toml: toml::Table =
-                std::fs::read_to_string(scratch.join("collection-manifest.toml"))
-                    .unwrap()
-                    .parse()
-                    .unwrap();
+            let toml: toml::Table = std::fs::read_to_string(scratch.join(settings))
+                .unwrap()
+                .parse()
+                .unwrap();
             let swift = std::fs::read_to_string(scratch.join(swift)).unwrap();
             let swift = swift
                 .lines()

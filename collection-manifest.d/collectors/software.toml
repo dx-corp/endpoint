@@ -1,0 +1,9 @@
+order = 40
+id = "software"
+group = "inventory"
+title = "Installed software and services"
+what = "Package names, versions and architectures from the system package manager; service names and states; known vulnerability matches by package and version."
+why = "Patch management and vulnerability controls."
+records = ["inventory.package_manager", "inventory.packages", "inventory.services", "inventory.vulnerabilities", "inventory.collected_at", "inventory.collection_source"]
+capabilities = ["system_inventory", "rootcheck"]
+retention = "while_enrolled"

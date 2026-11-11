@@ -12,7 +12,8 @@ use super::agent_discovery::{
     read_agent_dir_entries, read_agent_file_at,
 };
 use crate::ai_discovery::{
-    ContentScan, DeviceAgentAsset, DeviceMCPServer, json_mcp_entries, safe_agent_asset_name,
+    ContentScan, DeviceAgentAsset, DeviceMCPServer, MAX_AGENT_FINDINGS, json_mcp_entries,
+    safe_agent_asset_name,
 };
 use crate::manifest::AiLocation;
 
@@ -67,7 +68,7 @@ pub(super) fn collect_claude_plugin_cache(
                 }
                 // A full asset list still lets the version's MCP servers
                 // through: they have their own cap.
-                if assets.len() < 128 {
+                if assets.len() < MAX_AGENT_FINDINGS {
                     // The plugin manifest, .claude-plugin/plugin.json.
                     let manifest = open_agent_child_dir(&version, b".claude-plugin")
                         .and_then(|directory| checked_content(&directory, "plugin.json", content));
@@ -106,7 +107,7 @@ pub(super) fn collect_claude_plugin_cache(
                 for skill in read_agent_dir_entries(&skills).unwrap_or_default() {
                     let skill_name = skill.to_string_lossy();
                     let name = format!("{plugin}:{skill_name}");
-                    if assets.len() >= 128
+                    if assets.len() >= MAX_AGENT_FINDINGS
                         || !safe_agent_asset_name(&skill_name)
                         || !safe_agent_asset_name(&name)
                     {

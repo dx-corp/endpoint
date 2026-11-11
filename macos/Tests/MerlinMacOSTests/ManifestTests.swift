@@ -2,20 +2,29 @@ import Foundation
 import Testing
 @testable import MerlinMacOS
 
-// The macOS manifest and the declared one (collection-manifest.toml, which the
+// The macOS manifest and the declared one (collection-manifest.d/, which the
 // Linux port compiles in) describe one product: same collector ids, same
 // number of never-claims, same version.
 // A collector added to one port without the other fails here.
 
+/// Every file of the declared manifest directory, joined in path order. The
+/// readers below match lines and keys, so one text covers all the files.
 private func declaredManifestSource() throws -> String {
     let here = URL(fileURLWithPath: #filePath)
-    let rust = here
+    let directory = here
         .deletingLastPathComponent() // ManifestTests.swift -> MerlinMacOSTests
         .deletingLastPathComponent() // -> Tests
         .deletingLastPathComponent() // -> macos
         .deletingLastPathComponent() // -> deixic-endpoint
-        .appendingPathComponent("collection-manifest.toml")
-    return try String(contentsOf: rust, encoding: .utf8)
+        .appendingPathComponent("collection-manifest.d")
+    guard let walk = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil) else {
+        throw CocoaError(.fileReadNoSuchFile)
+    }
+    let files = walk.compactMap { $0 as? URL }
+        .filter { $0.pathExtension == "toml" }
+        .sorted { $0.path < $1.path }
+    guard !files.isEmpty else { throw CocoaError(.fileReadNoSuchFile) }
+    return try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
 }
 
 private func declaredCollectorIds(_ source: String) -> Set<String> {
@@ -31,7 +40,7 @@ private func declaredCollectorIds(_ source: String) -> Set<String> {
 }
 
 /// The ai_locations rows declared for macOS, as "scope client kind path".
-/// Each row is one inline table on one line of collection-manifest.toml.
+/// Each row is one inline table on one line of collection-manifest.d/ai_locations.toml.
 private func declaredMacAILocations(_ source: String) -> Set<String> {
     var rows = Set<String>()
     var inside = false

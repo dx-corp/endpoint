@@ -1,0 +1,9 @@
+order = 100
+id = "process_events"
+group = "security_events"
+title = "Program starts, scripts and exits"
+what = "When a program starts or ends: program name, executable path, parent programs, working directory, container, and the rules it matched. The command line is read locally to evaluate rules and is omitted from recorded events. Scripts record the interpreter, script path and SHA-256 of the script body read locally; the raw script body is not uploaded. A program that runs under a declared AI agent (ai_agent_processes), or is one, also records the agent's name and its session id (the agent process's key: boot id, process id and start time)."
+why = "Detecting and investigating attacks (endpoint detection)."
+records = ["exec", "script", "fork", "exit", "task_exit"]
+capabilities = ["segment_upload", "policy_agent"]
+retention = "telemetry_window"

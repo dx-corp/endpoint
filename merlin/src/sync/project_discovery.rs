@@ -319,8 +319,14 @@ pub(super) fn collect_project_agent_discovery(
         }
     }
     (
-        servers.into_iter().take(128).collect(),
-        assets.into_iter().take(128).collect(),
+        servers
+            .into_iter()
+            .take(crate::ai_discovery::MAX_AGENT_FINDINGS)
+            .collect(),
+        assets
+            .into_iter()
+            .take(crate::ai_discovery::MAX_AGENT_FINDINGS)
+            .collect(),
     )
 }
 

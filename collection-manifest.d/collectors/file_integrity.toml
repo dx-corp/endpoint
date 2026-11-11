@@ -1,0 +1,9 @@
+order = 80
+id = "file_integrity"
+group = "inventory"
+title = "File integrity baselines"
+what = "For files in selected system locations: path, SHA-256 when readable within the size limit, size, permissions, modification time and status. File bodies are read locally for hashes and selected configuration values; raw bodies are not uploaded."
+why = "Change detection on system configuration."
+records = ["inventory.fim", "inventory.sca"]
+capabilities = ["file_integrity"]
+retention = "while_enrolled"

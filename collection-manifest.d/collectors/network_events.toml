@@ -1,0 +1,9 @@
+order = 110
+id = "network_events"
+group = "security_events"
+title = "Network connections and DNS lookups"
+what = "Outbound connections (program, source and destination address and port), socket state changes, network interface changes, and the domain names programs look up with the program that asked and the names of any assigned rules the lookup matched. A connection or lookup made by a program that runs under a declared AI agent, or is one, also records the agent's name and its session id. Not page contents, messages or what was sent."
+why = "Detecting command-and-control, data exfiltration and DNS tunnelling."
+records = ["connect", "socket", "netif", "dns"]
+capabilities = ["segment_upload", "policy_dns"]
+retention = "telemetry_window"

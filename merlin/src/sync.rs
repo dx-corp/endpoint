@@ -492,6 +492,12 @@ struct DeviceInventory {
     /// in a scanned container: unknown, never clean.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ai_location_coverage: Vec<DeviceAiLocationCoverage>,
+    /// Hosts AI agents and their MCP servers contacted (contacted_hosts.rs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    contacted_hosts: Vec<crate::contacted_hosts::DeviceContactedHost>,
+    /// The contacted hosts are at their bound and some were not kept.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    contacted_hosts_truncated: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     collection_source: String,
 }
@@ -1524,6 +1530,17 @@ fn collect_inventory() -> DeviceInventory {
     let (cloud_provider, cloud_instance_id, cloud_region) = cloud_metadata();
     let containers = collect_containers();
     let discovery = collect_agent_discovery(&containers);
+    // Processes are matched to the stdio MCP servers configured on the host
+    // itself; a container's servers run in their own process tree.
+    crate::contacted_hosts::set_mcp_packages(
+        discovery
+            .mcp_servers
+            .iter()
+            .filter(|s| s.transport == "stdio" && s.location.is_empty())
+            .map(|s| s.package.as_str()),
+    );
+    let (contacted_hosts, contacted_hosts_truncated) =
+        crate::contacted_hosts::snapshot(spool::now_ts() as u64);
     DeviceInventory {
         collected_at: format!("{:.3}", spool::now_ts()),
         package_manager,
@@ -1544,6 +1561,8 @@ fn collect_inventory() -> DeviceInventory {
         mcp_servers: discovery.mcp_servers,
         agent_assets: discovery.agent_assets,
         ai_location_coverage: discovery.coverage,
+        contacted_hosts,
+        contacted_hosts_truncated,
         collection_source: "linux-agent".into(),
     }
 }

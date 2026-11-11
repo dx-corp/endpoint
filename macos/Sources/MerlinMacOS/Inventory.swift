@@ -300,7 +300,7 @@ func collectMacSystemAgentConfigs(root: String = "") -> (servers: [DeviceMCPServ
         let source = "system\(path)"
         assets.append(DeviceAgentAsset(client: client, kind: "config", name: "system", source: source))
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        for entry in mcpEntries(object?["mcpServers"]) where safeAgentAssetName(entry.name) && servers.count < 128 {
+        for entry in mcpEntries(object?["mcpServers"]) where safeAgentAssetName(entry.name) && servers.count < macAgentFindingLimit {
             servers.append(DeviceMCPServer(client: client, entry: entry, source: source))
         }
     }
@@ -502,18 +502,18 @@ func collectMacProjectAgentDiscovery(rootFDs: [Int32]) -> (servers: [DeviceMCPSe
             }
         }
     }
-    return (found.sorted().prefix(128).compactMap(DeviceMCPServer.init(key:)), assets.sorted().prefix(128).compactMap { entry in
+    return (found.sorted().prefix(macAgentFindingLimit).compactMap(DeviceMCPServer.init(key:)), assets.sorted().prefix(macAgentFindingLimit).compactMap { entry in
         let parts = entry.split(separator: "\u{0}")
         return parts.count == 4 ? DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3])) : nil
     }, coverage)
 }
 
-// Where the macOS collector looks. collection-manifest.toml ai_locations
+// Where the macOS collector looks. collection-manifest.d/ai_locations.toml
 // declares these; ManifestTests keeps them equal.
 /// MCP servers, and agent assets, reported per inventory (each); a list that
 /// reaches it is reported as truncated (the Linux and Windows
 /// `MAX_AGENT_FINDINGS`).
-let macAgentFindingLimit = 128
+let macAgentFindingLimit = 512
 let macAgentCLINames = ["cursor", "codex", "claude", "gemini", "opencode", "aider", "maestro", "amp", "goose", "qwen", "pi"]
 let macCursorAgentsDirectory = ".cursor/agents"
 let macCursorLocalPluginsDirectory = ".cursor/plugins/local"
@@ -535,13 +535,13 @@ let macBrowserProfileLimit = 16
 let macClaudePluginCacheDirectoryLimit = 256
 /// The default read limit of a declared config file.
 let macAgentConfigReadLimit = 64 << 10
-/// User configs with their own read limit (collection-manifest.toml
+/// User configs with their own read limit (collection-manifest.d ai_locations
 /// `max_bytes`; ManifestTests checks they match).
 let macUserAgentConfigReadLimits: [String: Int] = [".claude.json": 4 << 20, ".codex/config.toml": 4 << 20]
 /// Project configs with their own read limit (`max_bytes` on project rows).
 let macProjectAgentConfigReadLimits: [String: Int] = [".codex/config.toml": 4 << 20]
 /// User configs that keep per-project MCP servers under a key
-/// (collection-manifest.toml `projects_key`; ManifestTests checks they match).
+/// (collection-manifest.d/ai_locations.toml `projects_key`; ManifestTests checks they match).
 let macUserAgentConfigProjectKeys: [String: String] = [".claude.json": "projects"]
 let macUserAgentConfigs: [(String, String, Bool)] = [
     ("claude", "Library/Application Support/Claude/claude_desktop_config.json", false),
@@ -653,7 +653,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 } else { name = nil }
                 if let name, safeAgentAssetName(name) {
                     // At the asset cap the entry is still read for MCP servers.
-                    if assetNames.count < 128 {
+                    if assetNames.count < macAgentFindingLimit {
                         assetNames.insert("\(client)\u{0}\(kind)\u{0}\(name)\u{0}\(relative)")
                     }
                     if client == "gemini" && kind == "extension", let data = readAgentConfigNoFollow("\(path)/gemini-extension.json") {
@@ -677,7 +677,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         }
         if let agents = openAgentDirectoryNoFollow(home: home, relative: macCursorAgentsDirectory) {
             defer { close(agents) }
-            for entry in boundedAgentDirectoryEntries(descriptor: agents) where entry.hasSuffix(".md") && assetNames.count < 128 {
+            for entry in boundedAgentDirectoryEntries(descriptor: agents) where entry.hasSuffix(".md") && assetNames.count < macAgentFindingLimit {
                 let name = String(entry.dropLast(3))
                 var info = stat()
                 guard safeAgentAssetName(name), fstatat(agents, entry, &info, AT_SYMLINK_NOFOLLOW) == 0,
@@ -687,7 +687,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
         }
         if let localPlugins = openAgentDirectoryNoFollow(home: home, relative: macCursorLocalPluginsDirectory) {
             defer { close(localPlugins) }
-            for entry in boundedAgentDirectoryEntries(descriptor: localPlugins) where cursorPluginDirectoriesSeen < 32 && assetNames.count < 128 {
+            for entry in boundedAgentDirectoryEntries(descriptor: localPlugins) where cursorPluginDirectoriesSeen < 32 && assetNames.count < macAgentFindingLimit {
                 guard safeAgentAssetName(entry) else { continue }
                 let plugin = openat(localPlugins, entry, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
                 guard plugin >= 0 else { continue }
@@ -727,7 +727,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                 continue
             }
             if client == "codex" && relative == ".codex/config.toml" {
-                for name in codexEnabledPluginNames(data) where assetNames.count < 128 {
+                for name in codexEnabledPluginNames(data) where assetNames.count < macAgentFindingLimit {
                     assetNames.insert("codex\u{0}plugin\u{0}\(name)\u{0}.codex/config.toml")
                 }
             }
@@ -747,7 +747,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
             }
             for entry in entries where safeAgentAssetName(entry.name) {
                 found.insert(DeviceMCPServer(client: client, entry: entry, source: relative).key)
-                if found.count >= 128 { break }
+                if found.count >= macAgentFindingLimit { break }
             }
             // Project MCP servers kept in this file (Claude Code's
             // projects.<path>.mcpServers), labelled without the project path.
@@ -756,17 +756,17 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
                let projects = object[projectsKey] as? [String: Any] {
                 for project in projects.values {
                     let settings = project as? [String: Any]
-                    for entry in mcpEntries(settings?["mcpServers"] ?? settings?["servers"]) where safeAgentAssetName(entry.name) && found.count < 128 {
+                    for entry in mcpEntries(settings?["mcpServers"] ?? settings?["servers"]) where safeAgentAssetName(entry.name) && found.count < macAgentFindingLimit {
                         found.insert(DeviceMCPServer(client: client, entry: entry, source: "\(relative)/\(projectsKey)/*").key)
                     }
                 }
             }
-            if found.count >= 128 { break }
+            if found.count >= macAgentFindingLimit { break }
         }
-        if found.count >= 128 { break }
+        if found.count >= macAgentFindingLimit { break }
     }
-    let servers = found.sorted().prefix(128).compactMap(DeviceMCPServer.init(key:))
-    let assets = assetNames.sorted().prefix(128).compactMap { entry -> DeviceAgentAsset? in
+    let servers = found.sorted().prefix(macAgentFindingLimit).compactMap(DeviceMCPServer.init(key:))
+    let assets = assetNames.sorted().prefix(macAgentFindingLimit).compactMap { entry -> DeviceAgentAsset? in
         let parts = entry.split(separator: "\u{0}")
         guard parts.count == 4 else { return nil }
         return DeviceAgentAsset(client: String(parts[0]), kind: String(parts[1]), name: String(parts[2]), source: String(parts[3]))
@@ -775,7 +775,7 @@ func collectMacAgentDiscovery(homes: [String], systemBins: [String], appRoots: [
 }
 
 /// Claude Code's plugin cache, `<marketplace>/<plugin>/<version>/` (the
-/// claude-plugin-cache format of collection-manifest.toml): each plugin is a
+/// claude-plugin-cache format of collection-manifest.d): each plugin is a
 /// plugin, a version's `.mcp.json` adds MCP servers, and each
 /// `skills/<name>` holding a regular `SKILL.md` is a skill named
 /// `<plugin>:<name>`. A version marked `.orphaned_at` is skipped. Opened with no
@@ -806,7 +806,7 @@ private func collectClaudePluginCache(home: String, assets: inout Set<String>, s
                 if regularFile(version, ".orphaned_at") { continue }
                 // A full asset list still lets the version's MCP servers
                 // through: they have their own cap.
-                if assets.count < 128 {
+                if assets.count < macAgentFindingLimit {
                     assets.insert("claude\u{0}plugin\u{0}\(plugin)\u{0}\(label)")
                 }
                 if let data = readAgentConfigNoFollow(descriptor: version, name: ".mcp.json") {
@@ -829,7 +829,7 @@ private func collectClaudePluginCache(home: String, assets: inout Set<String>, s
                 let skills = openat(version, "skills", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
                 guard skills >= 0 else { continue }
                 defer { close(skills) }
-                for skill in boundedAgentDirectoryEntries(descriptor: skills) where assets.count < 128 {
+                for skill in boundedAgentDirectoryEntries(descriptor: skills) where assets.count < macAgentFindingLimit {
                     let name = "\(plugin):\(skill)"
                     guard safeAgentAssetName(skill), safeAgentAssetName(name) else { continue }
                     let skillDirectory = openat(skills, skill, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)

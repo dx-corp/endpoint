@@ -1,0 +1,9 @@
+order = 70
+id = "running_programs"
+group = "inventory"
+title = "Running programs"
+what = "For each process: id, program name, executable path, owning user id and state. Not the command line or arguments."
+why = "Endpoint protection and unauthorized software controls."
+records = ["inventory.processes"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"

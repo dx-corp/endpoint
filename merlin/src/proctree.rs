@@ -19,6 +19,9 @@ pub struct ProcInfo {
     // nothing reads it yet — lineage matching only needs comm/exe.
     #[allow(dead_code)]
     pub cmdline: Option<String>,
+    /// The configured MCP server this process runs, when it runs under an
+    /// AI agent (contacted_hosts::mcp_package); its descendants inherit it.
+    pub mcp_package: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Default)]
@@ -168,6 +171,28 @@ impl ProcTable {
         }
     }
 
+    /// Mark a cached process as running the MCP server `package`.
+    pub fn set_mcp_package(&mut self, pid: u32, package: std::sync::Arc<str>) {
+        if let Some(info) = self.map.get_mut(&pid) {
+            info.mcp_package = Some(package);
+        }
+    }
+
+    /// The MCP server `pid` belongs to: its own mark or its nearest marked
+    /// ancestor's, within ANCESTOR_DEPTH.
+    pub fn mcp_package_of(&mut self, pid: u32) -> Option<std::sync::Arc<str>> {
+        let mut cur = Some(pid);
+        for _ in 0..=ANCESTOR_DEPTH {
+            let pid = cur.filter(|p| *p > 1)?;
+            let info = self.resolve(pid)?;
+            if let Some(package) = &info.mcp_package {
+                return Some(package.clone());
+            }
+            cur = info.ppid;
+        }
+        None
+    }
+
     /// Lineage for a pid (resolves the pid first to find its parent).
     pub fn lineage_of(&mut self, pid: u32) -> Lineage {
         let ppid = self.resolve(pid).and_then(|i| i.ppid);
@@ -210,6 +235,7 @@ pub fn observe(pid: u32) -> Option<ProcInfo> {
             .ok()
             .map(|p| p.display().to_string()),
         cmdline: crate::telemetry::proc_cmdline(pid),
+        mcp_package: None,
     })
 }
 

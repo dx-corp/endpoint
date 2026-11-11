@@ -606,7 +606,7 @@ fn codex_enabled_plugin_names_match_the_linux_semantics() {
 
 #[test]
 fn codex_enabled_plugin_names_are_sorted_and_bounded() {
-    let body: String = (0..200)
+    let body: String = (0..MAX_FINDINGS + 72)
         .rev()
         .map(|index| format!("[plugins.\"p{index:03}@m\"]\nenabled = true\n"))
         .collect();

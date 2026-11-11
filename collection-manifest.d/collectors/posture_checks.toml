@@ -1,0 +1,9 @@
+order = 10
+id = "posture_checks"
+group = "checks"
+title = "Security settings"
+what = "Whether disk encryption, screen lock, OS and automatic updates, firewall, remote access, endpoint protection and a password manager are in place, and whether AI coding agents (Claude Code, Codex, Gemini CLI, Cursor CLI) are set to act without asking, each as pass, fail or unknown with a short reason and a hash of the evidence read. For AI agents the reason names the setting (from ai-agent-approval.toml); the setting's value, the file's path and the account are not sent. On Linux, whether a pickle model file in the Hugging Face, Ollama or LM Studio cache imports a function that can run code when loaded, found by reading its pickle instructions without loading it; only the result is sent, never file names, paths or contents. AI agent and model file results are reported and do not affect secure-device access unless the workspace policy turns that on. Settings are read; their contents are not copied."
+why = "Workstation controls in SOC 2 and ISO 27001 ask that company computers are encrypted, locked, patched and protected."
+records = ["posture.checks", "posture.findings", "posture.coverage"]
+capabilities = ["posture_reporting"]
+retention = "while_enrolled"

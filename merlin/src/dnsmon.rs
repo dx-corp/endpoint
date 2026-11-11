@@ -38,6 +38,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
 use crate::agent_session;
+use crate::contacted_hosts;
 use crate::proctree::ProcTable;
 use crate::rules::{Action, MatchCtx, Rules, RulesHandle};
 use crate::spool;
@@ -458,7 +459,24 @@ fn capture_loop(fd: i32, rules: RulesHandle, table: Arc<Mutex<ProcTable>>, tx: S
         }
         // The process that asked; a system resolver's own upstream lookup
         // runs under no agent.
-        agent_session::stamp(&mut event, agent_session::agent_for(&table, pid));
+        let agent = agent_session::agent_for(&table, pid);
+        agent_session::stamp(&mut event, agent);
+        // Observed reach: the names an agent or its MCP servers looked up,
+        // from the host's own processes (a container's are not its tools).
+        let in_container = || {
+            pid.and_then(telemetry::proc_cgroup)
+                .as_deref()
+                .and_then(telemetry::container_id_from_cgroup)
+                .is_some()
+        };
+        if !msg.is_response && agent.is_some() && !in_container() {
+            contacted_hosts::note_attributed(
+                &table,
+                agent,
+                pid,
+                contacted_hosts::dns_host(&msg.qname),
+            );
+        }
         spool::try_send(&tx, event);
     }
 }

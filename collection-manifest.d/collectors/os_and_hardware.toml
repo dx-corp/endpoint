@@ -1,0 +1,9 @@
+order = 30
+id = "os_and_hardware"
+group = "inventory"
+title = "Operating system and hardware"
+what = "OS name and version, kernel, architecture, CPU model and count, memory and disk totals, uptime, virtualization and network interface names and states. No addresses."
+why = "The device record every control refers to."
+records = ["os_info"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"

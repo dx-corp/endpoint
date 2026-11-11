@@ -1,0 +1,98 @@
+# The collection manifest of the Deixic Endpoint agent: what it collects, what
+# it never collects, where it keeps things on the computer and how long the
+# server keeps them. The files in collection-manifest.d/ are the one
+# declaration, read together as one manifest: each top-level key is declared
+# in exactly one file, and collectors/ holds one file per collector. The Linux
+# agent compiles it in (merlin/build.rs) and prints it with `merlin manifest`;
+# its tests tie every collector, record and never-claim to the code. The local
+# screen and the transparency page render from it, so what people read is what
+# the agent does.
+
+# Set by the release; pull requests never change it. Main holds 0, a
+# development build; packaging/stamp-manifest-version.sh writes the release's
+# number here and into the macOS Manifest.swift before a release build.
+manifest_version = 0
+
+# The system journal's share; per-event details are debug level and off by default.
+journal = "The system journal (journalctl -u merlin) carries health and errors only: starts, sensor attach, upload results, enforcement actions by rule name. Per-event details are debug level and off by default."
+
+# Credential files, by name. The file_events collector reports when a program
+# opens one: the path, the program and this name, never the contents. The
+# agent never reads them: an open is resolved to its path and closed. A file is watched through its directory, so
+# a file replaced or created later is still seen while that directory exists;
+# a file directly in the home is watched itself when it exists at start.
+#
+# name: the credential's name, as events report it.
+# path: relative to each user's home.
+# prefix: when set, path is a directory and the credential is each file in it
+#   whose name starts with prefix and does not end with not_suffix.
+credential_files = [
+  { name = "aws", path = ".aws/credentials" },
+  { name = "ssh_key", path = ".ssh", prefix = "id_", not_suffix = ".pub" },
+  { name = "kube", path = ".kube/config" },
+  { name = "gh", path = ".config/gh/hosts.yml" },
+  { name = "netrc", path = ".netrc" },
+  { name = "gcloud_adc", path = ".config/gcloud/application_default_credentials.json" },
+]
+
+# Inventory record kinds, as the check-in's `inventory` object names them
+# (field names of DeviceInventory in merlin/src/sync.rs; a test checks this).
+inventory_fields = [
+  "collected_at",
+  "package_manager",
+  "cloud_provider",
+  "cloud_instance_id",
+  "cloud_region",
+  "packages",
+  "services",
+  "users",
+  "groups",
+  "listening_ports",
+  "containers",
+  "processes",
+  "fim",
+  "sca",
+  "vulnerabilities",
+  "agent_clis",
+  "mcp_servers",
+  "agent_assets",
+  "ai_location_coverage",
+  "contacted_hosts",
+  "contacted_hosts_truncated",
+  "collection_source",
+]
+
+# Every telemetry event kind a Linux monitor writes to the spool (a test
+# checks the sources against this list).
+event_kinds = [
+  "exec",
+  "script",
+  "fork",
+  "exit",
+  "task_exit",
+  "kill",
+  "deny",
+  "connect",
+  "socket",
+  "dns",
+  "netif",
+  "file",
+  "memfd",
+  "iouring",
+  "iouring_op",
+  "cred",
+  "security",
+  "bpfcheck",
+  "health",
+]
+
+# collectors/<id>.toml: one file per collector, a table whose id is the file
+# name. order places it: collectors are listed by order, then id, so a new
+# collector picks a free number between its neighbours.
+#
+# group: checks, inventory, ai_tools, security_events or agent.
+# records: the check-in sections or event kinds the collector produces.
+# capabilities: static build capabilities that declare supported collectors.
+# retention: while_enrolled (the device record: current state is replaced on
+# check-in, and retirement/disposal leaves a device tombstone) or
+# telemetry_window (raw events, kept for the server's telemetry window).

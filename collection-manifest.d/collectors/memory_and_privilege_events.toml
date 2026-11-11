@@ -1,0 +1,9 @@
+order = 130
+id = "memory_and_privilege_events"
+group = "security_events"
+title = "Memory, privilege and kernel signals"
+what = "Anonymous memory files, io_uring use, credential changes to root, selected system calls with their numeric arguments and memory-protection transitions, and eBPF program changes. Program name and id only; no file contents or command lines."
+why = "Detecting in-memory attacks, privilege escalation and sensor tampering."
+records = ["memfd", "iouring", "iouring_op", "cred", "security", "bpfcheck"]
+capabilities = ["segment_upload"]
+retention = "telemetry_window"

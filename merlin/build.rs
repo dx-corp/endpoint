@@ -1,18 +1,100 @@
-//! Compiles the collection manifest (`../collection-manifest.toml`, its one
+//! Compiles the collection manifest (`../collection-manifest.d/`, its one
 //! declaration) into the constants `src/manifest.rs` serves, so the agent
 //! keeps `&'static` manifest data and every reader of it stays unchanged.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-const SOURCE: &str = "../collection-manifest.toml";
+const SOURCE: &str = "../collection-manifest.d";
 
 fn main() {
+    // A directory is watched with everything below it.
     println!("cargo:rerun-if-changed={SOURCE}");
-    let text = std::fs::read_to_string(SOURCE).expect("read collection-manifest.toml");
-    let manifest: toml::Table = text.parse().expect("parse collection-manifest.toml");
+    let manifest = load(Path::new(SOURCE));
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("manifest_data.rs");
     std::fs::write(out, generate(&manifest)).expect("write manifest_data.rs");
+}
+
+/// Reads the manifest directory as the one table its files declare together.
+/// Each top-level key comes from exactly one file; `collectors/` holds one
+/// table per collector, named by its `id`, listed by `order` then `id`.
+fn load(dir: &Path) -> toml::Table {
+    let mut manifest = toml::Table::new();
+    for path in toml_files(dir, Some("collectors")) {
+        for (key, value) in parse(&path) {
+            assert!(
+                key != "collectors",
+                "{}: each collector is its own file in collectors/",
+                path.display()
+            );
+            assert!(
+                manifest.insert(key.clone(), value).is_none(),
+                "{}: {key} is declared in two files",
+                path.display()
+            );
+        }
+    }
+    let mut collectors = Vec::new();
+    for path in toml_files(&dir.join("collectors"), None) {
+        let mut collector = parse(&path);
+        let order = collector
+            .remove("order")
+            .and_then(|order| order.as_integer())
+            .unwrap_or_else(|| panic!("{}: order must be an integer", path.display()));
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("a collector file name is UTF-8")
+            .to_owned();
+        assert_eq!(
+            collector.get("id").and_then(toml::Value::as_str),
+            Some(stem.as_str()),
+            "{}: id must be the file name",
+            path.display()
+        );
+        collectors.push((order, stem, collector));
+    }
+    collectors.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let collectors = collectors
+        .into_iter()
+        .map(|(_, _, collector)| toml::Value::Table(collector))
+        .collect();
+    manifest.insert("collectors".to_owned(), toml::Value::Array(collectors));
+    manifest
+}
+
+/// The `.toml` files in `dir`, by name. Anything else there, except the
+/// `subdir` directory, fails the build, so a misnamed file is never skipped.
+fn toml_files(dir: &Path, subdir: Option<&str>) -> Vec<PathBuf> {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|err| panic!("stat {}: {err}", path.display()));
+        let name = entry.file_name();
+        if kind.is_dir() && subdir.is_some_and(|subdir| name == subdir) {
+            continue;
+        }
+        assert!(
+            kind.is_file() && path.extension().is_some_and(|ext| ext == "toml"),
+            "{}: only .toml files belong here",
+            path.display()
+        );
+        files.push(path);
+    }
+    files.sort();
+    files
+}
+
+fn parse(path: &Path) -> toml::Table {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    text.parse()
+        .unwrap_or_else(|err| panic!("parse {}: {err}", path.display()))
 }
 
 /// The table's keys must be exactly `keys`: a typo fails the build.

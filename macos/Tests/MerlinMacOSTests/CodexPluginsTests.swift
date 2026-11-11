@@ -51,13 +51,13 @@ struct CodexPluginsTests {
         #expect(codexEnabledPluginNames(Data(bytes)).isEmpty)
     }
 
-    @Test("names are sorted and bounded to 128")
+    @Test("names are sorted and bounded to the finding limit")
     func bounded() {
-        let body = (0..<200).reversed().map { String(format: "[plugins.\"p%03d@m\"]\nenabled = true\n", $0) }.joined()
+        let body = (0..<(macAgentFindingLimit + 72)).reversed().map { String(format: "[plugins.\"p%03d@m\"]\nenabled = true\n", $0) }.joined()
         let result = names(body)
-        #expect(result.count == 128)
+        #expect(result.count == macAgentFindingLimit)
         #expect(result.first == "p000@m")
-        #expect(result.last == "p127@m")
+        #expect(result.last == String(format: "p%03d@m", macAgentFindingLimit - 1))
     }
 
     @Test("agent discovery reports Codex enabled plugins without configuration values")

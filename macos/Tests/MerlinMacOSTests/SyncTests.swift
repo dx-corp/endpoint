@@ -76,6 +76,17 @@ private func mockSession() -> URLSession {
     return URLSession(configuration: config)
 }
 
+private func makeAgentSkills(home: String, count: Int) throws {
+    // Keep each fixture directory below the separate 256-entry scan bound.
+    let roots = macUserAgentAssetDirs.filter { $0.1 == "skill" && $0.3 == "skill" }.map { $0.2 }
+    try #require(count <= roots.count * 200)
+    for index in 0..<count {
+        let skill = home + "/" + roots[index / 200] + String(format: "/s%04d", index)
+        try FileManager.default.createDirectory(atPath: skill, withIntermediateDirectories: true)
+        try "x".write(toFile: skill + "/SKILL.md", atomically: true, encoding: .utf8)
+    }
+}
+
 private let testKeyHex = "00112233445566778899aabbccddeeff"
 
 private func policyPublicKeyHex(seed: UInt8) -> String {
@@ -257,6 +268,20 @@ struct SyncTests {
         #expect(!plugins.contains { $0.name == "plugin-32" })
     }
 
+    @Test("more than 128 skills are all reported")
+    func manySkills() throws {
+        let home = NSTemporaryDirectory() + "merlin-many-skills-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let names = (0..<200).map { String(format: "s%03d", $0) }
+        for name in names {
+            try FileManager.default.createDirectory(atPath: home + "/.claude/skills/" + name, withIntermediateDirectories: true)
+            try "x".write(toFile: home + "/.claude/skills/" + name + "/SKILL.md", atomically: true, encoding: .utf8)
+        }
+        let assets = collectMacAgentDiscovery(homes: [home], systemBins: []).assets
+        #expect(Set(names).isSubset(of: Set(assets.filter { $0.kind == "skill" }.map(\.name))))
+        #expect(assets.count <= macAgentFindingLimit)
+    }
+
     @Test("a config is read up to its own limit and a larger one is reported not scanned")
     func configReadLimit() throws {
         let home = NSTemporaryDirectory() + "merlin-config-limit-\(UUID().uuidString)"
@@ -292,18 +317,14 @@ struct SyncTests {
         let home = NSTemporaryDirectory() + "merlin-cache-full-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: home) }
         // More skills than the asset cap, read before the plugin cache.
-        for index in 0..<140 {
-            let skill = home + String(format: "/.claude/skills/s%03d", index)
-            try FileManager.default.createDirectory(atPath: skill, withIntermediateDirectories: true)
-            try "x".write(toFile: skill + "/SKILL.md", atomically: true, encoding: .utf8)
-        }
+        try makeAgentSkills(home: home, count: macAgentFindingLimit + 20)
         let version = home + "/.claude/plugins/cache/official/slack/1.0.0"
         try FileManager.default.createDirectory(atPath: version, withIntermediateDirectories: true)
         try #"{"mcpServers":{"slack":{"type":"http","url":"https://mcp.slack.com/mcp?token=private-secret"}}}"#.write(toFile: version + "/.mcp.json", atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(atPath: home + "/.gemini/extensions/notes", withIntermediateDirectories: true)
         try #"{"mcpServers":{"notes":{"command":"npx","args":["-y","notes-mcp","--key","private-secret"]}}}"#.write(toFile: home + "/.gemini/extensions/notes/gemini-extension.json", atomically: true, encoding: .utf8)
         let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
-        #expect(discovered.assets.count <= 128)
+        #expect(discovered.assets.count == macAgentFindingLimit)
         #expect(discovered.servers.contains { $0.name == "slack" && $0.source == ".claude/plugins/cache/*/.mcp.json" })
         #expect(discovered.servers.contains { $0.name == "notes" && $0.source == ".gemini/extensions/*/gemini-extension.json" })
         #expect(!String(decoding: try JSONEncoder().encode(discovered.servers), as: UTF8.self).contains("private-secret"))
@@ -332,13 +353,9 @@ struct SyncTests {
     func truncatedCoverage() throws {
         let home = NSTemporaryDirectory() + "merlin-truncated-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: home) }
-        for index in 0..<(macAgentFindingLimit + 20) {
-            let skill = home + String(format: "/.claude/skills/s%04d", index)
-            try FileManager.default.createDirectory(atPath: skill, withIntermediateDirectories: true)
-            try "x".write(toFile: skill + "/SKILL.md", atomically: true, encoding: .utf8)
-        }
+        try makeAgentSkills(home: home, count: macAgentFindingLimit + 20)
         let discovered = collectMacAgentDiscovery(homes: [home], systemBins: [])
-        #expect(discovered.assets.count <= macAgentFindingLimit)
+        #expect(discovered.assets.count == macAgentFindingLimit)
         #expect(discovered.coverage == [.truncated("agent_assets")])
         let wire = String(decoding: try JSONEncoder().encode(discovered.coverage), as: UTF8.self)
         #expect(!wire.contains("source"))

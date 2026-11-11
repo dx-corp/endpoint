@@ -1,0 +1,9 @@
+order = 50
+id = "accounts"
+group = "inventory"
+title = "User accounts and groups"
+what = "Account names, numeric ids, whether an account is an administrator, and its login shell; group names. No passwords or password hashes."
+why = "Access control: who can sign in to the computer and with what rights."
+records = ["inventory.users", "inventory.groups"]
+capabilities = ["system_inventory"]
+retention = "while_enrolled"

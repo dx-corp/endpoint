@@ -1,0 +1,165 @@
+# Where the ai_tools collector looks, one row per location. The Linux agent
+# compiles this list in and walks it in this order; the Windows and macOS
+# collectors and the server's accepted source labels are tested against it.
+#
+# client: the AI client the finding belongs to.
+# kind: cli (an executable name looked up in the fixed bin directories),
+#   config, skill, agent, plugin or extension; or model, a local model cache
+#   the posture check model_files_unsafe_pickle reads (Linux only; not AI tool
+#   inventory, and it sends no source label).
+# path: relative to each user's home (scope user) or to each visited project
+#   directory (scope project), or an absolute path on the computer (scope
+#   system). The source label a finding carries is this path, with "project/"
+#   in front for project scope and "system" in front for system scope.
+# format: how the file or directory is read.
+#   executable        a regular executable file with this name; a symlink to
+#                     one counts (only the name is reported)
+#   json              a JSON file; MCP servers are the entries under mcp_keys;
+#                     plugins_key names an object of plugin name -> true
+#   toml              a TOML file; MCP servers are its [mcp_servers.<name>] tables
+#   codex-toml        toml, opened with no symlink anywhere below the home, and
+#                     plugins.<name> tables with enabled = true are plugins
+#   skill-dir         each child directory that holds a regular SKILL.md
+#   md                each regular *.md file, named by its stem
+#   js-ts             each regular *.js or *.ts file, named by its stem
+#   plugin-dir        each child directory; mcp_files inside it are read for
+#                     MCP servers (label <path>/*/<file>)
+#   gemini-extension  each child directory with a regular gemini-extension.json,
+#                     read for MCP servers (label <path>/*/gemini-extension.json)
+#   cursor-agent      md, opened with no symlink anywhere below the home and at
+#                     most 64 KiB
+#   cursor-plugin     each child directory whose plugin.json or
+#                     .cursor-plugin/plugin.json names it, opened with no
+#                     symlink anywhere below the home
+#   claude-plugin-cache Claude Code's plugin cache, <marketplace>/<plugin>/<version>/:
+#                     each plugin directory is a plugin; mcp_files in a version
+#                     are read for MCP servers (label <path>/*/<file>), as is
+#                     an inline mcpServers map in .claude-plugin/plugin.json
+#                     (label <path>/*/.claude-plugin/plugin.json), and each
+#                     skills/<name> with a regular SKILL.md is a skill named
+#                     <plugin>:<name> (label <path>/*/skills); a version marked
+#                     .orphaned_at is skipped; opened with no symlink anywhere
+#                     below the home, at most 256 directories per scan
+#   hf-hub            Hugging Face's hub cache: each <repo>/snapshots/<revision>
+#                     entry, a link of the form ../../blobs/<hex> resolved
+#                     lexically to the repo's blobs directory and opened with no
+#                     symlink anywhere below the home; pickle files are walked
+#                     opcode by opcode, never loaded
+#   model-dir         each pickle file below the directory, opened with no
+#                     symlink anywhere below the home, walked the same way
+#   editor-extensions each child directory named <publisher>.<name>-<version>
+#                     whose <publisher>.<name> is a declared vscode-marketplace
+#                     ai_extensions id, compared without case as the editor
+#                     does, is that extension; no other extension is named
+#   chromium-extensions each profile directory (Default or Profile <n>, at most
+#                     16) is read for Extensions/<id> directories whose id is
+#                     a declared chrome-web-store ai_extensions id; no other
+#                     extension is named
+# scope: user, project or system. A system path is read once per computer
+#   (and once per container root), opened with no symlink anywhere on it;
+#   system rows are json configs and name linux or macos platforms.
+# platforms: where the location applies; all three when absent.
+# projects_key: for a user json row, the object of per-project settings whose
+#   mcp_keys entries are project MCP servers (Claude Code keeps
+#   projects.<path>.mcpServers in ~/.claude.json); their label is
+#   <path>/<projects_key>/*. The project paths are never reported.
+# max_bytes: a user or project config row's read limit in bytes, 64 KiB when
+#   absent. A file over its limit is not read; the inventory's
+#   ai_location_coverage lists it (its source label) as not_scanned with
+#   reason too_large.
+ai_locations = [
+  { client = "codex", kind = "cli", path = "codex", format = "executable", scope = "user" },
+  { client = "claude", kind = "cli", path = "claude", format = "executable", scope = "user" },
+  { client = "cursor", kind = "cli", path = "cursor", format = "executable", scope = "user" },
+  { client = "gemini", kind = "cli", path = "gemini", format = "executable", scope = "user" },
+  { client = "opencode", kind = "cli", path = "opencode", format = "executable", scope = "user" },
+  { client = "aider", kind = "cli", path = "aider", format = "executable", scope = "user" },
+  { client = "maestro", kind = "cli", path = "maestro", format = "executable", scope = "user" },
+  { client = "amp", kind = "cli", path = "amp", format = "executable", scope = "user" },
+  { client = "goose", kind = "cli", path = "goose", format = "executable", scope = "user" },
+  { client = "qwen", kind = "cli", path = "qwen", format = "executable", scope = "user" },
+  { client = "pi", kind = "cli", path = "pi", format = "executable", scope = "user" },
+
+  { client = "cursor", kind = "agent", path = ".cursor/agents", format = "cursor-agent", scope = "user" },
+  { client = "cursor", kind = "plugin", path = ".cursor/plugins/local", format = "cursor-plugin", scope = "user" },
+  { client = "agents", kind = "skill", path = ".agents/skills", format = "skill-dir", scope = "user" },
+  { client = "codex", kind = "skill", path = ".codex/skills", format = "skill-dir", scope = "user" },
+  { client = "claude", kind = "skill", path = ".claude/skills", format = "skill-dir", scope = "user" },
+  { client = "claude", kind = "agent", path = ".claude/agents", format = "md", scope = "user" },
+  { client = "gemini", kind = "skill", path = ".gemini/skills", format = "skill-dir", scope = "user" },
+  { client = "gemini", kind = "extension", path = ".gemini/extensions", format = "gemini-extension", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "opencode", kind = "skill", path = ".config/opencode/skills", format = "skill-dir", scope = "user" },
+  { client = "opencode", kind = "plugin", path = ".config/opencode/plugins", format = "js-ts", scope = "user" },
+  { client = "opencode", kind = "agent", path = ".config/opencode/agents", format = "md", scope = "user" },
+  { client = "amp", kind = "skill", path = ".config/amp/skills", format = "skill-dir", scope = "user" },
+  { client = "qwen", kind = "skill", path = ".qwen/skills", format = "skill-dir", scope = "user" },
+  { client = "pi", kind = "skill", path = ".pi/agent/skills", format = "skill-dir", scope = "user" },
+  { client = "pi", kind = "extension", path = ".pi/agent/extensions", format = "js-ts", scope = "user" },
+  { client = "maestro", kind = "skill", path = ".composer/skills", format = "skill-dir", scope = "user" },
+  { client = "maestro", kind = "plugin", path = ".maestro/plugins", format = "plugin-dir", scope = "user", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "maestro", kind = "plugin", path = ".composer/plugins", format = "plugin-dir", scope = "user", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "claude", kind = "plugin", path = ".claude/plugins/cache", format = "claude-plugin-cache", scope = "user", platforms = ["linux", "macos"], mcp_keys = ["mcpServers", "servers"], mcp_files = [".mcp.json"] },
+  { client = "vscode", kind = "extension", path = ".vscode/extensions", format = "editor-extensions", scope = "user" },
+  { client = "chrome", kind = "extension", path = ".config/google-chrome", format = "chromium-extensions", scope = "user", platforms = ["linux"] },
+  { client = "chrome", kind = "extension", path = "Library/Application Support/Google/Chrome", format = "chromium-extensions", scope = "user", platforms = ["macos"] },
+  { client = "chrome", kind = "extension", path = "AppData/Local/Google/Chrome/User Data", format = "chromium-extensions", scope = "user", platforms = ["windows"] },
+
+  { client = "claude", kind = "config", path = ".config/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = "Library/Application Support/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = "AppData/Roaming/Claude/claude_desktop_config.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = ".claude.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"], max_bytes = 4194304, projects_key = "projects" },
+  { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "gemini", kind = "config", path = ".gemini/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = ".config/Code/User/mcp.json", format = "json", scope = "user", platforms = ["linux"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = "Library/Application Support/Code/User/mcp.json", format = "json", scope = "user", platforms = ["macos"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = "AppData/Roaming/Code/User/mcp.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcpServers", "servers"] },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "codex-toml", scope = "user", max_bytes = 4194304 },
+  { client = "opencode", kind = "config", path = ".config/opencode/opencode.json", format = "json", scope = "user", mcp_keys = ["mcp"] },
+  { client = "opencode", kind = "config", path = "AppData/Roaming/opencode/opencode.json", format = "json", scope = "user", platforms = ["windows"], mcp_keys = ["mcp"] },
+  { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "user", mcp_keys = [], plugins_key = "enabledPlugins" },
+  { client = "amp", kind = "config", path = ".config/amp/settings.json", format = "json", scope = "user", mcp_keys = ["amp.mcpServers"] },
+  { client = "qwen", kind = "config", path = ".qwen/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "pi", kind = "config", path = ".pi/agent/settings.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "maestro", kind = "config", path = ".maestro/config.toml", format = "toml", scope = "user" },
+  { client = "maestro", kind = "config", path = ".composer/config.toml", format = "toml", scope = "user" },
+  { client = "windsurf", kind = "config", path = ".codeium/windsurf/mcp_config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "copilot", kind = "config", path = ".copilot/mcp-config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "vscode", kind = "config", path = ".vscode/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "kiro", kind = "config", path = ".kiro/settings/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "antigravity", kind = "config", path = ".gemini/antigravity/mcp_config.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "amazonq", kind = "config", path = ".aws/amazonq/mcp.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "amazonq", kind = "config", path = ".aws/amazonq/agents/default.json", format = "json", scope = "user", mcp_keys = ["mcpServers", "servers"] },
+  { client = "windsurf", kind = "skill", path = ".codeium/windsurf/skills", format = "skill-dir", scope = "user" },
+  { client = "copilot", kind = "skill", path = ".copilot/skills", format = "skill-dir", scope = "user" },
+  { client = "cursor", kind = "skill", path = ".cursor/skills", format = "skill-dir", scope = "user" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/skills", format = "skill-dir", scope = "user" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/workspace/skills", format = "skill-dir", scope = "user" },
+  { client = "amp", kind = "skill", path = ".config/agents/skills", format = "skill-dir", scope = "user" },
+
+  { client = "claude", kind = "config", path = "/etc/claude-code/managed-mcp.json", format = "json", scope = "system", platforms = ["linux"], mcp_keys = ["mcpServers"] },
+  { client = "claude", kind = "config", path = "/Library/Application Support/ClaudeCode/managed-mcp.json", format = "json", scope = "system", platforms = ["macos"], mcp_keys = ["mcpServers"] },
+
+  # Model caches: https://huggingface.co/docs/huggingface_hub/guides/manage-cache,
+  # https://docs.ollama.com/faq#where-are-models-stored,
+  # https://lmstudio.ai/docs/app/advanced/import-model
+  { client = "huggingface", kind = "model", path = ".cache/huggingface/hub", format = "hf-hub", scope = "user", platforms = ["linux"] },
+  { client = "ollama", kind = "model", path = ".ollama/models", format = "model-dir", scope = "user", platforms = ["linux"] },
+  { client = "lmstudio", kind = "model", path = ".lmstudio/models", format = "model-dir", scope = "user", platforms = ["linux"] },
+
+  { client = "claude", kind = "config", path = ".mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "claude", kind = "config", path = ".claude/settings.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"], plugins_key = "enabledPlugins" },
+  { client = "cursor", kind = "config", path = ".cursor/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "codex", kind = "config", path = ".codex/config.toml", format = "toml", scope = "project", max_bytes = 4194304 },
+  { client = "opencode", kind = "config", path = ".opencode/opencode.json", format = "json", scope = "project", mcp_keys = ["mcp"] },
+  { client = "agents", kind = "config", path = ".agents/mcp.json", format = "json", scope = "project", mcp_keys = ["mcpServers", "servers"] },
+  { client = "agents", kind = "skill", path = ".agents/skills", format = "skill-dir", scope = "project" },
+  { client = "claude", kind = "skill", path = ".claude/skills", format = "skill-dir", scope = "project" },
+  { client = "claude", kind = "agent", path = ".claude/agents", format = "md", scope = "project" },
+  { client = "codex", kind = "skill", path = ".codex/skills", format = "skill-dir", scope = "project" },
+  { client = "cursor", kind = "skill", path = ".cursor/skills", format = "skill-dir", scope = "project" },
+  { client = "maestro", kind = "plugin", path = ".maestro/plugins", format = "plugin-dir", scope = "project", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "maestro", kind = "plugin", path = ".composer/plugins", format = "plugin-dir", scope = "project", mcp_keys = ["mcpServers", "servers"], mcp_files = ["mcp.json", ".mcp.json"] },
+  { client = "copilot", kind = "skill", path = ".github/skills", format = "skill-dir", scope = "project" },
+  { client = "openclaw", kind = "skill", path = ".openclaw/skills", format = "skill-dir", scope = "project" },
+  { client = "amp", kind = "skill", path = ".amp/skills", format = "skill-dir", scope = "project" },
+]
