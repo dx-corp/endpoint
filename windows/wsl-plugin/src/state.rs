@@ -13,14 +13,14 @@ use serde_json::{Value, json};
 
 use crate::ffi::{Guid, WslVersion};
 
-pub const SCHEMA_VERSION: u64 = 1;
+pub(crate) const SCHEMA_VERSION: u64 = 1;
 /// Largest scanner output accepted, as merlin caps its own child output.
-pub const MAX_SCAN_BYTES: usize = 1 << 20;
+pub(crate) const MAX_SCAN_BYTES: usize = 1 << 20;
 const MAX_CLIS: usize = 32;
 const MAX_FINDINGS: usize = 128;
 const MAX_NAME_CHARS: usize = 64;
 
-pub struct DistroState {
+pub(crate) struct DistroState {
     name: String,
     state: &'static str,
     reason: Option<&'static str>,
@@ -28,7 +28,7 @@ pub struct DistroState {
 }
 
 impl DistroState {
-    pub fn scanned(name: &str, findings: Value) -> Self {
+    pub(crate) fn scanned(name: &str, findings: Value) -> Self {
         Self {
             name: bounded_name(name),
             state: "scanned",
@@ -37,7 +37,7 @@ impl DistroState {
         }
     }
 
-    pub fn not_scanned(name: &str, reason: &'static str) -> Self {
+    pub(crate) fn not_scanned(name: &str, reason: &'static str) -> Self {
         Self {
             name: bounded_name(name),
             state: "not_scanned",
@@ -70,12 +70,12 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-pub struct StateDir {
+pub(crate) struct StateDir {
     root: PathBuf,
 }
 
 impl StateDir {
-    pub fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
@@ -98,23 +98,28 @@ impl StateDir {
         }
     }
 
-    pub fn write(&self, id: &Guid, state: &DistroState) {
+    pub(crate) fn write(&self, id: &Guid, state: &DistroState) {
         self.write_file(&format!("{}.json", id.file_stem()), &state.to_json(id));
     }
 
     /// A newly registered distribution is not scanned until it starts; an
     /// existing record, such as a scan that raced this event, is kept.
-    pub fn record_registered(&self, id: &Guid, state: &DistroState) {
+    pub(crate) fn record_registered(&self, id: &Guid, state: &DistroState) {
         if !self.path(id).exists() {
             self.write(id, state);
         }
     }
 
-    pub fn remove(&self, id: &Guid) {
+    pub(crate) fn remove(&self, id: &Guid) {
         let _ = fs::remove_file(self.path(id));
     }
 
-    pub fn write_plugin_status(&self, version: &WslVersion, scans: bool, registrations: bool) {
+    pub(crate) fn write_plugin_status(
+        &self,
+        version: &WslVersion,
+        scans: bool,
+        registrations: bool,
+    ) {
         self.write_file(
             "plugin.json",
             &json!({
@@ -131,7 +136,7 @@ impl StateDir {
 /// Accept the scanner's JSON only when it is the shape merlin prints, within
 /// its caps, and every finding carries the location the plugin asked for.
 /// The Windows collector validates names and labels again before sending.
-pub fn checked_scan(output: &[u8], location: &str) -> Option<Value> {
+pub(crate) fn checked_scan(output: &[u8], location: &str) -> Option<Value> {
     if output.len() > MAX_SCAN_BYTES {
         return None;
     }
