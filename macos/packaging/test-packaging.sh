@@ -39,6 +39,22 @@ plutil -lint "$SCRIPT_DIR/EndpointApp.Info.plist" "$SCRIPT_DIR/EndpointApp.compo
 plutil -lint "$SCRIPT_DIR/mdm/deixic-endpoint.mobileconfig" "$SCRIPT_DIR/mdm/deixic-endpoint-network-filter.mobileconfig" >/dev/null
 [ "$(plutil -extract CFBundleIdentifier raw "$SCRIPT_DIR/Collector.Info.plist")" = com.evalops.merlin.collector ]
 sh -n "$SCRIPT_DIR/build-app.sh" "$SCRIPT_DIR/validate-release-config.sh"
+bash -n "$SCRIPT_DIR/build-appcast.sh" "$SCRIPT_DIR/test-update-signing.sh"
+bash "$SCRIPT_DIR/test-update-signing.sh"
+# Exercise the actual bundle writer without rebuilding or launching the GUI.
+# The Mach-O stand-in and framework copy are signed ad hoc inside this fixture.
+SPARKLE_CACHE=${EVALOPS_TOOL_CACHE:-${RUNNER_TOOL_CACHE:+${RUNNER_TOOL_CACHE}/evalops-tools}}
+SPARKLE_CACHE=${SPARKLE_CACHE:-$HOME/.cache/evalops-tools}
+tar -xJf "$SPARKLE_CACHE/52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192" \
+  -C "$TEMP_DIR" ./Sparkle.framework
+MERLIN_RELEASE_MODE=development MERLIN_CODE_SIGN_IDENTITY=- MERLIN_NATIVE_SIGN_IN_ENABLED=0 \
+MERLIN_APP_BINARY=/usr/bin/true MERLIN_APP_OUTPUT="$TEMP_DIR/fixture.app" \
+MERLIN_SPARKLE_FRAMEWORK="$TEMP_DIR/Sparkle.framework" \
+MERLIN_UPDATE_FEED_URL=https://github.com/dx-corp/endpoint/releases/latest/download/appcast.xml \
+MERLIN_UPDATE_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+  "$SCRIPT_DIR/build-app.sh"
+[ "$(plutil -extract SURequireSignedFeed raw "$TEMP_DIR/fixture.app/Contents/Info.plist")" = true ]
+[ "$(plutil -extract SUEnableAutomaticChecks raw "$TEMP_DIR/fixture.app/Contents/Info.plist")" = true ]
 [ "$(plutil -extract MachServices.com\.evalops\.merlin\.status raw "$SCRIPT_DIR/com.evalops.merlin.plist" 2>/dev/null || true)" = true ] ||
   /usr/libexec/PlistBuddy -c 'Print :MachServices:com.evalops.merlin.status' "$SCRIPT_DIR/com.evalops.merlin.plist" | grep -q true
 if MERLIN_RELEASE_MODE=production MERLIN_CODE_SIGN_IDENTITY=- "$SCRIPT_DIR/validate-release-config.sh" >/dev/null 2>&1; then
