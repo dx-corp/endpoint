@@ -29,7 +29,7 @@ done
 set --
 for arch in $ARCHES; do
   case "$arch" in
-    arm64|x86_64) set -- "$@" --arch "$arch" ;;
+    arm64|x86_64) set -- "$@" "$arch" ;;
     *) printf 'unsupported architecture: %s\n' "$arch" >&2; exit 64 ;;
   esac
 done
@@ -47,8 +47,7 @@ if [ "$MODE" = "production" ]; then
   trap 'cp "$MANIFEST_BACKUP/Manifest.swift" "$MANIFEST_SWIFT"; cp "$MANIFEST_BACKUP/settings.toml" "$MANIFEST_TOML"; rm -rf "$MANIFEST_BACKUP"' EXIT HUP INT TERM
   "$REPO_DIR/packaging/stamp-manifest-version.sh" "$VERSION" "$REPO_DIR"
 fi
-(cd "$MACOS_DIR" && swift build -c release "$@")
-BIN_DIR=$(cd "$MACOS_DIR" && swift build -c release "$@" --show-bin-path)
+BIN_DIR=$(sh "$SCRIPT_DIR/build-universal.sh" "$MACOS_DIR" "$@")
 if [ "$MODE" = "production" ]; then
   cp "$MANIFEST_BACKUP/Manifest.swift" "$MANIFEST_SWIFT"
   cp "$MANIFEST_BACKUP/settings.toml" "$MANIFEST_TOML"
