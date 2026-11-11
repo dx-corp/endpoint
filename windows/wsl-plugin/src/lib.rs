@@ -66,7 +66,7 @@ fn guarded(body: impl FnOnce()) -> Hresult {
 /// `api` and `hooks` are null or the structs wslservice passes; `api` stays
 /// valid while the DLL is loaded.
 #[no_mangle]
-pub unsafe extern "C" fn WSLPluginAPIV1_EntryPoint(
+pub(crate) unsafe extern "C" fn WSLPluginAPIV1_EntryPoint(
     api: *const WslPluginApiV1,
     hooks: *mut WslPluginHooksV1,
 ) -> Hresult {

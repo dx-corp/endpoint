@@ -98,7 +98,7 @@ pub fn read_socket(socket: crate::ffi::Socket) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-pub use portable::{directories, read_socket, scanner_present};
+pub(crate) use portable::{directories, read_socket, scanner_present};
 
 /// The portable build exists for tests: it has no folders unless a test sets
 /// them, and reads a scanner's output from what the test queued.
@@ -108,8 +108,8 @@ pub mod portable {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    pub static DIRECTORIES: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
-    pub static SOCKETS: Mutex<Option<HashMap<usize, Vec<u8>>>> = Mutex::new(None);
+    pub(crate) static DIRECTORIES: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
+    pub(crate) static SOCKETS: Mutex<Option<HashMap<usize, Vec<u8>>>> = Mutex::new(None);
 
     pub fn directories() -> Option<(PathBuf, PathBuf)> {
         DIRECTORIES.lock().ok()?.clone()

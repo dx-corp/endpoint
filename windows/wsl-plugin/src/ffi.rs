@@ -8,26 +8,26 @@
 
 use std::ffi::{c_char, c_void};
 
-pub type Hresult = i32;
-pub type WslSessionId = u32;
+pub(crate) type Hresult = i32;
+pub(crate) type WslSessionId = u32;
 pub type Socket = usize;
-pub type Lpcwstr = *const u16;
-pub type Lpcstr = *const c_char;
+pub(crate) type Lpcwstr = *const u16;
+pub(crate) type Lpcstr = *const c_char;
 
-pub const S_OK: Hresult = 0;
+pub(crate) const S_OK: Hresult = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Guid {
-    pub data1: u32,
-    pub data2: u16,
-    pub data3: u16,
-    pub data4: [u8; 8],
+    pub(crate) data1: u32,
+    pub(crate) data2: u16,
+    pub(crate) data3: u16,
+    pub(crate) data4: [u8; 8],
 }
 
 impl Guid {
     /// Lowercase registry form without braces, used as the state file name.
-    pub fn file_stem(&self) -> String {
+    pub(crate) fn file_stem(&self) -> String {
         let d = &self.data4;
         format!(
             "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -39,73 +39,73 @@ impl Guid {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct WslVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub revision: u32,
+    pub(crate) major: u32,
+    pub(crate) minor: u32,
+    pub(crate) revision: u32,
 }
 
 impl WslVersion {
-    pub fn at_least(&self, major: u32, minor: u32, revision: u32) -> bool {
+    pub(crate) fn at_least(&self, major: u32, minor: u32, revision: u32) -> bool {
         (self.major, self.minor, self.revision) >= (major, minor, revision)
     }
 }
 
 #[repr(C)]
-pub struct WslVmCreationSettings {
-    pub custom_configuration_flags: i32,
+pub(crate) struct WslVmCreationSettings {
+    // Reserved by the OS ABI; this plugin does not inspect or change it.
+    custom_configuration_flags: i32,
 }
 
 #[repr(C)]
-pub struct WslSessionInformation {
-    pub session_id: WslSessionId,
-    pub user_token: *mut c_void,
-    pub user_sid: *mut c_void,
+pub(crate) struct WslSessionInformation {
+    pub(crate) session_id: WslSessionId,
+    pub(crate) user_token: *mut c_void,
+    pub(crate) user_sid: *mut c_void,
 }
 
 #[repr(C)]
-pub struct WslDistributionInformation {
-    pub id: Guid,
-    pub name: Lpcwstr,
-    pub pid_namespace: u64,
-    pub package_family_name: Lpcwstr,
+pub(crate) struct WslDistributionInformation {
+    pub(crate) id: Guid,
+    pub(crate) name: Lpcwstr,
+    pub(crate) pid_namespace: u64,
+    pub(crate) package_family_name: Lpcwstr,
     /// Introduced in 2.0.5.
-    pub init_pid: u32,
+    pub(crate) init_pid: u32,
 }
 
 #[repr(C)]
-pub struct WslOfflineDistributionInformation {
-    pub id: Guid,
-    pub name: Lpcwstr,
-    pub package_family_name: Lpcwstr,
+pub(crate) struct WslOfflineDistributionInformation {
+    pub(crate) id: Guid,
+    pub(crate) name: Lpcwstr,
+    pub(crate) package_family_name: Lpcwstr,
 }
 
-pub type MountFolder = unsafe extern "C" fn(
+pub(crate) type MountFolder = unsafe extern "C" fn(
     session: WslSessionId,
     windows_path: Lpcwstr,
     linux_path: Lpcwstr,
     read_only: i32,
     name: Lpcwstr,
 ) -> Hresult;
-pub type ExecuteBinary = unsafe extern "C" fn(
+pub(crate) type ExecuteBinary = unsafe extern "C" fn(
     session: WslSessionId,
     path: Lpcstr,
     arguments: *const Lpcstr,
     socket: *mut Socket,
 ) -> Hresult;
-pub type PluginError = unsafe extern "C" fn(message: Lpcwstr) -> Hresult;
-/// A slot this plugin never calls; every C function pointer has one width.
-pub type Unused = unsafe extern "C" fn();
+pub(crate) type PluginError = unsafe extern "C" fn(message: Lpcwstr) -> Hresult;
 
-pub type OnVmStarted = unsafe extern "C" fn(
+pub(crate) type OnVmStarted = unsafe extern "C" fn(
     session: *const WslSessionInformation,
     settings: *const WslVmCreationSettings,
 ) -> Hresult;
-pub type OnVmStopping = unsafe extern "C" fn(session: *const WslSessionInformation) -> Hresult;
-pub type OnDistribution = unsafe extern "C" fn(
+pub(crate) type OnVmStopping =
+    unsafe extern "C" fn(session: *const WslSessionInformation) -> Hresult;
+pub(crate) type OnDistribution = unsafe extern "C" fn(
     session: *const WslSessionInformation,
     distribution: *const WslDistributionInformation,
 ) -> Hresult;
-pub type OnOfflineDistribution = unsafe extern "C" fn(
+pub(crate) type OnOfflineDistribution = unsafe extern "C" fn(
     session: *const WslSessionInformation,
     distribution: *const WslOfflineDistributionInformation,
 ) -> Hresult;
@@ -113,32 +113,32 @@ pub type OnOfflineDistribution = unsafe extern "C" fn(
 /// `WSLPluginAPIV1`. Only the first four fields exist in every WSL build
 /// that loads plugins; the rest are never read.
 #[repr(C)]
-pub struct WslPluginApiV1 {
-    pub version: WslVersion,
-    pub mount_folder: Option<MountFolder>,
-    pub execute_binary: Option<ExecuteBinary>,
-    pub plugin_error: Option<PluginError>,
+pub(crate) struct WslPluginApiV1 {
+    pub(crate) version: WslVersion,
+    pub(crate) mount_folder: Option<MountFolder>,
+    pub(crate) execute_binary: Option<ExecuteBinary>,
+    pub(crate) plugin_error: Option<PluginError>,
 }
 
 /// `WSLPluginHooksV1`, through the 2.1.2 registration hooks. The plugin
 /// writes no later slot.
 #[repr(C)]
-pub struct WslPluginHooksV1 {
-    pub on_vm_started: Option<OnVmStarted>,
-    pub on_vm_stopping: Option<OnVmStopping>,
-    pub on_distribution_started: Option<OnDistribution>,
-    pub on_distribution_stopping: Option<OnDistribution>,
+pub(crate) struct WslPluginHooksV1 {
+    pub(crate) on_vm_started: Option<OnVmStarted>,
+    pub(crate) on_vm_stopping: Option<OnVmStopping>,
+    pub(crate) on_distribution_started: Option<OnDistribution>,
+    pub(crate) on_distribution_stopping: Option<OnDistribution>,
     /// Introduced in 2.1.2.
-    pub on_distribution_registered: Option<OnOfflineDistribution>,
+    pub(crate) on_distribution_registered: Option<OnOfflineDistribution>,
     /// Introduced in 2.1.2.
-    pub on_distribution_unregistered: Option<OnOfflineDistribution>,
+    pub(crate) on_distribution_unregistered: Option<OnOfflineDistribution>,
 }
 
 /// Reads a NUL-terminated UTF-16 string WSL owns for the duration of a hook.
 ///
 /// # Safety
 /// `value` is null or points to a NUL-terminated UTF-16 string.
-pub unsafe fn wide_to_string(value: Lpcwstr, max_units: usize) -> Option<String> {
+pub(crate) unsafe fn wide_to_string(value: Lpcwstr, max_units: usize) -> Option<String> {
     if value.is_null() {
         return None;
     }
@@ -155,7 +155,7 @@ pub unsafe fn wide_to_string(value: Lpcwstr, max_units: usize) -> Option<String>
     None
 }
 
-pub fn to_wide(value: &str) -> Vec<u16> {
+pub(crate) fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 

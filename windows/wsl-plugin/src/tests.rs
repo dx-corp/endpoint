@@ -14,7 +14,7 @@ use super::*;
 use crate::ffi::{Socket, WslVersion, to_wide};
 use crate::platform::portable;
 
-pub static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+pub(crate) static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 static SERIAL: Mutex<()> = Mutex::new(());
 static CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// What the mocked ExecuteBinary does: print this output, or fail with None.
