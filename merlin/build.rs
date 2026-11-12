@@ -173,6 +173,10 @@ fn generate(m: &toml::Table) -> String {
             "never_collected",
             "local",
             "credential_files",
+            // Read by the server (collectionmanifest.StoredEvents): which
+            // uploaded events become database rows. The agent spools every
+            // kind it collects, so nothing here is compiled in.
+            "stored_events",
         ],
         "the manifest",
     );
