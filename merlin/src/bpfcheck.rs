@@ -6,16 +6,17 @@
 //! - Our own programs or maps disappearing → WARN-level `bpfcheck` event
 //!   (tamper: someone detached or unloaded Merlin's probes).
 //!
-//! Enumeration uses raw BPF_PROG_GET_NEXT_ID / BPF_MAP_GET_NEXT_ID /
-//! BPF_OBJ_GET_INFO_BY_FD syscalls — bpftool on this host has no build
-//! matching the pve kernel ("bpftool not found for kernel 7.0.14-8"),
-//! so the shell-out path was replaced before it ever ran.
+//! Enumeration uses aya's loaded_programs / loaded_maps (the
+//! BPF_*_GET_NEXT_ID, *_GET_FD_BY_ID and OBJ_GET_INFO_BY_FD walk, with each
+//! descriptor owned by aya) — bpftool on this host has no build matching the
+//! pve kernel ("bpftool not found for kernel 7.0.14-8").
 
 use std::collections::BTreeMap;
-use std::io;
 use std::thread;
 use std::time::Duration;
 
+use aya::maps::{MapError, MapType};
+use aya::programs::{ProgramError, ProgramType};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
 
@@ -130,109 +131,89 @@ pub fn diff(prev: &BpfSnapshot, cur: &BpfSnapshot, own: &OwnIds) -> Vec<DiffEven
     out
 }
 
-const BPF_PROG_GET_NEXT_ID: i64 = 11;
-const BPF_MAP_GET_NEXT_ID: i64 = 12;
-const BPF_PROG_GET_FD_BY_ID: i64 = 15;
-const BPF_MAP_GET_FD_BY_ID: i64 = 16;
-const BPF_OBJ_GET_INFO_BY_FD: i64 = 24;
-
-// Field offsets of the name[16] member in bpf_prog_info / bpf_map_info.
-const PROG_INFO_NAME_OFF: usize = 68;
-const MAP_INFO_NAME_OFF: usize = 24;
-
-fn prog_type_name(t: u32) -> String {
-    match t {
-        1 => "socket_filter".into(),
-        2 => "kprobe".into(),
-        3 => "sched_cls".into(),
-        4 => "sched_act".into(),
-        5 => "tracepoint".into(),
-        6 => "xdp".into(),
-        7 => "perf_event".into(),
-        8 => "cgroup_skb".into(),
-        other => format!("type{other}"),
+/// The kind label of a program type: the names earlier events used for the
+/// common types, snake case of aya's name otherwise.
+fn program_kind(program_type: Result<ProgramType, ProgramError>) -> String {
+    match program_type {
+        Ok(ProgramType::SocketFilter) => "socket_filter".into(),
+        Ok(ProgramType::KProbe) => "kprobe".into(),
+        Ok(ProgramType::SchedClassifier) => "sched_cls".into(),
+        Ok(ProgramType::SchedAction) => "sched_act".into(),
+        Ok(ProgramType::TracePoint) => "tracepoint".into(),
+        Ok(ProgramType::Xdp) => "xdp".into(),
+        Ok(ProgramType::PerfEvent) => "perf_event".into(),
+        Ok(ProgramType::CgroupSkb) => "cgroup_skb".into(),
+        Ok(other) => snake_case(&format!("{other:?}")),
+        Err(_) => "unknown".into(),
     }
 }
 
-/// Walk one id space. Names read from the kernel via OBJ_GET_INFO_BY_FD;
-/// unreadable entries are skipped (races with unload are expected).
-fn enumerate(
-    get_next: i64,
-    get_fd: i64,
-    name_off: usize,
-    typed: bool,
+fn map_kind(map_type: Result<MapType, MapError>) -> String {
+    match map_type {
+        Ok(map_type) => snake_case(&format!("{map_type:?}")),
+        Err(_) => "unknown".into(),
+    }
+}
+
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Collect one id space. An object that unloads mid-walk yields an error for
+/// its id and is skipped (expected races); a walk with errors and no object
+/// at all (no privilege, no BPF) fails the snapshot.
+fn collect<E: std::fmt::Display>(
+    items: impl Iterator<Item = Result<BpfObject, E>>,
 ) -> Result<BTreeMap<u64, BpfObject>, String> {
     let mut out = BTreeMap::new();
-    let mut id: u32 = 0;
-    loop {
-        let mut attr = [0u8; 12];
-        attr[..4].copy_from_slice(&id.to_ne_bytes());
-        let rc = unsafe { libc::syscall(libc::SYS_bpf, get_next, attr.as_mut_ptr(), 12) } as i32;
-        if rc < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::ENOENT) {
-                break;
+    let mut first_error = None;
+    for item in items {
+        match item {
+            Ok(object) => {
+                out.insert(object.id, object);
             }
-            return Err(err.to_string());
-        }
-        let next = u32::from_ne_bytes(attr[4..8].try_into().unwrap());
-        let mut fdattr = [0u8; 8];
-        fdattr[..4].copy_from_slice(&next.to_ne_bytes());
-        let fd = unsafe { libc::syscall(libc::SYS_bpf, get_fd, fdattr.as_mut_ptr(), 8) } as i32;
-        id = next;
-        if fd < 0 {
-            continue;
-        }
-        let mut info = [0u8; 256];
-        let mut iattr = [0u8; 16];
-        iattr[..4].copy_from_slice(&(fd as u32).to_ne_bytes());
-        iattr[4..8].copy_from_slice(&(256u32).to_ne_bytes());
-        iattr[8..16].copy_from_slice(&(info.as_mut_ptr() as u64).to_ne_bytes());
-        let irc = unsafe {
-            libc::syscall(
-                libc::SYS_bpf,
-                BPF_OBJ_GET_INFO_BY_FD,
-                iattr.as_mut_ptr(),
-                16,
-            )
-        } as i32;
-        unsafe { libc::close(fd) };
-        if irc == 0 {
-            let ty = u32::from_ne_bytes(info[0..4].try_into().unwrap());
-            let name_bytes = &info[name_off..name_off + 16];
-            let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(16);
-            out.insert(
-                next as u64,
-                BpfObject {
-                    id: next as u64,
-                    name: String::from_utf8_lossy(&name_bytes[..end]).into_owned(),
-                    kind: if typed {
-                        prog_type_name(ty)
-                    } else {
-                        format!("type{ty}")
-                    },
-                },
-            );
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+            }
         }
     }
-    Ok(out)
+    match first_error {
+        Some(error) if out.is_empty() => Err(error),
+        _ => Ok(out),
+    }
 }
 
+/// Every loaded program and map, through aya's enumeration, which owns each
+/// descriptor it opens. (A hand-rolled bpf(2) walk here used the wrong
+/// command numbers: the "fd" it closed was a zero return code, so every scan
+/// closed descriptor 0, whatever the process had open there.)
 fn snapshot() -> Result<BpfSnapshot, String> {
-    Ok(BpfSnapshot {
-        progs: enumerate(
-            BPF_PROG_GET_NEXT_ID,
-            BPF_PROG_GET_FD_BY_ID,
-            PROG_INFO_NAME_OFF,
-            true,
-        )?,
-        maps: enumerate(
-            BPF_MAP_GET_NEXT_ID,
-            BPF_MAP_GET_FD_BY_ID,
-            MAP_INFO_NAME_OFF,
-            false,
-        )?,
-    })
+    let progs = collect(aya::programs::loaded_programs().map(|program| {
+        program.map(|program| BpfObject {
+            id: u64::from(program.id()),
+            name: program.name_as_str().unwrap_or_default().to_owned(),
+            kind: program_kind(program.program_type()),
+        })
+    }))?;
+    let maps = collect(aya::maps::loaded_maps().map(|map| {
+        map.map(|map| BpfObject {
+            id: u64::from(map.id()),
+            name: map.name_as_str().unwrap_or_default().to_owned(),
+            kind: map_kind(map.map_type()),
+        })
+    }))?;
+    Ok(BpfSnapshot { progs, maps })
 }
 
 pub fn spawn(tx: Sender<Value>) -> thread::JoinHandle<()> {
@@ -298,6 +279,57 @@ pub fn spawn(tx: Sender<Value>) -> thread::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_keep_the_established_names_and_snake_case_the_rest() {
+        assert_eq!(program_kind(Ok(ProgramType::TracePoint)), "tracepoint");
+        assert_eq!(program_kind(Ok(ProgramType::CgroupSkb)), "cgroup_skb");
+        assert_eq!(
+            program_kind(Ok(ProgramType::RawTracePoint)),
+            "raw_trace_point"
+        );
+        assert_eq!(map_kind(Ok(MapType::RingBuf)), "ring_buf");
+        assert_eq!(snake_case("PerCpuHash"), "per_cpu_hash");
+    }
+
+    #[test]
+    fn a_walk_skips_racing_ids_but_fails_when_nothing_was_read() {
+        let object = obj_id(7, "x", "kprobe");
+        let mixed = collect(vec![Err("gone"), Ok(object.clone())].into_iter()).unwrap();
+        assert_eq!(mixed.get(&7), Some(&object));
+        assert!(collect(vec![Err::<BpfObject, _>("EPERM")].into_iter()).is_err());
+        assert!(
+            collect(std::iter::empty::<Result<BpfObject, &str>>())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Root only (the bpf(2) walk needs CAP_SYS_ADMIN); skipped otherwise.
+    /// The snapshot names the loaded programs and leaves every descriptor it
+    /// did not open alone: stdin is still open afterwards.
+    #[test]
+    fn a_root_snapshot_names_programs_and_keeps_stdin_open() {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        // SAFETY: F_GETFD only reads the descriptor flags of fd 0.
+        let stdin_before = unsafe { libc::fcntl(0, libc::F_GETFD) } >= 0;
+        let first = snapshot().expect("snapshot as root");
+        for _ in 0..3 {
+            snapshot().expect("repeated snapshot as root");
+        }
+        // SAFETY: as above.
+        let stdin_after = unsafe { libc::fcntl(0, libc::F_GETFD) } >= 0;
+        assert_eq!(stdin_before, stdin_after, "a snapshot closed descriptor 0");
+        // A root test host runs systemd, whose cgroup programs are loaded.
+        assert!(
+            first.progs.values().any(|program| !program.name.is_empty()),
+            "no named program was enumerated: {:?}",
+            first.progs
+        );
+    }
 
     fn obj_id(id: u64, name: &str, kind: &str) -> BpfObject {
         BpfObject {
