@@ -1,0 +1,48 @@
+# Which telemetry events the server turns into database rows: the telemetry
+# search index (merlin_telemetry_events) and Corpus observations. The
+# compressed segment on the server's spool keeps every event an agent uploaded
+# for the telemetry window, and every reader in server/ that scans segments
+# (host summaries, correlations, spool search) still reads all of them. Only
+# the rows are narrowed, so an event left out here is still on the spool, and
+# a reader added here makes the server store its events from then on.
+#
+# One table per reader of telemetry. An event becomes a row when its kind is
+# in any reader's kinds, or when any field a reader names in when is present
+# and not empty (a non-empty string or list, true, or a non-zero number).
+# External logs (POST /v1/logs) are not sensor telemetry and are always
+# indexed.
+#
+# reader: a stable name for the reader.
+# kinds: the event kinds it reads.
+# when: event fields that make any event, of any kind, one it reads.
+# code: where the reader is, and the test that ties this table to it
+#   (server/stored_events_test.go unless named).
+# why: what the product does with these events.
+
+[[stored_events]]
+reader = "host_correlation"
+kinds = ["exec", "file", "connect", "dns", "posture", "config", "security", "deny", "kill"]
+when = []
+code = "server/correlation.go adminCorrelationEventFromRaw (TestHostCorrelationReadsExactlyItsDeclaredKinds)"
+why = "Correlations on the host page: a persistence write followed by its program running, a download or script followed by network activity, a posture finding next to network activity."
+
+[[stored_events]]
+reader = "host_summary"
+kinds = ["health", "posture", "deny", "kill"]
+when = ["signals", "matched_rules"]
+code = "server/admin.go scanAdminSegment and adminEventIsInteresting (TestHostSummaryReadsHealthPostureAndEverySignalOrRuleMatch)"
+why = "The fleet and host pages: agent health and drop rate, posture findings, and every event that carries a signal, matched a rule, or is an enforcement outcome."
+
+[[stored_events]]
+reader = "detection_rules"
+kinds = ["exec", "file", "connect", "dns", "deny", "kill"]
+when = ["matched_rules"]
+code = "the rule engines (merlin/src/rules.rs, macos Rules.swift) through the server's policy selectors, server/policy_validation.go policyMatch (TestEveryRuleSelectorReadsAStoredKind)"
+why = "Assigned rules are evaluated on these kinds; the event a rule matched, and the events of the kinds a rule can name, are the evidence for its detection."
+
+[[stored_events]]
+reader = "corpus_artifacts"
+kinds = []
+when = ["exe_sha256", "script_sha256", "file_sha256", "sha256"]
+code = "dx-corp/corpus crates/corpus-core/src/merlin.rs event_identity, which reads these fields into merlin_observation.artifact_sha256 (TestCorpusArtifactFieldsAreKept)"
+why = "Corpus keeps the observations that carry an executable, script or file hash, linked to that artifact; it counts the rest on their segment."
