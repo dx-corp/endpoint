@@ -1,0 +1,26 @@
+# Event kinds the Linux agent observes but does not write to its spool. A
+# monitor still produces them and uses them on the computer (fork and exit
+# keep the process tree that exec events' parents and ancestors come from),
+# but nothing reads them once spooled: no rule matches them, and no reader in
+# stored_events.toml reads them. An event of one of these kinds is still
+# written when it carries a field a reader names in stored_events.toml (a
+# signal, a matched rule, an artifact hash).
+#
+# The build fails if a kind here is one a stored_events reader reads, so what
+# a rule, a correlation or the host page needs is never left out. Measured on
+# an enrolled Linux build host, these three kinds were 81% of its events.
+#
+# kind: an event kind from event_kinds (settings.toml).
+# why: why the spooled copy is not needed.
+
+[[spool_drop]]
+kind = "fork"
+why = "Process lineage is kept on the computer in the process tree; exec events carry the parent and ancestors a reader needs."
+
+[[spool_drop]]
+kind = "exit"
+why = "Exits retire entries in the process tree on the computer; no rule, correlation or page reads a process ending."
+
+[[spool_drop]]
+kind = "iouring_op"
+why = "Each read and write a program submits through io_uring; the io_uring setup event (iouring) records which programs use it."

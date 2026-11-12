@@ -43,6 +43,7 @@ static EVENTS_DROPPED: AtomicU64 = AtomicU64::new(0);
 static EVENTS_WRITTEN: AtomicU64 = AtomicU64::new(0);
 static WRITE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static KERNEL_EVENTS_DROPPED: AtomicU64 = AtomicU64::new(0);
+static EVENTS_LEFT_OUT: AtomicU64 = AtomicU64::new(0);
 static BOOT_ID: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,8 @@ pub struct MetricsSnapshot {
     pub events_written: u64,
     pub write_failures: u64,
     pub kernel_events_dropped: u64,
+    /// Events of a spool_drop kind not written (collection-manifest.d).
+    pub events_left_out: u64,
 }
 
 pub fn metrics_snapshot() -> MetricsSnapshot {
@@ -63,6 +66,7 @@ pub fn metrics_snapshot() -> MetricsSnapshot {
         events_written: EVENTS_WRITTEN.load(Ordering::Relaxed),
         write_failures: WRITE_FAILURES.load(Ordering::Relaxed),
         kernel_events_dropped: KERNEL_EVENTS_DROPPED.load(Ordering::Relaxed),
+        events_left_out: EVENTS_LEFT_OUT.load(Ordering::Relaxed),
     }
 }
 
@@ -295,7 +299,41 @@ fn decorate_event(event: &mut Value) {
 
 fn write_value(spool: &mut LiveSpool, mut event: Value, now: SystemTime) -> Option<PathBuf> {
     decorate_event(&mut event);
+    if left_out(&event) {
+        EVENTS_LEFT_OUT.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
     spool.write_line(&event.to_string(), now)
+}
+
+/// Whether the spool leaves this decorated event out: its kind is declared
+/// in collection-manifest.d/spool_drop.toml and it carries none of the fields
+/// (signals, matched rules, artifact hashes) a stored_events reader keeps any
+/// event for. The build guarantees no dropped kind is one a reader reads.
+fn left_out(event: &Value) -> bool {
+    let Some(object) = event.as_object() else {
+        return false;
+    };
+    let Some(kind) = object.get("kind").and_then(Value::as_str) else {
+        return false;
+    };
+    crate::manifest::SPOOL_DROP_KINDS.contains(&kind)
+        && !crate::manifest::STORED_WHEN_FIELDS
+            .iter()
+            .any(|field| object.get(*field).is_some_and(field_present))
+}
+
+/// A field counts when it holds something: a non-empty string, list or
+/// object, true, or a non-zero number (as the server's stored-events rule).
+fn field_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+    }
 }
 
 fn health_event(config: &HealthConfig) -> Value {
@@ -322,6 +360,7 @@ fn health_event(config: &HealthConfig) -> Value {
         "events_written": metrics.events_written,
         "write_failures": metrics.write_failures,
         "kernel_events_dropped": metrics.kernel_events_dropped,
+        "events_left_out": metrics.events_left_out,
     })
 }
 
@@ -827,6 +866,62 @@ mod tests {
         }
         assert!(!text.contains("synthetic_secret") && !text.contains("synthetic_password"));
         cleanup(&live);
+    }
+
+    #[test]
+    fn unread_kinds_stay_out_of_the_spool_unless_a_reader_needs_the_event() {
+        let live = tmp("spool-drop");
+        let mut spool = LiveSpool::open(live.clone(), SegmentConfig::default()).unwrap();
+        let before = metrics_snapshot().events_left_out;
+        let hash = "ab".repeat(32);
+        let events = [
+            serde_json::json!({"kind": "fork", "pid": 7, "comm": "git"}),
+            serde_json::json!({"kind": "exit", "pid": 7, "comm": "git", "exit_code": 0}),
+            serde_json::json!({"kind": "iouring_op", "pid": 9, "comm": "kvm", "op": "read"}),
+            serde_json::json!({"kind": "exec", "pid": 8, "exe": "/usr/bin/git"}),
+            serde_json::json!({"kind": "fork", "pid": 10, "matched_rules": ["a-rule"]}),
+            serde_json::json!({"kind": "exit", "pid": 11, "exe_sha256": hash}),
+            serde_json::json!({"kind": "fork", "pid": 12, "matched_rules": []}),
+        ];
+        for event in events {
+            write_value(&mut spool, event, at(1000));
+        }
+        let written: Vec<(String, u64)> = fs::read_to_string(&live)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let event: Value = serde_json::from_str(line).unwrap();
+                (
+                    event["kind"].as_str().unwrap().to_owned(),
+                    event["pid"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            written,
+            vec![
+                ("exec".to_owned(), 8),
+                ("fork".to_owned(), 10),
+                ("exit".to_owned(), 11)
+            ]
+        );
+        // Other tests write concurrently; this test's four are at least counted.
+        assert!(metrics_snapshot().events_left_out >= before + 4);
+        cleanup(&live);
+    }
+
+    #[test]
+    fn spool_drop_names_only_declared_kinds_and_keeps_rule_matches() {
+        assert!(!crate::manifest::SPOOL_DROP_KINDS.is_empty());
+        for kind in crate::manifest::SPOOL_DROP_KINDS {
+            assert!(crate::manifest::EVENT_KINDS.contains(kind), "{kind}");
+        }
+        for field in ["signals", "matched_rules"] {
+            assert!(
+                crate::manifest::STORED_WHEN_FIELDS.contains(&field),
+                "an event with {field} must always be spooled"
+            );
+        }
     }
 
     #[test]

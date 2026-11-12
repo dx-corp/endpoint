@@ -157,6 +157,76 @@ fn variant(table: &toml::Table, key: &str, allowed: &[&str]) -> String {
         .collect()
 }
 
+/// `spool_drop` as SPOOL_DROP_KINDS, and the fields any `stored_events`
+/// reader keeps an event for as STORED_WHEN_FIELDS. The build fails when a dropped kind
+/// is not one a monitor writes, has no reason, or is one some reader of
+/// telemetry (a rule, a correlation, the host page) reads: what a reader
+/// needs can never be left out of the spool.
+fn spool_filter(m: &toml::Table) -> String {
+    let mut stored_kinds = std::collections::BTreeSet::new();
+    let mut stored_when = std::collections::BTreeSet::new();
+    for reader in tables(m, "stored_events") {
+        let reader = exact(
+            reader,
+            &["reader", "kinds", "when", "code", "why"],
+            "a stored_events reader",
+        );
+        for (key, set) in [("kinds", &mut stored_kinds), ("when", &mut stored_when)] {
+            for item in reader[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("stored_events {key} must be an array"))
+            {
+                set.insert(
+                    item.as_str()
+                        .unwrap_or_else(|| panic!("stored_events {key} holds strings"))
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    let event_kinds: Vec<&str> = m["event_kinds"]
+        .as_array()
+        .expect("event_kinds must be an array")
+        .iter()
+        .map(|kind| kind.as_str().expect("event_kinds holds strings"))
+        .collect();
+    let mut dropped = std::collections::BTreeSet::new();
+    for row in tables(m, "spool_drop") {
+        let row = exact(row, &["kind", "why"], "a spool_drop row");
+        let kind = row["kind"]
+            .as_str()
+            .expect("spool_drop kind must be a string");
+        let why = row["why"]
+            .as_str()
+            .expect("spool_drop why must be a string");
+        assert!(
+            !why.trim().is_empty(),
+            "spool_drop {kind}: why must say why"
+        );
+        assert!(
+            event_kinds.contains(&kind),
+            "spool_drop {kind}: not an event kind a Linux monitor writes"
+        );
+        assert!(
+            !stored_kinds.contains(kind),
+            "spool_drop {kind}: a stored_events reader reads this kind; it cannot be left out of the spool"
+        );
+        assert!(
+            dropped.insert(kind.to_owned()),
+            "spool_drop {kind}: listed twice"
+        );
+    }
+    let list = |set: &std::collections::BTreeSet<String>| {
+        let quoted: Vec<String> = set.iter().map(|item| format!("{item:?}")).collect();
+        format!("&[{}]", quoted.join(", "))
+    };
+    format!(
+        "pub const SPOOL_DROP_KINDS: &[&str] = {};\npub const STORED_WHEN_FIELDS: &[&str] = {};\n",
+        list(&dropped),
+        list(&stored_when)
+    )
+}
+
 fn generate(m: &toml::Table) -> String {
     let m = exact(
         m,
@@ -173,10 +243,11 @@ fn generate(m: &toml::Table) -> String {
             "never_collected",
             "local",
             "credential_files",
-            // Read by the server (collectionmanifest.StoredEvents): which
-            // uploaded events become database rows. The agent spools every
-            // kind it collects, so nothing here is compiled in.
+            // Which uploaded events become database rows (the server reads
+            // it as collectionmanifest.StoredEvents); the agent compiles the
+            // kinds and fields it must never leave out of its spool.
             "stored_events",
+            "spool_drop",
         ],
         "the manifest",
     );
@@ -198,6 +269,7 @@ fn generate(m: &toml::Table) -> String {
         strings(m, "event_kinds")
     )
     .unwrap();
+    out.push_str(&spool_filter(m));
     out.push_str("pub const COLLECTORS: &[Collector] = &[\n");
     for c in tables(m, "collectors") {
         let c = exact(
