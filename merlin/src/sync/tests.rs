@@ -108,7 +108,12 @@ fn rules_response(sha: &str, body: &str, signing_seed: u8) -> String {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("merlin-sync-test-{}-{tag}", std::process::id()));
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "merlin-sync-test-{}-{tag}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
