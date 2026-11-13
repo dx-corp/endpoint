@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara", "borg", "ts-rs"]);
+const NAMES = new Set(["endpoint", "private-runner", "private-deployment", "api", "examples", "plugins", "capobara", "borg", "ts-rs", "corpus"]);
 const SHA = /^[0-9a-f]{40}$/;
 const HEX = /^[0-9a-f]{64}$/;
 // `toolDigest` is the one provenance field with two legitimate shapes. Node
@@ -394,6 +394,32 @@ async function validateBorg(root, files) {
   requireValue(member?.name === "borg", "borg standalone workspace member is not the crate");
 }
 
+// `corpus` is the Mono-owned Corpus service source published back to
+// dx-corp/corpus. The tree must stay a standalone Cargo workspace with its own
+// lockfile, migrations and container build, and must not carry Mono-only
+// surfaces. Destination-owned `.github/**` is legitimately present. The destination's own CI and image publisher own compile proof.
+const CORPUS_MEMBERS = ["corpus-agent", "corpus-core", "corpus-scanner", "corpus-server", "corpusctl"];
+
+async function validateCorpus(root, files) {
+  for (const required of ["Cargo.toml", "Cargo.lock", "Dockerfile", "LICENSE", "README.md", "rustfmt.toml"]) {
+    requireValue(files.includes(required), `corpus is missing ${required}`);
+  }
+  requireValue(files.some(path => /^migrations\/[^/]+\.sql$/.test(path)), "corpus is missing its migrations");
+  for (const path of files) {
+    requireValue(!/(?:^|\/)hawk\.toml$/.test(path), `corpus contains a Mono-only path: ${path}`);
+  }
+  for (const manifest of files.filter(path => /(^|\/)Cargo\.toml$/.test(path))) {
+    const text = await readFile(join(root, manifest), "utf8");
+    requireValue(!/\bpath\s*=\s*"\.\.\/\.\.\/\.\./.test(text), `corpus ${manifest} reaches outside the projected tree`);
+  }
+  const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1", "--no-deps"], root));
+  const members = metadata.workspace_members
+    .map(id => metadata.packages.find(pkg => pkg.id === id)?.name)
+    .sort();
+  requireValue(JSON.stringify(members) === JSON.stringify(CORPUS_MEMBERS),
+    `corpus standalone workspace members changed: ${members.join(", ")}`);
+}
+
 // The projected macro is standalone, without a committed Cargo.lock. Resolve
 // its manifest and check the applied repair here; destination CI owns compile
 // proof, which alone does not prove deterministic macro expansion.
@@ -437,7 +463,7 @@ export async function validateDistribution({ name, target }) {
   await validateProvenance(name, root);
   const validators = {
     endpoint: validateEndpoint, "private-runner": validateRunner, "private-deployment": validateDeployment,
-    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara, borg: validateBorg, "ts-rs": validateTsRs,
+    api: validateApi, examples: validateExamples, plugins: validatePlugins, capobara: validateCapobara, borg: validateBorg, "ts-rs": validateTsRs, corpus: validateCorpus,
   };
   await validators[name](root, files);
   return { name, target: root, files: files.length, valid: true };
