@@ -245,6 +245,48 @@ async function validateExamples(root, files) {
   requireValue(pythonResult.status === "error" && pythonResult.kind === "configuration", "Python example returned an unexpected check result");
 }
 
+// The `deixic` package is one directory read by three clients. Each client
+// has its own manifest; all of them must name the same plugin, the same
+// version and the same single tokenless server, so a release cannot ship a
+// Cursor or ChatGPT entry that points somewhere the Claude entry does not.
+const WORKSPACE_PLUGIN = "deixic";
+const WORKSPACE_MCP_URL = "https://app.deixic.com/mcp/workspace";
+const LISTING_URL = /^https:\/\/www\.deixic\.com\/[a-z][a-z/-]*$/;
+
+async function validateWorkspacePluginClients(root, files, claudeManifest) {
+  const pluginRoot = join(root, "plugins", WORKSPACE_PLUGIN);
+  const prefix = `plugins/${WORKSPACE_PLUGIN}/`;
+  const json = async path => JSON.parse(await readFile(join(pluginRoot, path), "utf8"));
+  const packaged = path => typeof path === "string" && !path.includes("..")
+    && files.includes(prefix + path.replace(/^\.\//, ""));
+  // One server file, the name Claude requires; Cursor and ChatGPT name it.
+  requireValue(JSON.stringify((await json(".mcp.json")).mcpServers)
+    === JSON.stringify({ [WORKSPACE_PLUGIN]: { type: "http", url: WORKSPACE_MCP_URL } })
+    && !files.includes(`${prefix}mcp.json`), "workspace plugin clients do not share one tokenless MCP server");
+  const cursor = await json(".cursor-plugin/plugin.json");
+  const codex = await json(".codex-plugin/plugin.json");
+  for (const manifest of [cursor, codex]) {
+    requireValue(manifest.name === claudeManifest.name && manifest.version === claudeManifest.version
+      && manifest.license === claudeManifest.license && manifest.mcpServers === "./.mcp.json"
+      && manifest.skills === "./skills/", "workspace plugin manifests disagree");
+  }
+  requireValue(cursor.commands === "./commands/" && packaged(cursor.logo), "Cursor plugin manifest is invalid");
+  const listing = codex.interface ?? {};
+  requireValue(typeof listing.displayName === "string" && listing.displayName.length > 0 && listing.displayName.length <= 30
+    && typeof listing.longDescription === "string" && listing.longDescription.length > 0
+    && listing.longDescription.length <= 4000 && typeof listing.category === "string" && listing.category.length > 0
+    && packaged(listing.logo), "ChatGPT plugin listing is invalid");
+  for (const url of [listing.websiteURL, listing.privacyPolicyURL, listing.termsOfServiceURL,
+    claudeManifest.documentationUrl, claudeManifest.privacyPolicyUrl, claudeManifest.termsOfServiceUrl]) {
+    requireValue(url === "https://www.deixic.com" || LISTING_URL.test(url ?? ""), "workspace plugin listing URL is invalid");
+  }
+  requireValue(packaged(claudeManifest.icon) && files.includes(`${prefix}README.md`), "workspace plugin listing files are missing");
+  const cursorCatalog = JSON.parse(await readFile(join(root, ".cursor-plugin", "marketplace.json"), "utf8"));
+  requireValue(cursorCatalog.name === "deixic" && typeof cursorCatalog.owner?.name === "string"
+    && cursorCatalog.plugins?.length === 1 && cursorCatalog.plugins[0].name === WORKSPACE_PLUGIN
+    && cursorCatalog.plugins[0].source === `plugins/${WORKSPACE_PLUGIN}`, "Cursor marketplace is invalid");
+}
+
 async function validatePlugins(root, files) {
   const catalog = JSON.parse(await readFile(join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
   exactKeys(catalog, ["name", "interface", "plugins"], "marketplace");
@@ -276,6 +318,10 @@ async function validatePlugins(root, files) {
     if (entry.name === "deixic-code-skills") {
       requireValue(entry.category === "Developer Tools" && manifest.license === "BUSL-1.1", "code plugin metadata changed");
       requireValue(JSON.stringify(skillDirectories) === JSON.stringify(SKILLS), "plugin skill allowlist changed");
+    } else if (entry.name === WORKSPACE_PLUGIN) {
+      // The one package that connects to a service. Its server entry is
+      // checked below, once, for every client's manifest.
+      requireValue(manifest.mcpServers === "./.mcp.json", "workspace plugin does not name its MCP server file");
     } else {
       const native = JSON.parse(await readFile(join(pluginRoot, ".plugin", "plugin.json"), "utf8"));
       exactKeys(native, ["name", "version", "description", "skills"], "native skill-only manifest");
@@ -307,8 +353,8 @@ async function validatePlugins(root, files) {
   requireValue(pluginNames.has("deixic-code-skills"), "existing code plugin is missing");
   const pluginDirectories = (await readdir(join(root, "plugins"), { withFileTypes: true }))
     .filter(value => value.isDirectory()).map(value => value.name).sort();
-  requireValue(JSON.stringify(pluginDirectories) === JSON.stringify([...pluginNames, "deixic"].sort()),
-    "uncataloged plugin directory");
+  requireValue(pluginNames.has(WORKSPACE_PLUGIN)
+    && JSON.stringify(pluginDirectories) === JSON.stringify([...pluginNames].sort()), "uncataloged plugin directory");
   const claudeCatalog = JSON.parse(await readFile(join(root, ".claude-plugin", "marketplace.json"), "utf8"));
   requireValue(claudeCatalog.name === "deixic" && claudeCatalog.plugins?.length === 1
     && claudeCatalog.plugins[0].name === "deixic" && claudeCatalog.plugins[0].source === "./plugins/deixic", "Claude marketplace is invalid");
@@ -318,6 +364,7 @@ async function validatePlugins(root, files) {
     && JSON.stringify(Object.keys(claudeServers)) === '["deixic"]' && claudeServers.deixic.type === "http"
     && claudeServers.deixic.url === "https://app.deixic.com/mcp/workspace" && !claudeServers.deixic.headers, "Claude plugin is invalid");
   requireValue(files.includes("plugins/deixic/LICENSE"), "Claude plugin license is missing");
+  await validateWorkspacePluginClients(root, files, claudeManifest);
   for (const path of files) requireValue(!/(?:prompt-audit|session-history|product-kit)/i.test(path), `private plugin surface: ${path}`);
 }
 
