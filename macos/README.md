@@ -4,7 +4,7 @@ The macOS agent is a Swift Package with process, network, file, persistence,
 and security telemetry providers. It shares the public rule and spool contracts
 with the Linux agent while using native macOS sources and capability checks.
 
-Build and run the standalone test matrix with:
+Run the following from `macos/` in the prepared Endpoint source distribution:
 
 ```sh
 swift package resolve
@@ -12,8 +12,9 @@ swift test
 ./test-client.sh
 ```
 
-Build an unsigned local package with `./build.sh`. Packaging helpers live under
-`packaging/`; pass signing identities only through their documented environment
+`./build.sh` builds and locally signs the Swift binaries; it does not assemble
+an installer package. Use `packaging/build-pkg.sh` for the local package workflow.
+Pass signing identities through the packaging scripts' documented environment
 variables and never commit them. A distributable package additionally requires
 Apple-issued entitlements, Developer ID application and installer certificates,
 notarization, and stapling.
