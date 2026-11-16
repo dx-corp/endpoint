@@ -1,10 +1,13 @@
 # Which telemetry events the server turns into database rows: the telemetry
 # search index (merlin_telemetry_events) and Corpus observations. The
 # compressed segment on the server's spool keeps every event an agent uploaded
-# for the telemetry window, and every reader in server/ that scans segments
-# (host summaries, correlations, spool search) still reads all of them. Only
-# the rows are narrowed, so an event left out here is still on the spool, and
-# a reader added here makes the server store its events from then on.
+# for the telemetry window, and the readers in server/ that scan segments
+# (host summaries, correlations) still read all of them. Operator telemetry
+# search (GET /v1/admin/search) does not: wherever the server has its database
+# it answers from these rows only, so an event left out here cannot be found
+# by search (it is still on the spool), and the search response names the
+# kinds it holds whole (indexed_kinds). A reader added here makes the server
+# store its events from then on.
 #
 # One table per reader of telemetry. An event becomes a row when its kind is
 # in any reader's kinds, or when any field a reader names in when is present
@@ -46,3 +49,10 @@ kinds = []
 when = ["exe_sha256", "script_sha256", "file_sha256", "sha256"]
 code = "dx-corp/corpus crates/corpus-core/src/merlin.rs event_identity, which reads these fields into merlin_observation.artifact_sha256 (TestCorpusArtifactFieldsAreKept)"
 why = "Corpus keeps the observations that carry an executable, script or file hash, linked to that artifact; it counts the rest on their segment."
+
+[[stored_events]]
+reader = "telemetry_search"
+kinds = ["cred", "bpfcheck"]
+when = []
+code = "server/log_search.go searchTelemetry, which answers from the stored rows and reports the kinds they hold whole (TestTelemetrySearchHoldsPrivilegeChangesAndSensorTamper)"
+why = "An operator investigating a computer searches for privilege changes (cred: a program changing its user id, with to_root) and for changes to the sensor's own probes (bpfcheck, with tamper). Neither kind carries a signal, so no other reader keeps them."
