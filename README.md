@@ -6,7 +6,8 @@ telemetry with rule-backed local responses. The implementation retains the
 for compatibility.
 
 This source distribution contains the Linux Rust agent, its eBPF collector,
-the macOS Swift agent, rules and content packs, packaging scripts, and tests.
+the macOS Swift agent, Windows inventory collector and WSL plugin, rules and
+content packs, packaging scripts, and tests.
 The managed sync service and admin application are separate private services
 and are not part of this repository.
 
@@ -23,7 +24,7 @@ sudo ./target/release/merlin check --json
 sudo ./target/release/merlin run --rules rules/block-demo.yaml
 ```
 
-`run` needs the Linux capabilities required for eBPF and fanotify. The example
+`run` needs the Linux capabilities required for eBPF and `fanotify`. The example
 rules are for review and testing; evaluate them against your environment before
 enforcement.
 
@@ -51,4 +52,5 @@ node scripts/distribution-validation.mjs --name endpoint --target .
 
 On Linux the validator runs the deterministic package test. On macOS it checks
 the package scripts syntactically because the package builder requires GNU tar.
-It also validates Cargo metadata and runs the shared agent tests on both hosts.
+It also validates Cargo metadata and runs the shared agent tests. Agents must
+run this validator on dev-desktop through cargo-slot because it compiles Rust.
