@@ -136,8 +136,8 @@ pub(crate) const MAX_COVERAGE: usize = 32;
 
 /// MCP servers, and agent assets, reported per inventory (each; the server's
 /// limit), host and containers together; a list that reaches it is reported
-/// as truncated.
-pub(crate) const MAX_AGENT_FINDINGS: usize = 512;
+/// as truncated. Declared once, as the manifest's `ai_findings_cap`.
+pub(crate) const MAX_AGENT_FINDINGS: usize = crate::manifest::AI_FINDINGS_CAP;
 
 impl DeviceAiLocationCoverage {
     /// A list (`mcp_servers` or `agent_assets`) that reached its cap and so

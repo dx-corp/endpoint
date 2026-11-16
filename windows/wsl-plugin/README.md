@@ -17,8 +17,9 @@ the [Windows collector guide](../README.md).
   `/deixic-endpoint/merlin scan-ai-locations --root /proc/<init pid>/root
   --location wsl:<name>` with `ExecuteBinary`. That static scanner chroots into
   the distribution and prints names and labels only. The plugin accepts the
-  output only when it is the scanner's JSON, within its caps (32 CLIs, 128 MCP
-  servers, 128 assets, 1 MiB, 30 seconds), with every finding tagged with the
+  output only when it is the scanner's JSON, within its caps (32 CLIs, and as many MCP
+  servers and assets as the scanner prints, the collection manifest's
+  `ai_findings_cap`; 1 MiB, 30 seconds), with every finding tagged with the
   requested location.
 - **A distribution is registered** (`OnDistributionRegistered`, WSL 2.1.2+):
   it is recorded as not scanned until it starts. **Unregistered**: its record

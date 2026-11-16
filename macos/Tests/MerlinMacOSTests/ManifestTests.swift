@@ -144,6 +144,15 @@ struct ManifestTests {
         #expect(probed == declared, "not probed: \(declared.subtracting(probed).sorted()); not declared: \(probed.subtracting(declared).sorted())")
     }
 
+    @Test("the findings limit is the declared ai_findings_cap")
+    func findingsLimitMatchesManifest() throws {
+        let source = try declaredManifestSource()
+        let declared = source.split(separator: "\n")
+            .first { $0.hasPrefix("ai_findings_cap = ") }
+            .flatMap { Int($0.dropFirst("ai_findings_cap = ".count).trimmingCharacters(in: .whitespaces)) }
+        #expect(declared == macAgentFindingLimit)
+    }
+
     @Test("config read limits match the declared max_bytes")
     func readLimitsMatchManifest() throws {
         let source = try declaredManifestSource()

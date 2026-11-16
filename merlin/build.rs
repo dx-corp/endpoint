@@ -236,6 +236,7 @@ fn generate(m: &toml::Table) -> String {
             "inventory_fields",
             "event_kinds",
             "ai_locations",
+            "ai_findings_cap",
             "ai_agent_processes",
             "ai_extensions",
             "ai_content_rules",
@@ -257,6 +258,11 @@ fn generate(m: &toml::Table) -> String {
     let mut out = String::new();
     writeln!(out, "pub const MANIFEST_VERSION: u32 = {version};").unwrap();
     writeln!(out, "pub const JOURNAL: &str = {};", string(m, "journal")).unwrap();
+    let findings_cap = m["ai_findings_cap"]
+        .as_integer()
+        .filter(|cap| (1..=4096).contains(cap))
+        .expect("ai_findings_cap must be an integer from 1 to 4096");
+    writeln!(out, "pub const AI_FINDINGS_CAP: usize = {findings_cap};").unwrap();
     writeln!(
         out,
         "pub const INVENTORY_FIELDS: &[&str] = {};",

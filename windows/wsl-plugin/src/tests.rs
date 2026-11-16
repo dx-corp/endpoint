@@ -432,12 +432,23 @@ fn null_arguments_and_missing_folders_never_fail_the_load() {
 #[test]
 fn checked_scan_keeps_the_caps() {
     let location = "wsl:Ubuntu";
-    let many = serde_json::json!({
-        "clis": [],
-        "mcp_servers": vec![serde_json::json!({"location": location}); 129],
-        "agent_assets": [],
-    });
-    assert!(state::checked_scan(&serde_json::to_vec(&many).unwrap(), location).is_none());
+    let scan = |servers: usize, assets: usize| {
+        let scan = serde_json::json!({
+            "clis": [],
+            "mcp_servers": vec![serde_json::json!({"location": location}); servers],
+            "agent_assets": vec![serde_json::json!({"location": location}); assets],
+        });
+        state::checked_scan(&serde_json::to_vec(&scan).unwrap(), location)
+    };
+    // The scanner prints up to the declared cap of each list; a full scan is
+    // a scan, not a failure (a home with 129 skills used to be dropped).
+    let cap = state::MAX_FINDINGS;
+    let full = scan(cap, cap).expect("a scan at the scanner's own cap is accepted");
+    assert_eq!(full["mcp_servers"].as_array().unwrap().len(), cap);
+    assert_eq!(full["agent_assets"].as_array().unwrap().len(), cap);
+    assert!(scan(129, 129).is_some());
+    assert!(scan(cap + 1, 0).is_none());
+    assert!(scan(0, cap + 1).is_none());
     assert!(state::checked_scan(&vec![b' '; state::MAX_SCAN_BYTES + 1], location).is_none());
     assert!(state::checked_scan(b"{\"clis\":[]}", location).is_none());
     assert!(Path::new(MOUNT_POINT).is_absolute());
