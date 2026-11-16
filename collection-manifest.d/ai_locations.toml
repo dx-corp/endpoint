@@ -67,6 +67,15 @@
 #   absent. A file over its limit is not read; the inventory's
 #   ai_location_coverage lists it (its source label) as not_scanned with
 #   reason too_large.
+
+# The most MCP servers, and the most agent assets, one inventory reports
+# (each list, host, containers and WSL distributions together). A list that
+# reaches it is reported as truncated: "at least", never the whole count.
+# This is the one declaration: the Linux and Windows collectors and the WSL
+# plugin compile it in, and the macOS collector's and the server's limits are
+# tested against it.
+ai_findings_cap = 512
+
 ai_locations = [
   { client = "codex", kind = "cli", path = "codex", format = "executable", scope = "user" },
   { client = "claude", kind = "cli", path = "claude", format = "executable", scope = "user" },

@@ -82,12 +82,26 @@ fn state() -> std::sync::MutexGuard<'static, State> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The hour `now` falls in: what `last_seen` holds.
+fn hour_of(now: u64) -> u64 {
+    now - now % LAST_SEEN_STEP
+}
+
+/// Whether a first and a last sighting can belong to one entry. `first_seen`
+/// is exact and `last_seen` is the start of an hour, so a host seen once at
+/// 10:20 has first 10:20 and last 10:00: the last sighting is less than one
+/// step before the first, never more. (The server accepts the same range.)
+/// `note` writes entries and `restore` reads them back, so both go by this.
+fn sightings_agree(first: u64, last: u64) -> bool {
+    first > 0 && first < last.saturating_add(LAST_SEEN_STEP)
+}
+
 impl State {
     fn note(&mut self, client: &str, mcp_package: &str, host: String, now: u64) {
         let key = (client.to_owned(), mcp_package.to_owned(), host);
         if let Some((_, last)) = self.hosts.get_mut(&key) {
             if now >= *last + LAST_SEEN_STEP {
-                *last = now - now % LAST_SEEN_STEP;
+                *last = hour_of(now);
                 self.dirty = true;
             }
             return;
@@ -99,7 +113,7 @@ impl State {
             }
             return;
         }
-        self.hosts.insert(key, (now, now - now % LAST_SEEN_STEP));
+        self.hosts.insert(key, (now, hour_of(now)));
         self.dirty = true;
     }
 
@@ -138,7 +152,7 @@ impl State {
                 == Some(&h.host)
                 && !h.client.is_empty()
                 && h.client.len() <= 64
-                && h.first_seen_unix <= h.last_seen_unix;
+                && sightings_agree(h.first_seen_unix, h.last_seen_unix);
             if valid {
                 self.hosts.insert(
                     (h.client, h.mcp_package, h.host),
@@ -463,6 +477,85 @@ mod tests {
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(read_file(&link).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every entry `note` can write comes back from the kept file: a host
+    /// seen once (whose hourly last sighting is before its first), a host
+    /// seen again hours later, and one seen exactly on the hour.
+    #[test]
+    fn hosts_seen_once_survive_a_restart() {
+        let mut s = State::default();
+        let t0 = 1_800_000_123;
+        assert_ne!(t0 % LAST_SEEN_STEP, 0);
+        s.note("claude", "", "once.example.com".into(), t0);
+        s.note("claude", "", "again.example.com".into(), t0);
+        s.note(
+            "claude",
+            "",
+            "again.example.com".into(),
+            t0 + 3 * LAST_SEEN_STEP,
+        );
+        s.note("claude", "", "on-the-hour.example.com".into(), hour_of(t0));
+        let mut before = s.list();
+        before.sort_by(|a, b| a.host.cmp(&b.host));
+        assert_eq!(before.len(), 3);
+        assert!(
+            before
+                .iter()
+                .all(|h| sightings_agree(h.first_seen_unix, h.last_seen_unix))
+        );
+
+        let kept = serde_json::to_vec(&Saved {
+            hosts: before.clone(),
+            truncated: false,
+        })
+        .unwrap();
+        let mut restarted = State::default();
+        restarted.restore(serde_json::from_slice(&kept).unwrap());
+        let mut after = restarted.list();
+        after.sort_by(|a, b| a.host.cmp(&b.host));
+        let pairs = |list: &[DeviceContactedHost]| -> Vec<(String, u64, u64)> {
+            list.iter()
+                .map(|h| (h.host.clone(), h.first_seen_unix, h.last_seen_unix))
+                .collect()
+        };
+        assert_eq!(pairs(&after), pairs(&before));
+        // Seen again after the restart, the first sighting is still the first.
+        restarted.note("claude", "", "once.example.com".into(), t0 + 86_400);
+        let once = restarted
+            .list()
+            .into_iter()
+            .find(|h| h.host == "once.example.com")
+            .unwrap();
+        assert_eq!(once.first_seen_unix, t0);
+    }
+
+    #[test]
+    fn a_kept_entry_whose_sightings_cannot_be_ours_is_dropped() {
+        let entry = |first, last| DeviceContactedHost {
+            client: "claude".into(),
+            mcp_package: String::new(),
+            host: "api.anthropic.com".into(),
+            first_seen_unix: first,
+            last_seen_unix: last,
+        };
+        for (first, last, kept) in [
+            (7_200 + 1_200, 7_200, true),
+            (7_200, 7_200, true),
+            (7_200 + LAST_SEEN_STEP, 7_200, false),
+            (0, 7_200, false),
+        ] {
+            let mut s = State::default();
+            s.restore(Saved {
+                hosts: vec![entry(first, last)],
+                truncated: false,
+            });
+            assert_eq!(
+                s.list().len(),
+                usize::from(kept),
+                "first {first}, last {last}"
+            );
+        }
     }
 
     static SHARED: Mutex<()> = Mutex::new(());

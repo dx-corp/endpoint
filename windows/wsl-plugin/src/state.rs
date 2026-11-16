@@ -17,7 +17,9 @@ pub(crate) const SCHEMA_VERSION: u64 = 1;
 /// Largest scanner output accepted, as merlin caps its own child output.
 pub(crate) const MAX_SCAN_BYTES: usize = 1 << 20;
 const MAX_CLIS: usize = 32;
-const MAX_FINDINGS: usize = 128;
+// The scanner truncates each list at the manifest's `ai_findings_cap`; a
+// smaller cap here would report a large distribution as not scanned.
+include!(concat!(env!("OUT_DIR"), "/caps.rs"));
 const MAX_NAME_CHARS: usize = 64;
 
 pub(crate) struct DistroState {
