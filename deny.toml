@@ -14,7 +14,7 @@ targets = [
 version = 2
 yanked = "deny"
 ignore = [
-  { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 remains unmaintained through merlin -> yara-x 1.22.1, with no patched version. Automated re-review on 2026-11-18 verified the unchanged bundled-rule compiler and bounded scanner paths, the engine's internal globals encoding/decoding, and current yara-x 1.23.0 still requiring bincode 2.0.1. Fresh cargo-deny advisory scan passed with this explicit maintenance acceptance; no native behavior or arbitrary-input safety is inferred. Exact fresh review and limits: docs/security/endpoint-bincode-maintenance-review.md. This short renewal admits only maintenance risk pending a qualified upstream serializer replacement or another review; vulnerability and yanked checks remain enforced. expires: 2026-11-21" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 remains unmaintained through merlin -> yara-x 1.22.1, with no patched version. Re-review on 2026-11-22: the latest published yara-x, 1.24.0, still requires bincode ^2.0.1, so no upgrade removes it; Endpoint still only compiles its bundled rule sources and scans bounded content (256 KiB per file, 256 files, deadline), and never loads serialized rules, so bincode decodes only bytes the engine itself encoded. The bincode finding clears with this explicit maintenance acceptance. Details and limits: docs/security/endpoint-bincode-maintenance-review.md. This admits only maintenance risk pending an upstream serializer replacement or another review; vulnerability and yanked checks remain enforced. expires: 2026-12-21" },
 ]
 
 [licenses]
